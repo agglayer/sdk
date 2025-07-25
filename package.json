@@ -1,0 +1,37 @@
+{
+  "name": "agglayer-sdk",
+  "version": "1.0.0",
+  "description": "",
+  "keywords": [
+    "agglayer"
+  ],
+  "license": "ISC",
+  "author": "ankitboghra",
+  "type": "commonjs",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.mjs",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "typecheck": "tsc --noEmit",
+    "clean": "rm -rf dist",
+    "prepublishOnly": "npm run clean && npm run build",
+    "prebuild": "npm run clean"
+  },
+  "devDependencies": {
+    "tsup": "^8.5.0",
+    "typescript": "^5.8.3",
+    "@types/node": "^20.0.0"
+  }
+}
