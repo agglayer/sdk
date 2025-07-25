@@ -1,5 +1,5 @@
 export class AggLayerSDK {
   constructor() {
-    console.log('AggLayerSDK constructor');
+    // Initialize AggLayer SDK
   }
 }
