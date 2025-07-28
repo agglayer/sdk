@@ -1,7 +1,9 @@
-export interface AgglayerConfig {
-  baseUrl?: string;
+export interface SDKConfig {
+  apiBaseUrl?: string;
+  apiTimeout?: number;
+  websocketBaseUrl?: string;
 }
 
 export interface AgglayerSDK {
-  config: AgglayerConfig;
+  config: SDKConfig;
 }
