@@ -22,6 +22,15 @@ export interface APIConfig {
 }
 
 export interface LxlyConfig {
-  // dev: network to decide on proof api url
+  // network to decide on proof api url
   network: 'mainnet' | 'testnet';
+  providers?: Record<
+    number,
+    {
+      rpcUrl: string;
+      chainId: number;
+      name?: string;
+      isTestnet?: boolean;
+    }
+  >;
 }

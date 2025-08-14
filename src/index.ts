@@ -1,40 +1,92 @@
-import { SDKConfig, SDK_MODES } from '@/types';
-import { Lxly } from './lxly';
+/**
+ * AggLayer SDK - Main SDK
+ *
+ * Main SDK that orchestrates different submodules
+ */
+
+import { LxlyClient } from './lxly';
+import { chainRegistry, type ChainConfig } from './chains/registry';
+
+export interface SDKConfig {
+  mode: string[];
+
+  // LXLY submodule configuration
+  lxly?: {
+    // Default network for LXLY operations
+    defaultNetwork?: number;
+    // Custom chains to register
+    chains?: ChainConfig[];
+    // Custom RPC URLs for existing chains
+    customRpcUrls?: Record<number, string>;
+  };
+
+  // Upcoming feature: AggLayer API
+  agglayerApi?: {
+    apiBaseUrl: string;
+    apiTimeout: number;
+  };
+}
 
 export class AggLayerSDK {
-  public config: SDKConfig;
-  public lxly?: Lxly;
+  private config: SDKConfig;
+  public lxly?: LxlyClient;
 
   constructor(config: SDKConfig) {
-    // Initialize AggLayer SDK defaults
-    this.config = {
-      mode: [SDK_MODES.LXLY, SDK_MODES.AGGLAYER_API],
-      agglayerApi: {
-        apiBaseUrl: 'https://api.agglayer.com', // todo: change to actual url
-        apiTimeout: 10000,
-        websocketBaseUrl: 'wss://api.agglayer.com', // todo: change to actual url
-      },
-      lxly: {
-        network: 'mainnet',
-      },
-    };
+    this.config = config;
 
-    // Override with user config
-    this.config = {
-      mode: config.mode && config.mode.length ? config.mode : this.config.mode,
-      agglayerApi: {
-        ...this.config.agglayerApi,
-        ...config.agglayerApi,
-      },
-      lxly: {
-        ...this.config.lxly,
-        ...config.lxly,
-      },
-    };
-
-    // Initialize components based on mode
-    if (this.config.mode.includes(SDK_MODES.LXLY)) {
-      this.lxly = new Lxly(this.config.lxly);
+    // Register custom chains if provided
+    if (this.config.lxly?.chains) {
+      this.config.lxly.chains.forEach((chain) => {
+        chainRegistry.registerChain(chain);
+      });
     }
+
+    // Add custom RPC URLs if provided
+    if (this.config.lxly?.customRpcUrls) {
+      Object.entries(this.config.lxly.customRpcUrls).forEach(
+        ([chainId, rpcUrl]) => {
+          chainRegistry.addCustomRpcUrl(Number(chainId), rpcUrl);
+        }
+      );
+    }
+
+    // Initialize lxly submodule if enabled
+    // todo: change to mainnet configs before publishing
+    if (this.config.mode?.includes('lxly')) {
+      this.lxly = new LxlyClient({
+        defaultNetwork: this.config.lxly?.defaultNetwork || 11155111, // Default to Sepolia
+      });
+    }
+  }
+
+  /**
+   * Get lxly submodule
+   */
+  getLxly(): LxlyClient {
+    if (!this.lxly) {
+      throw new Error('LXLY module not initialized. Add "lxly" to mode array.');
+    }
+    return this.lxly;
+  }
+
+  /**
+   * Get chain registry for advanced usage
+   */
+  getChainRegistry() {
+    return chainRegistry;
+  }
+
+  /**
+   * Get supported chain IDs
+   */
+  getSupportedChainIds(): number[] {
+    return chainRegistry.getSupportedChainIds();
+  }
+
+  /**
+   * Check if chain is supported
+   */
+  isChainSupported(chainId: number): boolean {
+    return chainRegistry.isChainSupported(chainId);
   }
 }

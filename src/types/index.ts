@@ -8,12 +8,10 @@
 // Import types for internal use
 import { SDKConfig } from './config';
 import { AgglayerAPI } from './agglayerApi';
-import { Lxly } from '../lxly';
 
 // Core SDK Types
 export interface AgglayerSDK {
   config: SDKConfig;
-  lxly?: Lxly;
   agglayerApi?: AgglayerAPI;
   // ...other modules like routes, utils, etc.
 }
@@ -21,4 +19,3 @@ export interface AgglayerSDK {
 // Re-export all types from their respective modules
 export * from './config';
 export * from './agglayerApi';
-export * from './lxly';

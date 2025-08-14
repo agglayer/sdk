@@ -40,6 +40,78 @@ npm install
 - `npm run format` - Format code with Prettier
 - `npm run typecheck` - Type check with TypeScript
 
+### Initialize SDK
+
+```typescript
+import { AggLayerSDK } from 'agglayer-sdk';
+
+const sdk = new AggLayerSDK({
+  mode: ['lxly'],
+  lxly: {
+    defaultNetwork: 11155111,
+    chains: [
+      {
+        id: 11155111,
+        name: 'Ethereum Sepolia',
+        rpcUrl: 'https://rpc.sepolia.org',
+        nativeCurrency: { name: 'Sepolia Ether', symbol: 'ETH', decimals: 18 },
+      },
+    ],
+    customRpcUrls: {
+      1: 'https://your-custom-eth-rpc.com',
+      137: 'https://your-custom-polygon-rpc.com',
+    },
+  },
+});
+```
+
+### Read Operation - Get Token Balance
+
+```typescript
+// Get LXLY client
+const lxly = sdk.getLxly();
+
+// Create ERC20 instance
+const erc20 = lxly.erc20(
+  '0x1234567890123456789012345678901234567890',
+  11155111
+);
+
+// Get balance
+const balance = await erc20.getBalance(
+  '0xabcdefabcdefabcdefabcdefabcdefabcdefabcd'
+);
+console.log('Balance:', balance); // Returns balance in wei as string
+```
+
+### Write Operation - Build Transfer Transaction
+
+```typescript
+// Create ERC20 instance
+const erc20 = lxly.erc20(
+  '0x1234567890123456789012345678901234567890',
+  11155111
+);
+
+// Build transfer transaction
+const transaction = await erc20.buildTransfer(
+  '0xabcdefabcdefabcdefabcdefabcdefabcdefabcd', // recipient
+  '1000000000000000000', // amount in wei
+  '0x1111111111111111111111111111111111111111' // from address
+);
+
+console.log('Transaction:', transaction);
+// Returns: { to, data, gas, maxFeePerGas, maxPriorityFeePerGas, nonce }
+```
+
+## Features
+
+- **ERC20 Operations**: Balance, allowance, transfers, approvals
+- **Transaction Building**: Build transactions for MetaMask or other wallets
+- **Multi-Chain Support**: Support for multiple blockchain networks
+- **TypeScript**: Full TypeScript support with type safety
+- **Lightweight**: Minimal dependencies, focused on core functionality
+
 ### Code Quality
 
 This project uses:
