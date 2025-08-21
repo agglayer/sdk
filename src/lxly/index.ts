@@ -16,6 +16,7 @@ export interface LxlyConfig {
 
 export { ERC20 } from './tokens/erc20';
 export { Bridge } from './bridge/bridge';
+export { BridgeAdapter } from './bridge/bridge-adapter';
 export { BridgeUtil } from './bridge/util';
 
 export class LxlyClient {
