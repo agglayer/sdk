@@ -6,28 +6,7 @@
 
 import { type Chain } from 'viem';
 
-export interface ChainConfig {
-  id: number;
-  name: string;
-  rpcUrl: string;
-  nativeCurrency: {
-    name: string;
-    symbol: string;
-    decimals: number;
-  };
-  blockExplorer?: {
-    name: string;
-    url: string;
-  };
-  isTestnet?: boolean;
-  isLocal?: boolean;
-}
-
-export interface CustomChainConfig extends ChainConfig {
-  // Additional properties for custom chains
-  isTestnet?: boolean;
-  isLocal?: boolean;
-}
+import type { ChainConfig, CustomChainConfig } from '../types';
 
 export class ChainRegistry {
   private static instance: ChainRegistry;
@@ -46,27 +25,10 @@ export class ChainRegistry {
   }
 
   private initializeDefaultChains() {
-    // Ethereum Mainnet
-    this.registerChain({
-      id: 1,
-      name: 'Ethereum Mainnet',
-      rpcUrl: 'https://eth.llamarpc.com',
-      nativeCurrency: { name: 'Ether', symbol: 'ETH', decimals: 18 },
-      blockExplorer: { name: 'Etherscan', url: 'https://etherscan.io' },
-    });
-
-    // Polygon Mainnet
-    this.registerChain({
-      id: 137,
-      name: 'Polygon Mainnet',
-      rpcUrl: 'https://polygon-rpc.com',
-      nativeCurrency: { name: 'MATIC', symbol: 'MATIC', decimals: 18 },
-      blockExplorer: { name: 'PolygonScan', url: 'https://polygonscan.com' },
-    });
-
     // Ethereum Sepolia Testnet
     this.registerChain({
-      id: 11155111,
+      chainId: 11155111,
+      networkId: 0,
       name: 'Ethereum Sepolia',
       rpcUrl: 'https://rpc.sepolia.org',
       nativeCurrency: { name: 'Sepolia Ether', symbol: 'ETH', decimals: 18 },
@@ -74,38 +36,27 @@ export class ChainRegistry {
         name: 'Sepolia Etherscan',
         url: 'https://sepolia.etherscan.io',
       },
+      bridgeAddress: '0x528e26b25a34a4A5d0dbDa1d57D318153d2ED582',
+      proofApiUrl:
+        'https://api-gateway.polygon.technology/api/v3/proof/testnet/',
       isTestnet: true,
     });
 
-    // Polygon Amoy Testnet
+    // Polygon Cardona Testnet
     this.registerChain({
-      id: 80002,
-      name: 'Polygon Amoy',
-      rpcUrl: 'https://rpc-amoy.polygon.technology',
-      nativeCurrency: { name: 'MATIC', symbol: 'MATIC', decimals: 18 },
+      chainId: 2442,
+      networkId: 1,
+      name: 'Polygon Cardona',
+      rpcUrl: 'https://rpc.cardona.zkevm-rpc.com',
+      nativeCurrency: { name: 'Ethereum', symbol: 'ETH', decimals: 18 },
       blockExplorer: {
-        name: 'Amoy PolygonScan',
-        url: 'https://www.oklink.com/amoy',
+        name: 'Cardona PolygonScan',
+        url: 'https://cardona-zkevm.polygonscan.com',
       },
+      bridgeAddress: '0x528e26b25a34a4A5d0dbDa1d57D318153d2ED582',
+      proofApiUrl:
+        'https://api-gateway.polygon.technology/api/v3/proof/testnet/',
       isTestnet: true,
-    });
-
-    // Local development chains
-    // todo: remove these chains before publishing
-    this.registerChain({
-      id: 31337,
-      name: 'Hardhat Local',
-      rpcUrl: 'http://localhost:8545',
-      nativeCurrency: { name: 'ETH', symbol: 'ETH', decimals: 18 },
-      isLocal: true,
-    });
-
-    this.registerChain({
-      id: 1337,
-      name: 'Ganache Local',
-      rpcUrl: 'http://localhost:7545',
-      nativeCurrency: { name: 'ETH', symbol: 'ETH', decimals: 18 },
-      isLocal: true,
     });
   }
 
@@ -113,11 +64,11 @@ export class ChainRegistry {
    * Register a new chain
    */
   registerChain(config: ChainConfig): void {
-    this.chains.set(config.id, config);
+    this.chains.set(config.chainId, config);
 
     // Create viem chain object
     const viemChain: Chain = {
-      id: config.id,
+      id: config.chainId,
       name: config.name,
       nativeCurrency: config.nativeCurrency,
       rpcUrls: {
@@ -125,7 +76,7 @@ export class ChainRegistry {
       },
     };
 
-    this.viemChains.set(config.id, viemChain);
+    this.viemChains.set(config.chainId, viemChain);
   }
 
   /**
@@ -136,6 +87,26 @@ export class ChainRegistry {
     if (!chain) {
       throw new Error(
         `Chain ${chainId} not found. Available chains: ${Array.from(this.chains.keys()).join(', ')}`
+      );
+    }
+    return chain;
+  }
+
+  /**
+   * Get chain configuration by network ID
+   */
+  getChainByNetworkId(networkId: number): ChainConfig {
+    const chain = Array.from(this.chains.values()).find(
+      (chain) => chain.networkId === networkId
+    );
+    if (!chain) {
+      throw new Error(
+        `Chain with network ID ${networkId} not found. Available network IDs: ${Array.from(
+          this.chains.values()
+        )
+          .map((chain) => chain.networkId)
+          .filter(Boolean)
+          .join(', ')}`
       );
     }
     return chain;
@@ -173,6 +144,15 @@ export class ChainRegistry {
    */
   isChainSupported(chainId: number): boolean {
     return this.chains.has(chainId);
+  }
+
+  /**
+   * Check if chain is supported by network ID
+   */
+  isChainSupportedByNetworkId(networkId: number): boolean {
+    return Array.from(this.chains.values()).some(
+      (chain) => chain.networkId === networkId
+    );
   }
 
   /**

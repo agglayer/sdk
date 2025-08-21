@@ -5,27 +5,11 @@
  */
 
 import { LxlyClient } from './lxly';
-import { chainRegistry, type ChainConfig } from './chains/registry';
+import { chainRegistry } from './chains/registry';
+import type { SDKConfig } from './types';
 
-export interface SDKConfig {
-  mode: string[];
-
-  // LXLY submodule configuration
-  lxly?: {
-    // Default network for LXLY operations
-    defaultNetwork?: number;
-    // Custom chains to register
-    chains?: ChainConfig[];
-    // Custom RPC URLs for existing chains
-    customRpcUrls?: Record<number, string>;
-  };
-
-  // Upcoming feature: AggLayer API
-  agglayerApi?: {
-    apiBaseUrl: string;
-    apiTimeout: number;
-  };
-}
+// Re-export all types from centralized location
+export type * from './types';
 
 export class AggLayerSDK {
   private config: SDKConfig;
@@ -52,7 +36,7 @@ export class AggLayerSDK {
 
     // Initialize lxly submodule if enabled
     // todo: change to mainnet configs before publishing
-    if (this.config.mode?.includes('lxly')) {
+    if (this.config.mode?.includes('LXLY')) {
       this.lxly = new LxlyClient({
         defaultNetwork: this.config.lxly?.defaultNetwork || 11155111, // Default to Sepolia
       });

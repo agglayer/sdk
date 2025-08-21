@@ -1,11 +1,12 @@
 /**
  * LXLY Submodule
  *
- * ERC20 token operations and network management
+ * ERC20 token operations and bridge functionality
  */
 
 import { chainRegistry } from '../chains/registry';
-import { ERC20, ERC20Config, TransactionParams } from './tokens/erc20';
+import { ERC20 } from './tokens/erc20';
+import { Bridge } from './bridge/bridge';
 import { createPublicClient, http, type Address } from 'viem';
 import { ValidationUtils } from './utils';
 
@@ -13,7 +14,9 @@ export interface LxlyConfig {
   defaultNetwork?: number;
 }
 
-export { ERC20, ERC20Config, TransactionParams };
+export { ERC20 } from './tokens/erc20';
+export { Bridge } from './bridge/bridge';
+export { BridgeUtil } from './bridge/util';
 
 export class LxlyClient {
   private config: LxlyConfig;
@@ -61,7 +64,7 @@ export class LxlyClient {
     return new ERC20({
       tokenAddress,
       rpcUrl: network.rpcUrl,
-      chainId: network.id,
+      chainId: network.chainId,
     });
   }
 
@@ -77,7 +80,7 @@ export class LxlyClient {
 
     const client = createPublicClient({
       chain: {
-        id: network.id,
+        id: network.chainId,
         name: network.name,
         nativeCurrency: network.nativeCurrency,
         rpcUrls: {
@@ -90,5 +93,21 @@ export class LxlyClient {
 
     const balance = await client.getBalance({ address: address as Address });
     return balance.toString();
+  }
+
+  /**
+   * Create a Bridge instance for a specific network
+   * @param bridgeAddress - The bridge contract address
+   * @param networkId - The network ID (optional, uses default if not provided)
+   * @returns Bridge instance
+   */
+  bridge(bridgeAddress: string, networkId?: number): Bridge {
+    const network = this.getNetwork(networkId || this.defaultNetwork);
+
+    return new Bridge({
+      bridgeAddress,
+      rpcUrl: network.rpcUrl,
+      chainId: network.chainId,
+    });
   }
 }

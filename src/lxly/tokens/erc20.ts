@@ -4,39 +4,34 @@
  * Core ERC20 functionality for balance, allowance, and transaction building
  */
 
-import {
-  createPublicClient,
-  http,
-  type PublicClient,
-  type Address,
-  type Hex,
-} from 'viem';
-import { chainRegistry } from '../../chains/registry';
-import { erc20Abi } from './abi/erc20';
+import { type Address } from 'viem';
+
 import { ValidationUtils } from '../utils';
-import type { ERC20Config, TransactionParams } from './types';
+import { BaseContract } from '../base/contract';
+import type {
+  ERC20Config,
+  TransactionParams,
+  BridgeOptions,
+} from '../../types';
 import {
   buildApprove as buildApproveTx,
   buildTransfer as buildTransferTx,
   buildTransferFrom as buildTransferFromTx,
 } from './build';
+import { Bridge } from '../bridge/bridge';
+import { chainRegistry } from '../../chains/registry';
+import { getAbi } from '../services/abi';
 
 export type { ERC20Config, TransactionParams };
 
-export class ERC20 {
+export class ERC20 extends BaseContract {
+  private tokenAddress: string;
   private config: ERC20Config;
-  private client: PublicClient;
 
   constructor(config: ERC20Config) {
+    super({ rpcUrl: config.rpcUrl, chainId: config.chainId });
+    this.tokenAddress = config.tokenAddress;
     this.config = config;
-
-    // Get chain from registry
-    const chain = chainRegistry.getViemChain(config.chainId);
-
-    this.client = createPublicClient({
-      chain,
-      transport: http(config.rpcUrl),
-    });
   }
 
   /**
@@ -46,8 +41,8 @@ export class ERC20 {
     ValidationUtils.validateAddress(address, 'Address');
 
     const balance = await this.client.readContract({
-      address: this.config.tokenAddress as Address,
-      abi: erc20Abi,
+      address: this.tokenAddress as Address,
+      abi: getAbi('ERC20'),
       functionName: 'balanceOf',
       args: [address as Address],
     });
@@ -63,8 +58,8 @@ export class ERC20 {
 
     try {
       const allowance = await this.client.readContract({
-        address: this.config.tokenAddress as Address,
-        abi: erc20Abi,
+        address: this.tokenAddress as Address,
+        abi: getAbi('ERC20'),
         functionName: 'allowance',
         args: [owner as Address, spender as Address],
       });
@@ -77,41 +72,11 @@ export class ERC20 {
   }
 
   /**
-   * Get nonce for an address
-   */
-  private async getNonce(address?: string): Promise<string | undefined> {
-    if (!address) return undefined;
-    const nonceValue = await this.client.getTransactionCount({
-      address: address as Address,
-    });
-    return nonceValue.toString();
-  }
-
-  /**
-   * Estimate gas for transaction
-   */
-  private async estimateGas(data: Hex, from?: string): Promise<string> {
-    const gasEstimate = await this.client.estimateGas({
-      account: from as Address,
-      to: this.config.tokenAddress as Address,
-      data,
-    });
-    return gasEstimate.toString();
-  }
-
-  /**
-   * Convert amount to BigInt
-   */
-  private toBigInt(amount: string | number | bigint): bigint {
-    return BigInt(amount.toString());
-  }
-
-  /**
    * Build approve transaction
    */
   async buildApprove(
     spender: string,
-    amount: string | number | bigint,
+    amount: string,
     from?: string
   ): Promise<TransactionParams> {
     ValidationUtils.validateAddress(spender, 'Spender address');
@@ -119,12 +84,13 @@ export class ERC20 {
 
     return buildApproveTx(
       {
-        tokenAddress: this.config.tokenAddress,
-        estimateGas: (data, f) => this.estimateGas(data, f),
-        getNonce: (addr) => this.getNonce(addr),
+        tokenAddress: this.tokenAddress,
+        estimateGas: (data, from) =>
+          this.estimateGas(data, this.tokenAddress, from),
+        getNonce: (address) => this.getNonce(address),
       },
       spender as Address,
-      this.toBigInt(amount),
+      BigInt(amount),
       from
     );
   }
@@ -134,7 +100,7 @@ export class ERC20 {
    */
   async buildTransfer(
     to: string,
-    amount: string | number | bigint,
+    amount: string,
     from?: string
   ): Promise<TransactionParams> {
     ValidationUtils.validateAddress(to, 'Recipient address');
@@ -142,12 +108,13 @@ export class ERC20 {
 
     return buildTransferTx(
       {
-        tokenAddress: this.config.tokenAddress,
-        estimateGas: (data, f) => this.estimateGas(data, f),
-        getNonce: (addr) => this.getNonce(addr),
+        tokenAddress: this.tokenAddress,
+        estimateGas: (data, from) =>
+          this.estimateGas(data, this.tokenAddress, from),
+        getNonce: (address) => this.getNonce(address),
       },
       to as Address,
-      this.toBigInt(amount),
+      BigInt(amount),
       from
     );
   }
@@ -158,7 +125,7 @@ export class ERC20 {
   async buildTransferFrom(
     from: string,
     to: string,
-    amount: string | number | bigint,
+    amount: string,
     spender?: string
   ): Promise<TransactionParams> {
     ValidationUtils.validateAddress(from, 'Owner address');
@@ -167,14 +134,135 @@ export class ERC20 {
 
     return buildTransferFromTx(
       {
-        tokenAddress: this.config.tokenAddress,
-        estimateGas: (data, f) => this.estimateGas(data, f),
-        getNonce: (addr) => this.getNonce(addr),
+        tokenAddress: this.tokenAddress,
+        estimateGas: (data, from) =>
+          this.estimateGas(data, this.tokenAddress, from),
+        getNonce: (address) => this.getNonce(address),
       },
       from as Address,
       to as Address,
-      this.toBigInt(amount),
+      BigInt(amount),
       spender
     );
+  }
+
+  /**
+   * Bridge this token to another network
+   */
+  async bridgeTo(
+    destinationNetwork: number,
+    destinationAddress: string,
+    amount: string,
+    from?: string,
+    options: BridgeOptions = {}
+  ): Promise<TransactionParams> {
+    ValidationUtils.validateAddress(destinationAddress, 'Destination address');
+    ValidationUtils.validateAmount(amount, 'Amount');
+
+    const bridge = this.getBridge();
+
+    return bridge.buildBridgeAsset(
+      {
+        destinationNetwork,
+        destinationAddress,
+        amount,
+        token: this.tokenAddress,
+        forceUpdateGlobalExitRoot: options.forceUpdateGlobalExitRoot ?? true,
+        permitData: options.permitData || '0x',
+      },
+      from
+    );
+  }
+
+  /**
+   * Get wrapped version of this token on destination network
+   */
+  async getWrappedToken(): Promise<string> {
+    const bridge = this.getBridge();
+    return bridge.getWrappedTokenAddress({
+      originNetwork: this.config.chainId,
+      originTokenAddress: this.tokenAddress,
+    });
+  }
+
+  /**
+   * Claim asset from bridge transaction hash
+   *
+   * @param transactionHash - Hash of the bridge transaction on the source network
+   * @param sourceNetworkId - Network ID of the source network (where bridge tx happened)
+   * @param bridgeIndex - Index of bridge event in transaction (default: 0)
+   * @param from - From address for the claim transaction
+   */
+  async claimAsset(
+    transactionHash: string,
+    sourceNetworkId: number,
+    bridgeIndex = 0,
+    from?: string
+  ): Promise<TransactionParams> {
+    const bridge = this.getBridge();
+    return bridge.buildClaimAssetFromHash(
+      transactionHash,
+      sourceNetworkId,
+      bridgeIndex,
+      from
+    );
+  }
+
+  /**
+   * Claim message from bridge transaction hash
+   *
+   * @param transactionHash - Hash of the bridge transaction on the source network
+   * @param sourceNetworkId - Network ID of the source network (where bridge tx happened)
+   * @param bridgeIndex - Index of bridge event in transaction (default: 0)
+   * @param from - From address for the claim transaction
+   */
+  async claimMessage(
+    transactionHash: string,
+    sourceNetworkId: number,
+    bridgeIndex = 0,
+    from?: string
+  ): Promise<TransactionParams> {
+    const bridge = this.getBridge();
+    return bridge.buildClaimMessageFromHash(
+      transactionHash,
+      sourceNetworkId,
+      bridgeIndex,
+      from
+    );
+  }
+
+  /**
+   * Get bridge event info from transaction hash
+   *
+   * @param transactionHash - Hash of the bridge transaction on the source network
+   * @param sourceNetworkId - Network ID of the source network (where bridge tx happened)
+   * @param bridgeIndex - Index of bridge event in transaction (default: 0)
+   */
+  async getBridgeEventInfo(
+    transactionHash: string,
+    sourceNetworkId: number,
+    bridgeIndex = 0
+  ) {
+    const bridge = this.getBridge();
+    return bridge.getBridgeEventInfo(
+      transactionHash,
+      sourceNetworkId,
+      bridgeIndex
+    );
+  }
+
+  private getBridge(): Bridge {
+    const chain = chainRegistry.getChain(this.config.chainId);
+    if (!chain.bridgeAddress) {
+      throw new Error(
+        `No bridge address configured for network ${this.config.chainId}`
+      );
+    }
+
+    return new Bridge({
+      bridgeAddress: chain.bridgeAddress,
+      rpcUrl: this.config.rpcUrl,
+      chainId: this.config.chainId,
+    });
   }
 }

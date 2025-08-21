@@ -94,6 +94,6 @@ export class GasEstimator {
   ): Promise<string | undefined> {
     if (!address) return undefined;
     const nonceValue = await client.getTransactionCount({ address });
-    return nonceValue.toString();
+    return `0x${nonceValue.toString(16)}`;
   }
 }

@@ -9,28 +9,21 @@ export const SDK_MODES = {
 
 export type SDKMode = (typeof SDK_MODES)[keyof typeof SDK_MODES];
 
+import type { APIConfig } from './api';
+
 export interface SDKConfig {
   mode: SDKMode[];
   agglayerApi: APIConfig;
   lxly: LxlyConfig;
 }
 
-export interface APIConfig {
-  apiBaseUrl?: string;
-  apiTimeout?: number;
-  websocketBaseUrl?: string;
-}
+import type { ChainConfig } from './chains';
 
 export interface LxlyConfig {
-  // network to decide on proof api url
-  network: 'mainnet' | 'testnet';
-  providers?: Record<
-    number,
-    {
-      rpcUrl: string;
-      chainId: number;
-      name?: string;
-      isTestnet?: boolean;
-    }
-  >;
+  // Default network for LXLY operations
+  defaultNetwork?: number;
+  // Custom chains to register
+  chains?: ChainConfig[];
+  // Custom RPC URLs for existing chains
+  customRpcUrls?: Record<number, string>;
 }

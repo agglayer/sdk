@@ -1,8 +1,8 @@
-export interface ERC20Config {
-  tokenAddress: string;
-  rpcUrl: string;
-  chainId: number;
-}
+/**
+ * Common Types
+ *
+ * Shared type definitions used across the entire SDK
+ */
 
 export interface TransactionParams {
   from?: string | undefined;
@@ -14,4 +14,9 @@ export interface TransactionParams {
   maxFeePerGas?: string;
   maxPriorityFeePerGas?: string;
   nonce?: string | undefined;
+}
+
+export interface BaseContractConfig {
+  rpcUrl: string;
+  chainId: number;
 }
