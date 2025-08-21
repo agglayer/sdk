@@ -13,6 +13,13 @@ export interface BridgeAssetParams {
   permitData?: string;
 }
 
+export interface BridgeTokenParams {
+  recipient: string;
+  amount: string;
+  destinationNetworkId: number;
+  forceUpdateGlobalExitRoot: boolean;
+}
+
 export interface BridgeOptions {
   forceUpdateGlobalExitRoot?: boolean;
   permitData?: string;

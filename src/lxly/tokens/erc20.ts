@@ -19,6 +19,7 @@ import {
   buildTransferFrom as buildTransferFromTx,
 } from './build';
 import { Bridge } from '../bridge/bridge';
+import { BridgeAdapter } from '../bridge/bridge-adapter';
 import { chainRegistry } from '../../chains/registry';
 import { getAbi } from '../services/abi';
 
@@ -169,6 +170,41 @@ export class ERC20 extends BaseContract {
         token: this.tokenAddress,
         forceUpdateGlobalExitRoot: options.forceUpdateGlobalExitRoot ?? true,
         permitData: options.permitData || '0x',
+      },
+      from
+    );
+  }
+
+  /**
+   * Bridge custom ERC20 token to another network using bridge adapter
+   */
+  async bridgeToken(
+    recipient: string,
+    amount: string,
+    destinationNetworkId: number,
+    bridgeAdapterAddress: string,
+    forceUpdateGlobalExitRoot = true,
+    from?: string
+  ): Promise<TransactionParams> {
+    ValidationUtils.validateAddress(recipient, 'Recipient address');
+    ValidationUtils.validateAmount(amount, 'Amount');
+    ValidationUtils.validateAddress(
+      bridgeAdapterAddress,
+      'Bridge adapter address'
+    );
+
+    const bridgeAdapter = new BridgeAdapter({
+      bridgeAdapterAddress,
+      rpcUrl: this.config.rpcUrl,
+      chainId: this.config.chainId,
+    });
+
+    return bridgeAdapter.buildBridgeToken(
+      {
+        recipient,
+        amount,
+        destinationNetworkId,
+        forceUpdateGlobalExitRoot,
       },
       from
     );
