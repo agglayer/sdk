@@ -6,7 +6,7 @@
 
 import { type Chain } from 'viem';
 
-import type { ChainConfig, CustomChainConfig } from '../types';
+import type { ChainConfig, CustomChainConfig } from '../../types';
 
 export class ChainRegistry {
   private static instance: ChainRegistry;

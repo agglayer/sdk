@@ -11,7 +11,7 @@ import {
   type Address,
   type Hex,
 } from 'viem';
-import { chainRegistry } from '../../chains/registry';
+import { chainRegistry } from '../chains/registry';
 
 import type { BaseContractConfig } from '../../types';
 

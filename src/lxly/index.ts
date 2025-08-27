@@ -4,15 +4,13 @@
  * ERC20 token operations and bridge functionality
  */
 
-import { chainRegistry } from '../chains/registry';
+import { chainRegistry } from './chains/registry';
 import { ERC20 } from './tokens/erc20';
 import { Bridge } from './bridge/bridge';
 import { createPublicClient, http, type Address } from 'viem';
 import { ValidationUtils } from './utils';
-
-export interface LxlyConfig {
-  defaultNetwork?: number;
-}
+import type { LxlyConfig } from '../types';
+import { DEFAULT_NETWORK } from '../constants';
 
 export { ERC20 } from './tokens/erc20';
 export { Bridge } from './bridge/bridge';
@@ -24,7 +22,21 @@ export class LxlyClient {
 
   constructor(config: LxlyConfig) {
     this.config = config;
-    this.defaultNetwork = this.config.defaultNetwork || 11155111; // Default to Sepolia
+    this.defaultNetwork = this.config.defaultNetwork || DEFAULT_NETWORK;
+
+    // Register custom chains if provided
+    if (this.config.chains) {
+      this.config.chains.forEach((chain) => {
+        chainRegistry.registerChain(chain);
+      });
+    }
+
+    // Add custom RPC URLs if provided
+    if (this.config.customRpcUrls) {
+      Object.entries(this.config.customRpcUrls).forEach(([chainId, rpcUrl]) => {
+        chainRegistry.addCustomRpcUrl(Number(chainId), rpcUrl);
+      });
+    }
   }
 
   /**
@@ -50,6 +62,13 @@ export class LxlyClient {
    */
   getDefaultNetwork(): number {
     return this.defaultNetwork;
+  }
+
+  /**
+   * Get chain registry for advanced usage
+   */
+  getChainRegistry() {
+    return chainRegistry;
   }
 
   /**

@@ -12,7 +12,7 @@ import {
 } from 'viem';
 import type { ClaimAssetParams, ClaimMessageParams } from '../../types';
 import { bridgeAbi } from './abi/bridge';
-import { chainRegistry } from '../../chains/registry';
+import { chainRegistry } from '../chains/registry';
 
 export interface BridgeEventInfo {
   originNetwork: number;

@@ -10,14 +10,13 @@ export const SDK_MODES = {
 export type SDKMode = (typeof SDK_MODES)[keyof typeof SDK_MODES];
 
 import type { APIConfig } from './api';
+import type { ChainConfig } from './chains';
 
 export interface SDKConfig {
   mode: SDKMode[];
   agglayerApi: APIConfig;
   lxly: LxlyConfig;
 }
-
-import type { ChainConfig } from './chains';
 
 export interface LxlyConfig {
   // Default network for LXLY operations
