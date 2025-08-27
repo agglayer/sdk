@@ -3,7 +3,7 @@ import { AggLayerSDK } from '../index';
 
 describe('AggLayerSDK', () => {
   it('should create an instance', () => {
-    const sdk = new AggLayerSDK();
+    const sdk = new AggLayerSDK({});
     expect(sdk).toBeInstanceOf(AggLayerSDK);
   });
 });

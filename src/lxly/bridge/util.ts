@@ -10,7 +10,7 @@ import {
   createPublicClient,
   http,
 } from 'viem';
-import type { ClaimAssetParams, ClaimMessageParams } from '../../types';
+import type { ClaimAssetParams, ClaimMessageParams } from '@/types';
 import { bridgeAbi } from './abi/bridge';
 import { chainRegistry } from '../chains/registry';
 

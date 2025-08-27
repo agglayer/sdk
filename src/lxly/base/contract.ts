@@ -13,7 +13,7 @@ import {
 } from 'viem';
 import { chainRegistry } from '../chains/registry';
 
-import type { BaseContractConfig } from '../../types';
+import type { BaseContractConfig } from '@/types';
 
 export abstract class BaseContract {
   protected client: PublicClient;

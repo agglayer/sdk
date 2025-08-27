@@ -9,7 +9,7 @@ import { ERC20 } from './tokens/erc20';
 import { Bridge } from './bridge/bridge';
 import { createPublicClient, http, type Address } from 'viem';
 import { ValidationUtils } from './utils';
-import type { LxlyConfig } from '../types';
+import type { LxlyConfig } from '@/types';
 import { DEFAULT_NETWORK } from '../constants';
 
 export { ERC20 } from './tokens/erc20';

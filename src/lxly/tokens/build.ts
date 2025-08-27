@@ -1,6 +1,6 @@
 import { encodeFunctionData, type Address, type Hex } from 'viem';
 import { erc20Abi } from './abi/erc20';
-import type { TransactionParams } from './types';
+import type { TransactionParams } from '@/types';
 
 export interface BuildContext {
   tokenAddress: string;

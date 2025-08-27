@@ -4,9 +4,9 @@
  * Main SDK that orchestrates different submodules
  */
 
-import { LxlyClient } from './lxly';
-import type { SDKConfig } from './types';
-import { CoreClient } from 'core';
+import { LxlyClient } from '@/lxly';
+import type { SDKConfig } from '@/types';
+import { CoreClient } from '@/core';
 import { DEFAULT_NETWORK } from './constants';
 
 // Re-export all types from centralized location

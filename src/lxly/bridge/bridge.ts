@@ -17,7 +17,7 @@ import type {
   ClaimMessageParams,
   PrecalculatedWrapperParams,
   OriginTokenInfoParams,
-} from '../../types';
+} from '@/types';
 import {
   buildBridgeAsset as buildBridgeAssetTx,
   buildClaimAsset as buildClaimAssetTx,

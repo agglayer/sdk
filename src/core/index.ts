@@ -1,4 +1,4 @@
-import type { SDKConfig } from '../types';
+import type { SDKConfig } from '@/types';
 
 export class CoreClient {
   private config: SDKConfig;
@@ -12,7 +12,12 @@ export class CoreClient {
   /**
    * Validate config
    */
-  private validateConfig(): void {}
+  private validateConfig(): void {
+    // TODO: Implement config validation
+    if (!this.config) {
+      throw new Error('Config is required');
+    }
+  }
 
   /**
    * Get all chains from AggLayer API

@@ -8,18 +8,14 @@ import { type Address } from 'viem';
 
 import { ValidationUtils } from '../utils';
 import { BaseContract } from '../base/contract';
-import type {
-  ERC20Config,
-  TransactionParams,
-  BridgeOptions,
-} from '../../types';
+import type { ERC20Config, TransactionParams, BridgeOptions } from '@/types';
 import {
   buildApprove as buildApproveTx,
   buildTransfer as buildTransferTx,
   buildTransferFrom as buildTransferFromTx,
 } from './build';
 import { Bridge } from '../bridge/bridge';
-import { chainRegistry } from '../../chains/registry';
+import { chainRegistry } from '../chains/registry';
 import { getAbi } from '../services/abi';
 
 export type { ERC20Config, TransactionParams };

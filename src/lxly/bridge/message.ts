@@ -6,7 +6,7 @@
 
 import { encodeFunctionData, type Address, type Hex } from 'viem';
 import { bridgeAbi } from './abi/bridge';
-import type { TransactionParams } from '../../types';
+import type { TransactionParams } from '@/types';
 
 export interface BuildContext {
   bridgeAddress: string;
