@@ -1,7 +1,7 @@
 /**
- * Common Types
+ * Transaction Types
  *
- * Shared type definitions used across the entire SDK
+ * Types related to transaction operations
  */
 
 export interface TransactionParams {
@@ -14,9 +14,4 @@ export interface TransactionParams {
   maxFeePerGas?: string;
   maxPriorityFeePerGas?: string;
   nonce?: string | undefined;
-}
-
-export interface BaseContractConfig {
-  rpcUrl: string;
-  chainId: number;
 }

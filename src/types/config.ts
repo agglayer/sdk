@@ -9,20 +9,11 @@ export const SDK_MODES = {
 
 export type SDKMode = (typeof SDK_MODES)[keyof typeof SDK_MODES];
 
-import type { APIConfig } from './api';
-import type { ChainConfig } from './chains';
+import type { CoreConfig } from './core';
+import type { LxlyConfig } from './native';
 
 export interface SDKConfig {
   mode: SDKMode[];
-  agglayerApi: APIConfig;
+  core: CoreConfig;
   lxly: LxlyConfig;
-}
-
-export interface LxlyConfig {
-  // Default network for LXLY operations
-  defaultNetwork?: number;
-  // Custom chains to register
-  chains?: ChainConfig[];
-  // Custom RPC URLs for existing chains
-  customRpcUrls?: Record<number, string>;
 }

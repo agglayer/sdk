@@ -6,9 +6,6 @@
  */
 
 // Re-export all types from their respective modules
-export * from './common';
 export * from './config';
-export * from './contracts';
-export * from './bridge';
-export * from './chains';
-export * from './api';
+export * from './core';
+export * from './native';
