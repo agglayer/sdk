@@ -22,16 +22,3 @@ export interface ErrorResponse {
   readonly code: number;
   readonly details?: Record<string, unknown>;
 }
-
-// Utility types for type guards
-export const isSuccessResponse = <T>(
-  response: ApiResponse<T>
-): response is SuccessResponse<T> => {
-  return response.status === 'success';
-};
-
-export const isErrorResponse = (
-  response: ApiResponse
-): response is ErrorResponse => {
-  return response.status === 'error';
-};

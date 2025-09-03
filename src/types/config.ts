@@ -3,8 +3,8 @@
  */
 
 export const SDK_MODES = {
+  CORE: 'CORE',
   LXLY: 'LXLY',
-  AGGLAYER_API: 'AGGLAYER_API',
 } as const;
 
 export type SDKMode = (typeof SDK_MODES)[keyof typeof SDK_MODES];

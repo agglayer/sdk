@@ -4,21 +4,7 @@
  * Defines the core request and response types for the routes endpoint.
  */
 
-import { ApiResponse } from './_arcApiBase';
 import { TokenInfo, TokenReference } from './_arcApiTokens';
-
-// Request parameters with proper validation types
-export interface RoutesRequestParams {
-  readonly fromChainId: number;
-  readonly toChainId: number;
-  readonly fromTokenAddress: string;
-  readonly toTokenAddress: string;
-  readonly amount: string;
-  readonly fromAddress: string;
-  readonly toAddress?: string;
-  readonly slippage?: number;
-  readonly preferences?: RoutePreferences;
-}
 
 export interface RoutePreferences {
   readonly prioritize?: 'COST' | 'SPEED';
@@ -28,7 +14,6 @@ export interface RoutePreferences {
   readonly includeProtocols?: readonly string[];
 }
 
-// Fee cost structure
 export interface FeeCost {
   readonly name: string;
   readonly description?: string;
@@ -39,7 +24,6 @@ export interface FeeCost {
   readonly included: boolean;
 }
 
-// Gas cost structure
 export interface GasCost {
   readonly type: 'SEND' | 'APPROVAL' | 'EXECUTION';
   readonly chainId: number;
@@ -51,10 +35,8 @@ export interface GasCost {
   readonly token: TokenReference;
 }
 
-// Step types for execution
 export type StepType = 'swap' | 'cross' | 'lifi';
 
-// Tool details for steps
 export interface ToolDetails {
   readonly key: string;
   readonly name: string;
@@ -62,7 +44,6 @@ export interface ToolDetails {
   readonly webUrl?: string | null;
 }
 
-// Action details for steps
 export interface StepAction {
   readonly fromChainId: number;
   readonly toChainId: number;
@@ -86,7 +67,6 @@ export interface StepAction {
   readonly callDataGasLimit?: string;
 }
 
-// Estimate details for steps
 export interface StepEstimate {
   readonly tool: string;
   readonly fromAmount: string;
@@ -100,7 +80,6 @@ export interface StepEstimate {
   readonly toAmountUSD?: string | null;
 }
 
-// Individual step in a route
 export interface Step {
   readonly id: string;
   readonly type: StepType;
@@ -112,7 +91,7 @@ export interface Step {
   readonly relatedSteps: string[] | null;
 }
 
-// Transaction request for execution
+// This will be used by client for transaction execution
 export interface TransactionRequest {
   readonly to: string;
   readonly data: string;
@@ -123,7 +102,6 @@ export interface TransactionRequest {
   readonly from?: string;
 }
 
-// Provider-specific metadata
 export interface ProviderMetadata {
   readonly lifi?: {
     readonly integrator: string | null;
@@ -135,17 +113,14 @@ export interface ProviderMetadata {
   readonly [key: string]: unknown; // Allow for future providers
 }
 
-// Risk assessment levels
 export type RiskLevel = 'LOW' | 'MEDIUM' | 'HIGH' | null;
 
-// Risk assessment
 export interface RiskFactors {
   readonly slippageRisk: RiskLevel;
   readonly executionRisk: RiskLevel;
   readonly liquidityRisk: RiskLevel;
 }
 
-// Route-specific types
 export interface Route {
   // Universal route identifiers
   readonly id: string; // Route/Quote ID from provider or generated
@@ -213,5 +188,16 @@ export interface RouteStep {
   readonly metadata?: Record<string, unknown>;
 }
 
-// Typed response for routes endpoint
-export type RoutesResponse = ApiResponse<readonly Route[]>;
+export interface RoutesRequestParams {
+  readonly fromChainId: number;
+  readonly toChainId: number;
+  readonly fromTokenAddress: string;
+  readonly toTokenAddress: string;
+  readonly amount: string;
+  readonly fromAddress: string;
+  readonly toAddress?: string;
+  readonly slippage?: number;
+  readonly preferences?: RoutePreferences;
+}
+
+export type RoutesResponse = readonly Route[];

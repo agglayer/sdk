@@ -5,7 +5,7 @@
  */
 
 import { LxlyClient } from '@/lxly';
-import type { SDKConfig } from '@/types';
+import { SDK_MODES, type SDKConfig } from '@/types';
 import { CoreClient } from '@/core';
 import { DEFAULT_NETWORK } from './constants';
 
@@ -14,17 +14,41 @@ export type * from './types';
 
 export class AggLayerSDK {
   private config: SDKConfig;
-  public core: CoreClient;
-  public lxly?: LxlyClient;
+
+  private core?: CoreClient;
+  private lxly?: LxlyClient;
 
   constructor(config: SDKConfig) {
     this.config = config;
 
-    // Initialize core module (always required)
-    this.core = new CoreClient(config);
+    /**
+     * by default only core is enabled
+     * if mode is not provided, only core is enabled
+     * if mode is provided, only the modules in the mode are enabled
+     * if mode is provided and core is not in the mode, core is not enabled
+     * if mode is provided and lxly is not in the mode, lxly is not enabled
+     * if mode is provided and core and lxly are in the mode, both are enabled
+     * if mode is provided and core and lxly are not in the mode, default to core only
+     */
+
+    if (!config.mode || (config.mode && config.mode.length === 0)) {
+      this.config.mode = ['CORE'];
+    }
+
+    if (config.mode.includes(SDK_MODES.CORE)) {
+      if (!this.config.core) {
+        throw new Error('Core config is required');
+      }
+
+      this.core = new CoreClient(this.config.core);
+    }
 
     // Initialize lxly submodule if enabled
-    if (this.config.mode?.includes('LXLY')) {
+    if (this.config.mode?.includes(SDK_MODES.LXLY)) {
+      if (!this.config.lxly) {
+        throw new Error('LXLY config is required');
+      }
+
       const lxlyConfig = {
         defaultNetwork: this.config.lxly?.defaultNetwork || DEFAULT_NETWORK,
         ...(this.config.lxly?.chains && { chains: this.config.lxly.chains }),
@@ -35,6 +59,16 @@ export class AggLayerSDK {
 
       this.lxly = new LxlyClient(lxlyConfig);
     }
+  }
+
+  /**
+   * Get core submodule
+   */
+  getCore(): CoreClient {
+    if (!this.core) {
+      throw new Error('Core module not initialized. Add "core" to mode array.');
+    }
+    return this.core;
   }
 
   /**

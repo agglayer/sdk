@@ -4,8 +4,7 @@
  * Defines the core request and response types for the chains endpoint.
  */
 
-import { ApiResponse } from './_arcApiBase';
-import { TokenReference } from './_arcApiTokens';
+import { TokenInfo } from './_arcApiTokens';
 
 export interface IChain {
   key: string;
@@ -22,20 +21,18 @@ export interface IChain {
   networkId?: number; // only applicable for "agglayer" chains
   bridgeAddress?: string; // only applicable for "agglayer" chains
   supportedRoutes: string[]; // "lifi", "agglayer";
-  toTokens: Array<{
-    [tokenAddress: string]: TokenReference[];
-  }>;
+  fromTokens?: TokenInfo[];
+  toTokens?: TokenInfo[];
 }
 
-// Query parameters for the chains endpoint
 export type ChainsQueryParams = {
+  readonly withSupportedTokens?: boolean;
   readonly chainIds?: readonly number[];
   readonly limit?: number;
   readonly startAfter?: number;
 };
 
-// Response for the chains endpoint
-export type ChainsResponse = ApiResponse<{
+export type ChainsResponse = {
   readonly chains: IChain[];
   readonly nextStartAfter?: number;
-}>;
+};
