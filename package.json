@@ -1,24 +1,36 @@
 {
-  "name": "agglayer-sdk",
-  "version": "1.0.0",
-  "description": "",
+  "name": "@agglayer/sdk",
+  "version": "0.1.0-alpha.1",
+  "private": true,
+  "description": "AggLayer SDK for ARC API and blockchain interactions",
   "keywords": [
-    "agglayer"
+    "agglayer",
+    "sdk",
+    "blockchain",
+    "bridge",
+    "lxly"
   ],
   "license": "ISC",
-  "author": "ankitboghra",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/agglayer/sdk.git"
+  },
+  "bugs": {
+    "url": "https://github.com/agglayer/sdk/issues"
+  },
+  "homepage": "https://github.com/agglayer/sdk#readme",
   "type": "commonjs",
   "types": "./dist/index.d.ts",
   "files": [
     "dist"
   ],
-  "main": "./dist/index.cjs",
+  "main": "./dist/index.js",
   "module": "./dist/index.mjs",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.mjs",
-      "require": "./dist/index.cjs"
+      "require": "./dist/index.js"
     }
   },
   "scripts": {
