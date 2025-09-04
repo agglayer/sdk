@@ -27,8 +27,8 @@ export interface BridgeEventInfo {
 export interface MerkleProof {
   merkle_proof: string[];
   rollup_merkle_proof?: string[];
-  exit_root_num?: string; // Match lxly.js interface
-  l2_exit_root_num?: string; // Match lxly.js interface
+  exit_root_num?: string; // Match native.js interface
+  l2_exit_root_num?: string; // Match native.js interface
   main_exit_root: string;
   rollup_exit_root: string;
 }
@@ -229,7 +229,7 @@ export class BridgeUtil {
     indexLocal: number,
     sourceNetworkId: number
   ): bigint {
-    const MAINNET_FLAG = BigInt(2 ** 64); // Match lxly.js implementation
+    const MAINNET_FLAG = BigInt(2 ** 64); // Match native.js implementation
 
     if (BigInt(sourceNetworkId) === BigInt(0)) {
       return BigInt(indexLocal) + MAINNET_FLAG;

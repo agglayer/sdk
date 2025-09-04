@@ -15,7 +15,7 @@ export default defineConfig({
     alias: {
       '@': resolve(__dirname, './src'),
       '@/core': resolve(__dirname, './src/core'),
-      '@/lxly': resolve(__dirname, './src/lxly'),
+      '@/native': resolve(__dirname, './src/native'),
     },
   },
 });

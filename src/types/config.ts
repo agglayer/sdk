@@ -4,16 +4,16 @@
 
 export const SDK_MODES = {
   CORE: 'CORE',
-  LXLY: 'LXLY',
+  NATIVE: 'NATIVE',
 } as const;
 
 export type SDKMode = (typeof SDK_MODES)[keyof typeof SDK_MODES];
 
 import type { CoreConfig } from './core';
-import type { LxlyConfig } from './native';
+import type { NativeConfig } from './native';
 
 export interface SDKConfig {
   mode: SDKMode[];
   core: CoreConfig;
-  lxly: LxlyConfig;
+  native: NativeConfig;
 }

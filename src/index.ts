@@ -4,7 +4,7 @@
  * Main SDK that orchestrates different submodules
  */
 
-import { LxlyClient } from '@/lxly';
+import { NativeClient } from '@/native';
 import { SDK_MODES, type SDKConfig } from '@/types';
 import { CoreClient } from '@/core';
 import { DEFAULT_NETWORK } from './constants';
@@ -12,11 +12,14 @@ import { DEFAULT_NETWORK } from './constants';
 // Re-export all types from centralized location
 export type * from './types';
 
+// Re-export constants and values
+export { SDK_MODES } from './types';
+
 export class AggLayerSDK {
   private config: SDKConfig;
 
   private core?: CoreClient;
-  private lxly?: LxlyClient;
+  private native?: NativeClient;
 
   constructor(config: SDKConfig) {
     this.config = config;
@@ -26,9 +29,9 @@ export class AggLayerSDK {
      * if mode is not provided, only core is enabled
      * if mode is provided, only the modules in the mode are enabled
      * if mode is provided and core is not in the mode, core is not enabled
-     * if mode is provided and lxly is not in the mode, lxly is not enabled
-     * if mode is provided and core and lxly are in the mode, both are enabled
-     * if mode is provided and core and lxly are not in the mode, default to core only
+     * if mode is provided and native is not in the mode, native is not enabled
+     * if mode is provided and core and native are in the mode, both are enabled
+     * if mode is provided and core and native are not in the mode, default to core only
      */
 
     if (!config.mode || (config.mode && config.mode.length === 0)) {
@@ -43,21 +46,23 @@ export class AggLayerSDK {
       this.core = new CoreClient(this.config.core);
     }
 
-    // Initialize lxly submodule if enabled
-    if (this.config.mode?.includes(SDK_MODES.LXLY)) {
-      if (!this.config.lxly) {
-        throw new Error('LXLY config is required');
+    // Initialize native submodule if enabled
+    if (this.config.mode?.includes(SDK_MODES.NATIVE)) {
+      if (!this.config.native) {
+        throw new Error('NATIVE config is required');
       }
 
-      const lxlyConfig = {
-        defaultNetwork: this.config.lxly?.defaultNetwork || DEFAULT_NETWORK,
-        ...(this.config.lxly?.chains && { chains: this.config.lxly.chains }),
-        ...(this.config.lxly?.customRpcUrls && {
-          customRpcUrls: this.config.lxly.customRpcUrls,
+      const nativeConfig = {
+        defaultNetwork: this.config.native?.defaultNetwork || DEFAULT_NETWORK,
+        ...(this.config.native?.chains && {
+          chains: this.config.native.chains,
+        }),
+        ...(this.config.native?.customRpcUrls && {
+          customRpcUrls: this.config.native.customRpcUrls,
         }),
       };
 
-      this.lxly = new LxlyClient(lxlyConfig);
+      this.native = new NativeClient(nativeConfig);
     }
   }
 
@@ -72,12 +77,14 @@ export class AggLayerSDK {
   }
 
   /**
-   * Get lxly submodule
+   * Get native submodule
    */
-  getLxly(): LxlyClient {
-    if (!this.lxly) {
-      throw new Error('LXLY module not initialized. Add "lxly" to mode array.');
+  getNative(): NativeClient {
+    if (!this.native) {
+      throw new Error(
+        'NATIVE module not initialized. Add "native" to mode array.'
+      );
     }
-    return this.lxly;
+    return this.native;
   }
 }

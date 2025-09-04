@@ -46,8 +46,8 @@ npm install
 import { AggLayerSDK } from 'agglayer-sdk';
 
 const sdk = new AggLayerSDK({
-  mode: ['lxly'],
-  lxly: {
+  mode: ['native'],
+  native: {
     defaultNetwork: 11155111,
     chains: [
       {
@@ -68,11 +68,11 @@ const sdk = new AggLayerSDK({
 ### Read Operation - Get Token Balance
 
 ```typescript
-// Get LXLY client
-const lxly = sdk.getLxly();
+// Get Native client
+const native = sdk.getNative();
 
 // Create ERC20 instance
-const erc20 = lxly.erc20(
+const erc20 = native.erc20(
   '0x1234567890123456789012345678901234567890',
   11155111
 );
@@ -88,7 +88,7 @@ console.log('Balance:', balance); // Returns balance in wei as string
 
 ```typescript
 // Create ERC20 instance
-const erc20 = lxly.erc20(
+const erc20 = native.erc20(
   '0x1234567890123456789012345678901234567890',
   11155111
 );

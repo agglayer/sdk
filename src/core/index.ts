@@ -43,6 +43,7 @@ export class CoreClient {
    * Get all chains metadata from AggLayer API
    */
   async getAllChains(): Promise<ChainsResponse> {
+    // todo: user should get all data, handle pagination here, once backend adds pagination
     const response = await this.arcApiService.chains();
     if (response.data.status === 'success') {
       return response.data.data;
@@ -55,6 +56,7 @@ export class CoreClient {
    * @param ids - the ids of the chains to get metadata for
    */
   async getChainMetadataByChainIds(ids: number[]): Promise<ChainsResponse> {
+    // todo: user should get all data, handle pagination here, once backend adds pagination
     const response = await this.arcApiService.chains({ chainIds: ids });
     if (response.data.status === 'success') {
       return response.data.data;

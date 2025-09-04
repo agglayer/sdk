@@ -29,7 +29,7 @@
     "paths": {
       "@/": ["."],
       "@/core": ["core"],
-      "@/lxly": ["lxly"],
+      "@/native": ["native"],
       "@/types": ["types"]
     }
   },

@@ -1,5 +1,5 @@
 /**
- * LXLY Submodule
+ * Native Submodule
  *
  * ERC20 token operations and bridge functionality
  */
@@ -9,18 +9,18 @@ import { ERC20 } from './tokens/erc20';
 import { Bridge } from './bridge/bridge';
 import { createPublicClient, http, type Address } from 'viem';
 import { ValidationUtils } from './utils';
-import type { LxlyConfig } from '@/types';
+import type { NativeConfig } from '@/types';
 import { DEFAULT_NETWORK } from '../constants';
 
 export { ERC20 } from './tokens/erc20';
 export { Bridge } from './bridge/bridge';
 export { BridgeUtil } from './bridge/util';
 
-export class LxlyClient {
-  private config: LxlyConfig;
+export class NativeClient {
+  private config: NativeConfig;
   private defaultNetwork: number;
 
-  constructor(config: LxlyConfig) {
+  constructor(config: NativeConfig) {
     this.config = config;
     this.defaultNetwork = this.config.defaultNetwork || DEFAULT_NETWORK;
 
