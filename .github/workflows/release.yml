@@ -15,7 +15,7 @@ on:
       branch:
         description: 'Branch to release from'
         required: false
-        default: 'develop'
+        default: 'main'
       force:
         description: 'Force release even if version exists'
         required: false
@@ -162,8 +162,13 @@ jobs:
                   echo "RELEASE_NOTES=⚡ Alpha release - early access features" >> $GITHUB_ENV
                   ;;
           esac
-
+                  
           echo "✅ Release environment set: $RELEASE_TYPE"
+
+      - name: Configure Git
+        run: |
+          git config --global user.email "semantic-release-bot@users.noreply.github.com"
+          git config --global user.name "Semantic Release Bot"
 
       - name: Generate Changelog
         run: |

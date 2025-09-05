@@ -1,8 +1,10 @@
 {
   "name": "@agglayer/sdk",
   "version": "0.1.0-alpha.1",
-  "private": true,
   "description": "AggLayer SDK for ARC API and blockchain interactions",
+  "publishConfig": {
+    "access": "restricted"
+  },
   "keywords": [
     "agglayer",
     "sdk",
