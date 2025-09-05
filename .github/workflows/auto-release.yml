@@ -1,0 +1,121 @@
+name: Auto Release
+on:
+  push:
+    branches:
+      - develop # Only develop branch for auto-prerelease
+  pull_request:
+    branches:
+      - main
+      - develop
+
+jobs:
+  # Run tests on PRs and pushes
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v1
+
+      - name: Install Dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Run Quality Checks
+        run: |
+          bun run typecheck
+          bun run lint
+          bun run format:check
+
+      - name: Build Packages
+        run: bun run build
+
+      - name: Run Tests
+        run: bun run test:run
+
+  # NO AUTO-RELEASE for stable versions - manual trigger only
+  # This job is disabled to prevent automatic stable releases
+  # auto-release:
+  #     if: false  # Disabled - stable releases are manual only
+
+  # Auto-prerelease on develop branch (NO STABLE RELEASES)
+  auto-prerelease:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/develop'
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/create-github-app-token@v1
+        id: app-token
+        with:
+          app-id: ${{ secrets.SEMANTIC_RELEASE_BOT_APP_ID }}
+          private-key: ${{ secrets.SEMANTIC_RELEASE_BOT_APP_PRIVATE_KEY }}
+
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ steps.app-token.outputs.token }}
+
+      - uses: oven-sh/setup-bun@v1
+
+      - name: Install Dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Build Packages
+        run: bun run build
+
+      - name: Run Tests
+        run: bun run test:run
+
+      - name: Generate Changelog
+        run: |
+          echo "📝 Generating changelog from conventional commits..."
+          npm run changelog
+
+          # Check if changelog was updated
+          if git diff --quiet CHANGELOG.md; then
+              echo "ℹ️  No new changes to add to changelog"
+          else
+              echo "✅ Changelog updated with new changes"
+              git add CHANGELOG.md
+              git commit -m "docs: update changelog for beta release"
+          fi
+
+      - name: Auto Prerelease to Beta (NO STABLE)
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          git config --global user.email "semantic-release-bot@users.noreply.github.com"
+          git config --global user.name "Semantic Release Bot"
+
+          echo "//registry.npmjs.org/:_authToken=${NPM_TOKEN}" > ~/.npmrc
+
+          echo "🧪 Auto-prereleasing to beta channel from develop branch..."
+          echo "⚠️  This is NOT a stable release - only prerelease versions"
+          echo "📦 Creating beta prerelease with GitHub tag"
+
+          # Bump version to prerelease
+          npm version prerelease --preid=beta
+
+          # Publish to NPM with beta tag
+          npm publish --tag beta
+
+          # Create GitHub release with changelog
+          CURRENT_VERSION=$(node -p "require('./package.json').version")
+
+          # Generate release notes from changelog
+          if [[ -f "CHANGELOG.md" ]]; then
+              # Extract the latest version section from changelog (handles both formats)
+              RELEASE_NOTES=$(awk '/^# [0-9]/{if(flag) exit; flag=1} flag' CHANGELOG.md | sed '1d' | sed '/^# [0-9]/,$d' | head -20)
+              if [[ -z "$RELEASE_NOTES" ]]; then
+                  RELEASE_NOTES="🧪 Beta release - testing phase"
+              fi
+          else
+              RELEASE_NOTES="🧪 Beta release - testing phase"
+          fi
+
+          gh release create "v$CURRENT_VERSION" \
+            --title "Beta Release v$CURRENT_VERSION" \
+            --notes "$RELEASE_NOTES" \
+            --prerelease
+
+          echo "✅ Beta prerelease completed with GitHub tag"

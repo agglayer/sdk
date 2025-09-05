@@ -1,0 +1,201 @@
+name: Tag Release
+on:
+  push:
+    tags:
+      - 'v*' # Triggers on version tags like v1.0.0, v1.0.0-beta.1, etc.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Git tag to release (e.g., v1.0.0)'
+        required: true
+        type: string
+      channel:
+        description: 'NPM dist-tag channel'
+        required: true
+        default: 'latest'
+        type: choice
+        options:
+          - latest
+          - beta
+          - alpha
+          - dev
+
+jobs:
+  tag-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate Tag Release
+        run: |
+          echo "🔍 Validating tag-based release..."
+
+          # Get tag name
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+              TAG_NAME="${{ github.event.inputs.tag }}"
+              CHANNEL="${{ github.event.inputs.channel }}"
+          else
+              TAG_NAME="${GITHUB_REF#refs/tags/}"
+              CHANNEL="latest"  # Default for tag pushes
+          fi
+
+          echo "🏷️  Tag: $TAG_NAME"
+          echo "📦 Channel: $CHANNEL"
+
+          # Validate tag format
+          if [[ ! $TAG_NAME =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.-]+)?$ ]]; then
+              echo "❌ Error: Invalid tag format. Use semantic versioning (e.g., v1.0.0, v1.0.0-beta.1)"
+              exit 1
+          fi
+
+          # Validate channel for stable releases
+          if [[ $TAG_NAME =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] && [[ $CHANNEL != "latest" ]]; then
+              echo "❌ Error: Stable version tags (v1.0.0) must use 'latest' channel"
+              exit 1
+          fi
+
+          echo "✅ Tag validation passed"
+
+      - uses: actions/create-github-app-token@v1
+        id: app-token
+        with:
+          app-id: ${{ secrets.SEMANTIC_RELEASE_BOT_APP_ID }}
+          private-key: ${{ secrets.SEMANTIC_RELEASE_BOT_APP_PRIVATE_KEY }}
+
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ steps.app-token.outputs.token }}
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - uses: oven-sh/setup-bun@v1
+
+      - name: Install Dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Run Quality Checks
+        run: |
+          echo "🔍 Running quality checks..."
+          bun run typecheck
+          bun run lint
+          bun run format:check
+          echo "✅ Quality checks passed"
+
+      - name: Build Packages
+        run: |
+          echo "🏗️ Building packages..."
+          bun run build
+          echo "✅ Packages built successfully"
+
+      - name: Run Tests
+        run: |
+          echo "🧪 Running tests..."
+          bun run test:run
+          echo "✅ All tests passed"
+
+      - name: Check Tag Exists
+        run: |
+          TAG_NAME="${{ github.event.inputs.tag || github.ref_name }}"
+          echo "🔍 Checking if tag $TAG_NAME exists..."
+
+          if git tag -l | grep -q "^$TAG_NAME$"; then
+              echo "✅ Tag $TAG_NAME exists"
+          else
+              echo "❌ Error: Tag $TAG_NAME does not exist"
+              exit 1
+          fi
+
+      - name: Generate Changelog
+        run: |
+          echo "📝 Generating changelog from conventional commits..."
+          npm run changelog
+
+          # Check if changelog was updated
+          if git diff --quiet CHANGELOG.md; then
+              echo "ℹ️  No new changes to add to changelog"
+          else
+              echo "✅ Changelog updated with new changes"
+              git add CHANGELOG.md
+              git commit -m "docs: update changelog for tag release"
+          fi
+
+      - name: Publish from Tag
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          # Configure git
+          git config --global user.email "semantic-release-bot@users.noreply.github.com"
+          git config --global user.name "Semantic Release Bot"
+
+          # Configure npm
+          echo "//registry.npmjs.org/:_authToken=${NPM_TOKEN}" > ~/.npmrc
+
+          # Get tag and channel
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+              TAG_NAME="${{ github.event.inputs.tag }}"
+              CHANNEL="${{ github.event.inputs.channel }}"
+          else
+              TAG_NAME="${GITHUB_REF#refs/tags/}"
+              CHANNEL="latest"
+          fi
+
+          echo "🚀 Publishing from tag: $TAG_NAME to channel: $CHANNEL"
+
+          # Publish to NPM with specified tag
+          npm publish --tag $CHANNEL
+
+          # Create GitHub release with changelog
+          echo "📝 Creating GitHub release..."
+
+          # Generate release notes from changelog
+          if [[ -f "CHANGELOG.md" ]]; then
+              # Extract the latest version section from changelog (handles both formats)
+              RELEASE_NOTES=$(awk '/^# [0-9]/{if(flag) exit; flag=1} flag' CHANGELOG.md | sed '1d' | sed '/^# [0-9]/,$d' | head -20)
+              if [[ -z "$RELEASE_NOTES" ]]; then
+                  RELEASE_NOTES="🚀 Release from tag $TAG_NAME"
+              fi
+          else
+              RELEASE_NOTES="🚀 Release from tag $TAG_NAME"
+          fi
+
+          gh release create "$TAG_NAME" \
+            --title "Release $TAG_NAME" \
+            --notes "$RELEASE_NOTES"
+
+          echo "✅ Package published successfully"
+
+      - name: Verify Release
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+              CHANNEL="${{ github.event.inputs.channel }}"
+          else
+              CHANNEL="latest"
+          fi
+
+          echo "🔍 Verifying release..."
+          sleep 30
+
+          if npm view @agglayer/sdk@$CHANNEL 2>/dev/null; then
+              echo "✅ Package successfully published to $CHANNEL channel"
+              echo "🔗 Install with: npm install @agglayer/sdk@$CHANNEL"
+          else
+              echo "❌ Error: Package verification failed"
+              exit 1
+          fi
+
+      - name: Create Release Summary
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+              TAG_NAME="${{ github.event.inputs.tag }}"
+              CHANNEL="${{ github.event.inputs.channel }}"
+          else
+              TAG_NAME="${GITHUB_REF#refs/tags/}"
+              CHANNEL="latest"
+          fi
+
+          echo "📋 Tag Release Summary"
+          echo "====================="
+          echo "Tag: $TAG_NAME"
+          echo "Channel: $CHANNEL"
+          echo "Trigger: ${{ github.event_name }}"
+          echo "====================="
+          echo "🎉 Tag-based release completed successfully!"
