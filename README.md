@@ -33,11 +33,12 @@ const sdk = new AggLayerSDK();
 
 ## 📋 Release Channels
 
-| Channel  | Description                        | Stability           | Usage                             |
-| -------- | ---------------------------------- | ------------------- | --------------------------------- |
-| `latest` | Stable releases from `main` branch | ✅ Production Ready | `npm install @agglayer/sdk`       |
-| `beta`   | Prereleases from `develop` branch  | ⚠️ Testing          | `npm install @agglayer/sdk@beta`  |
-| `alpha`  | Early development releases         | 🚧 Experimental     | `npm install @agglayer/sdk@alpha` |
+| Channel  | Description                      | Stability           | Usage                             |
+| -------- | -------------------------------- | ------------------- | --------------------------------- |
+| `latest` | Stable releases (v1.0.0, v2.0.0) | ✅ Production Ready | `npm install @agglayer/sdk`       |
+| `beta`   | Beta releases (v1.0.0-beta.1)    | ⚠️ Testing          | `npm install @agglayer/sdk@beta`  |
+| `alpha`  | Alpha releases (v1.0.0-alpha.1)  | 🚧 Experimental     | `npm install @agglayer/sdk@alpha` |
+| `dev`    | Development releases             | 🔧 Development      | `npm install @agglayer/sdk@dev`   |
 
 ## 🏗️ Architecture
 
@@ -210,6 +211,31 @@ const nativeOnlySdk = new AggLayerSDK({
   },
 });
 ```
+
+## 🚀 Release Process
+
+The SDK uses a tag-based release workflow for all releases:
+
+### **Tag-Based Releases**
+
+```bash
+# Create and push a tag to trigger release
+git tag v1.0.0-beta.1
+git push origin v1.0.0-beta.1
+```
+
+### **Manual Releases**
+
+1. Go to GitHub Actions → "Tag Release"
+2. Choose release type and channel
+3. Click "Run workflow"
+
+### **Release Types**
+
+- **Stable**: `v1.0.0` → `latest` channel
+- **Beta**: `v1.0.0-beta.1` → `beta` channel
+- **Alpha**: `v1.0.0-alpha.1` → `alpha` channel
+- **Dev**: `v1.0.0-dev.1` → `dev` channel
 
 ## 🔧 Development
 
