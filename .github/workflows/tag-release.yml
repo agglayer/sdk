@@ -127,8 +127,7 @@ jobs:
               echo "ℹ️  No new changes to add to changelog"
           else
               echo "✅ Changelog updated with new changes"
-              git add CHANGELOG.md
-              git commit -m "docs: update changelog for tag release"
+              echo "📝 Changelog will be committed in the publish step"
           fi
 
       - name: Publish from Tag
@@ -163,17 +162,37 @@ jobs:
 
           echo "🚀 Publishing from tag: $TAG_NAME to channel: $CHANNEL"
 
+          # Determine target branch based on release type
+          if [[ $TAG_NAME =~ -beta\. ]] || [[ $TAG_NAME =~ -alpha\. ]] || [[ $TAG_NAME =~ -dev\. ]]; then
+              TARGET_BRANCH="develop"
+              echo "🌿 Beta/Alpha/Dev release detected, using develop branch"
+          else
+              TARGET_BRANCH="main"
+              echo "🌿 Stable release detected, using main branch"
+          fi
+
+          echo "🌿 Checking out $TARGET_BRANCH branch"
+          git checkout $TARGET_BRANCH
+
           # Update package.json version to match tag (remove 'v' prefix)
           VERSION=${TAG_NAME#v}
           echo "📝 Updating package.json version to: $VERSION"
           npm version $VERSION --no-git-tag-version
 
           # Commit the version change
+          echo "📝 Committing package.json version change"
           git add package.json
           git commit -m "chore: bump version to $VERSION" --no-verify
 
-          # Push the version commit back to the repository
-          git push origin HEAD
+          # Commit changelog changes if any
+          if ! git diff --quiet CHANGELOG.md; then
+              echo "📝 Committing changelog changes"
+              git add CHANGELOG.md
+              git commit -m "docs: update changelog for $TAG_NAME" --no-verify
+          fi
+
+          # Push changes directly to target branch
+          git push origin $TARGET_BRANCH
 
           # Publish to NPM with specified tag
           npm publish --tag $CHANNEL
