@@ -34,7 +34,16 @@ jobs:
               CHANNEL="${{ github.event.inputs.channel }}"
           else
               TAG_NAME="${GITHUB_REF#refs/tags/}"
-              CHANNEL="latest"  # Default for tag pushes
+              # Auto-detect channel based on tag format
+              if [[ $TAG_NAME =~ -beta\. ]]; then
+                  CHANNEL="beta"
+              elif [[ $TAG_NAME =~ -alpha\. ]]; then
+                  CHANNEL="alpha"
+              elif [[ $TAG_NAME =~ -dev\. ]]; then
+                  CHANNEL="dev"
+              else
+                  CHANNEL="latest"
+              fi
           fi
 
           echo "🏷️  Tag: $TAG_NAME"
@@ -140,10 +149,31 @@ jobs:
               CHANNEL="${{ github.event.inputs.channel }}"
           else
               TAG_NAME="${GITHUB_REF#refs/tags/}"
-              CHANNEL="latest"
+              # Auto-detect channel based on tag format
+              if [[ $TAG_NAME =~ -beta\. ]]; then
+                  CHANNEL="beta"
+              elif [[ $TAG_NAME =~ -alpha\. ]]; then
+                  CHANNEL="alpha"
+              elif [[ $TAG_NAME =~ -dev\. ]]; then
+                  CHANNEL="dev"
+              else
+                  CHANNEL="latest"
+              fi
           fi
 
           echo "🚀 Publishing from tag: $TAG_NAME to channel: $CHANNEL"
+
+          # Update package.json version to match tag (remove 'v' prefix)
+          VERSION=${TAG_NAME#v}
+          echo "📝 Updating package.json version to: $VERSION"
+          npm version $VERSION --no-git-tag-version
+
+          # Commit the version change
+          git add package.json
+          git commit -m "chore: bump version to $VERSION" --no-verify
+
+          # Push the version commit back to the repository
+          git push origin HEAD
 
           # Publish to NPM with specified tag
           npm publish --tag $CHANNEL
@@ -173,7 +203,17 @@ jobs:
           if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
               CHANNEL="${{ github.event.inputs.channel }}"
           else
-              CHANNEL="latest"
+              TAG_NAME="${GITHUB_REF#refs/tags/}"
+              # Auto-detect channel based on tag format
+              if [[ $TAG_NAME =~ -beta\. ]]; then
+                  CHANNEL="beta"
+              elif [[ $TAG_NAME =~ -alpha\. ]]; then
+                  CHANNEL="alpha"
+              elif [[ $TAG_NAME =~ -dev\. ]]; then
+                  CHANNEL="dev"
+              else
+                  CHANNEL="latest"
+              fi
           fi
 
           echo "🔍 Verifying release..."
@@ -194,7 +234,16 @@ jobs:
               CHANNEL="${{ github.event.inputs.channel }}"
           else
               TAG_NAME="${GITHUB_REF#refs/tags/}"
-              CHANNEL="latest"
+              # Auto-detect channel based on tag format
+              if [[ $TAG_NAME =~ -beta\. ]]; then
+                  CHANNEL="beta"
+              elif [[ $TAG_NAME =~ -alpha\. ]]; then
+                  CHANNEL="alpha"
+              elif [[ $TAG_NAME =~ -dev\. ]]; then
+                  CHANNEL="dev"
+              else
+                  CHANNEL="latest"
+              fi
           fi
 
           echo "📋 Tag Release Summary"
