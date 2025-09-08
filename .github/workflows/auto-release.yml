@@ -99,7 +99,7 @@ jobs:
           echo "📦 Creating beta prerelease with GitHub tag"
 
           # Bump version to prerelease
-          npm version prerelease --preid=beta
+          npm version prerelease --preid=beta --no-verify
 
           # Publish to NPM with beta tag
           npm publish --tag beta
