@@ -81,7 +81,7 @@ jobs:
           else
               echo "✅ Changelog updated with new changes"
               git add CHANGELOG.md
-              git commit -m "docs: update changelog for beta release"
+              git commit -m "docs: update changelog for beta release" --no-verify
           fi
 
       - name: Auto Prerelease to Beta (NO STABLE)
