@@ -1,4 +1,6 @@
-# 0.1.0-beta.0 (2025-09-05)
+# [0.1.0-beta.2](https://github.com/agglayer/sdk/compare/v0.1.0-beta.0...v0.1.0-beta.2) (2025-09-08)
+
+# [0.1.0-beta.0](https://github.com/agglayer/sdk/compare/d7261c49cac801e0482747d0b68214f845a82a3e...v0.1.0-beta.0) (2025-09-05)
 
 ### Bug Fixes
 
