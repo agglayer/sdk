@@ -101,6 +101,10 @@ jobs:
           # Bump version to prerelease
           npm version prerelease --preid=beta --no-verify
 
+          # Push version commit and tag to remote
+          git push origin HEAD
+          git push origin --tags
+
           # Publish to NPM with beta tag
           npm publish --tag beta
 
