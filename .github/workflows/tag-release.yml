@@ -23,6 +23,9 @@ on:
 jobs:
   tag-release:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
     steps:
       - name: Set Tag and Channel Variables
         id: vars
