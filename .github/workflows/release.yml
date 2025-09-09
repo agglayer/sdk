@@ -1,0 +1,229 @@
+name: Release Packages
+on:
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: 'NPM dist-tag channel to publish to'
+        required: true
+        default: 'dev'
+        type: choice
+        options:
+          - dev
+          - alpha
+          - beta
+          - latest
+      branch:
+        description: 'Branch to release from'
+        required: false
+        default: 'main'
+      force:
+        description: 'Force release even if version exists'
+        required: false
+        default: false
+        type: boolean
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - name: Validate Inputs
+        run: |
+          echo "🔍 Validating release inputs..."
+
+          # Validate branch - only main and develop allowed
+          if [[ "${{ github.event.inputs.branch }}" != "main" && "${{ github.event.inputs.branch }}" != "develop" ]]; then
+              echo "❌ Error: Can only release from 'main' or 'develop' branches"
+              echo "Current branch: ${{ github.event.inputs.branch }}"
+              exit 1
+          fi
+
+          # Validate channel-branch combination
+          if [[ "${{ github.event.inputs.channel }}" == "latest" && "${{ github.event.inputs.branch }}" != "main" ]]; then
+              echo "❌ Error: 'latest' channel can ONLY be released from 'main' branch"
+              echo "🚫 Stable releases are restricted to main branch only"
+              exit 1
+          fi
+
+          # Validate develop branch restrictions
+          if [[ "${{ github.event.inputs.branch }}" == "develop" && "${{ github.event.inputs.channel }}" == "latest" ]]; then
+              echo "❌ Error: 'develop' branch cannot make stable releases"
+              echo "💡 Use 'alpha', 'dev', or 'beta' channels for develop branch"
+              exit 1
+          fi
+
+          echo "✅ Input validation passed"
+          echo "📦 Channel: ${{ github.event.inputs.channel }}"
+          echo "🌿 Branch: ${{ github.event.inputs.branch }}"
+          echo "💪 Force: ${{ github.event.inputs.force }}"
+
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.inputs.branch || 'main' }}
+
+      - uses: oven-sh/setup-bun@v1
+
+      - name: Install Dependencies
+        run: |
+          echo "📦 Installing dependencies..."
+          bun install --frozen-lockfile
+          echo "✅ Dependencies installed"
+
+      - name: Run Quality Checks
+        run: |
+          echo "🔍 Running quality checks..."
+
+          # Type checking
+          echo "📝 Type checking..."
+          bun run typecheck
+
+          # Linting
+          echo "🧹 Linting..."
+          bun run lint
+
+          # Format checking
+          echo "💅 Format checking..."
+          bun run format:check
+
+          echo "✅ Quality checks passed"
+
+      - name: Build Packages
+        run: |
+          echo "🏗️ Building packages..."
+          bun run build
+
+          # Verify build output
+          if [[ ! -d "dist" ]]; then
+              echo "❌ Error: Build output directory 'dist' not found"
+              exit 1
+          fi
+
+          echo "✅ Packages built successfully"
+
+      - name: Run Tests
+        run: |
+          echo "🧪 Running tests..."
+          bun run test:run
+
+          # Run coverage if available
+          if bun run test:coverage 2>/dev/null; then
+              echo "📊 Test coverage generated"
+          fi
+
+          echo "✅ All tests passed"
+
+      - name: Check Existing Version
+        if: ${{ github.event.inputs.force != 'true' }}
+        run: |
+          echo "🔍 Checking if version already exists on NPM..."
+
+          # Configure npm authentication
+          echo "//registry.npmjs.org/:_authToken=${{ secrets.NPM_TOKEN }}" > ~/.npmrc
+
+          # Get current version from package.json
+          CURRENT_VERSION=$(node -p "require('./package.json').version")
+          echo "📦 Current version: $CURRENT_VERSION"
+
+          # Check if version exists on the target channel
+          if npm view @agglayer/sdk@${{ github.event.inputs.channel }} version 2>/dev/null | grep -q "$CURRENT_VERSION"; then
+              echo "❌ Error: Version $CURRENT_VERSION already exists on ${{ github.event.inputs.channel }} channel"
+              echo "💡 Use 'force: true' to override this check"
+              exit 1
+          fi
+
+          echo "✅ Version $CURRENT_VERSION is available for release"
+
+      - name: Release Package
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          echo "🚀 Starting release process..."
+
+          # Configure npm authentication
+          echo "//registry.npmjs.org/:_authToken=${NPM_TOKEN}" > ~/.npmrc
+
+          # Set release channel
+          DIST_TAG="${{ github.event.inputs.channel }}"
+          echo "📦 Publishing to channel: $DIST_TAG"
+
+
+          # Get current version and update if needed
+          CURRENT_VERSION=$(node -p "require('./package.json').version")
+          echo "📋 Current version: $CURRENT_VERSION"
+
+          # Set release notes based on channel
+          case "$DIST_TAG" in
+              "latest")
+                  RELEASE_NOTES="🚀 Stable release"
+                  ;;
+              "beta")
+                  RELEASE_NOTES="🧪 Beta release - testing phase"
+                  ;;
+              "dev")
+                  RELEASE_NOTES="🔧 Development release - experimental features"
+                  ;;
+              "alpha")
+                  RELEASE_NOTES="⚡ Alpha release - early access features"
+                  ;;
+          esac
+
+          # Version and publish using npm
+          echo "📝 Publishing package to NPM..."
+          npm publish --tag $DIST_TAG
+
+          # Create GitHub release with changelog
+          echo "📝 Creating GitHub release..."
+
+          gh release create "v$CURRENT_VERSION" \
+            --title "Release v$CURRENT_VERSION" \
+            --notes "$RELEASE_NOTES"
+
+          echo "✅ Release completed successfully"
+
+      - name: Verify Release
+        run: |
+          echo "🔍 Verifying release..."
+
+          # Wait for NPM to process
+          echo "⏳ Waiting for NPM to process the release..."
+          sleep 30
+
+          # Get the published version
+          PUBLISHED_VERSION=$(npm view @agglayer/sdk@${{ github.event.inputs.channel }} version)
+          echo "📦 Published version: $PUBLISHED_VERSION"
+
+          # Verify package is accessible
+          if npm view @agglayer/sdk@${{ github.event.inputs.channel }} 2>/dev/null; then
+              echo "✅ Package successfully published to ${{ github.event.inputs.channel }} channel"
+              echo "🔗 Install with: npm install @agglayer/sdk@${{ github.event.inputs.channel }}"
+          else
+              echo "❌ Error: Package verification failed"
+              exit 1
+          fi
+
+      - name: Create Release Summary
+        if: always()
+        run: |
+          echo "📋 Release Summary"
+          echo "=================="
+          echo "Channel: ${{ github.event.inputs.channel }}"
+          echo "Branch: ${{ github.event.inputs.branch }}"
+          echo "Force: ${{ github.event.inputs.force }}"
+          echo "=================="
+
+          if [[ "${{ job.status }}" == "success" ]]; then
+              echo "🎉 Release completed successfully!"
+          else
+              echo "❌ Release failed. Check the logs above for details."
+          fi
+
+      - name: Rollback on Failure
+        if: failure()
+        run: |
+          echo "🔄 Release failed - cleanup may be needed"
+          echo "⚠️  Manual intervention may be required to clean up partial releases"
+          echo "📝 Check NPM registry and GitHub releases for any partial artifacts"
