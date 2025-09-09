@@ -170,19 +170,18 @@ jobs:
           git config --global user.email "semantic-release-bot@users.noreply.github.com"
           git config --global user.name "Semantic Release Bot"
 
-      - name: Generate Changelog
-        run: |
-          echo "📝 Generating changelog from conventional commits..."
-          npm run changelog
+      # - name: Generate Changelog
+      #   run: |
+      #     echo "📝 Generating changelog from conventional commits..."
+      #     npm run changelog
 
-          # Check if changelog was updated
-          if git diff --quiet CHANGELOG.md; then
-              echo "ℹ️  No new changes to add to changelog"
-          else
-              echo "✅ Changelog updated with new changes"
-              git add CHANGELOG.md
-              git commit -m "docs: update changelog for release"
-          fi
+      #     # Check if changelog was updated
+      #     if git diff --quiet CHANGELOG.md; then
+      #         echo "ℹ️  No new changes to add to changelog"
+      #     else
+      #         echo "✅ Changelog updated with new changes"
+      #         echo "📝 Changelog will be committed in the release step"
+      #     fi
 
       - name: Release Package
         env:
@@ -202,24 +201,53 @@ jobs:
           DIST_TAG="${{ github.event.inputs.channel }}"
           echo "📦 Publishing to channel: $DIST_TAG"
 
+          # Determine target branch based on channel
+          if [[ "$DIST_TAG" == "beta" ]] || [[ "$DIST_TAG" == "alpha" ]] || [[ "$DIST_TAG" == "dev" ]]; then
+              TARGET_BRANCH="develop"
+              echo "🌿 Beta/Alpha/Dev release detected, using develop branch"
+          else
+              TARGET_BRANCH="main"
+              echo "🌿 Stable release detected, using main branch"
+          fi
+
+          # Checkout target branch
+          echo "🌿 Checking out $TARGET_BRANCH branch"
+          git checkout $TARGET_BRANCH
+
+          # Get current version and update if needed
+          CURRENT_VERSION=$(node -p "require('./package.json').version")
+          echo "📋 Current version: $CURRENT_VERSION"
+
           # Version and publish using npm
           echo "📝 Publishing package to NPM..."
           npm publish --tag $DIST_TAG
+
+          # Commit changelog changes if any
+          # if ! git diff --quiet CHANGELOG.md; then
+          #     echo "📝 Committing changelog changes"
+          #     git add CHANGELOG.md
+          #     git commit -m "docs: update changelog for $DIST_TAG release" --no-verify
+          # fi
+
+          # Push changes to target branch
+          git push origin $TARGET_BRANCH
 
           # Create GitHub release with changelog
           echo "📝 Creating GitHub release..."
           CURRENT_VERSION=$(node -p "require('./package.json').version")
 
           # Generate release notes from changelog
-          if [[ -f "CHANGELOG.md" ]]; then
-              # Extract the latest version section from changelog (handles both formats)
-              RELEASE_NOTES=$(awk '/^# [0-9]/{if(flag) exit; flag=1} flag' CHANGELOG.md | sed '1d' | sed '/^# [0-9]/,$d' | head -20)
-              if [[ -z "$RELEASE_NOTES" ]]; then
-                  RELEASE_NOTES="${{ env.RELEASE_NOTES }}"
-              fi
-          else
-              RELEASE_NOTES="${{ env.RELEASE_NOTES }}"
-          fi
+          # if [[ -f "CHANGELOG.md" ]]; then
+          #     # Extract the latest version section from changelog (handles both formats)
+          #     RELEASE_NOTES=$(awk '/^# [0-9]/{if(flag) exit; flag=1} flag' CHANGELOG.md | sed '1d' | sed '/^# [0-9]/,$d' | head -20)
+          #     if [[ -z "$RELEASE_NOTES" ]]; then
+          #         RELEASE_NOTES="${{ env.RELEASE_NOTES }}"
+          #     fi
+          # else
+          #     RELEASE_NOTES="${{ env.RELEASE_NOTES }}"
+          # fi
+
+          RELEASE_NOTES="${{ env.RELEASE_NOTES }}"
 
           gh release create "v$CURRENT_VERSION" \
             --title "Release v$CURRENT_VERSION" \

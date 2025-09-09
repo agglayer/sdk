@@ -1,97 +1,89 @@
-# Release Guide
+# 🚀 Release Guide
 
-This document outlines the release process for the AggLayer SDK package.
+This document provides comprehensive instructions for releasing the AggLayer SDK package to npm and creating GitHub releases.
 
-## Branching Strategy
+## 📋 Release Channels
 
-### 🌿 **Two-Branch Model**
+| Channel  | Description                      | Stability           | Usage                             | Auto-Detected Branch | Trigger  |
+| -------- | -------------------------------- | ------------------- | --------------------------------- | -------------------- | -------- |
+| `latest` | Stable releases (v1.0.0, v2.0.0) | ✅ Production Ready | `npm install @agglayer/sdk`       | `main`               | Tag push |
+| `beta`   | Beta releases (v1.0.0-beta.1)    | ⚠️ Testing          | `npm install @agglayer/sdk@beta`  | `develop`            | Tag push |
+| `alpha`  | Alpha releases (v1.0.0-alpha.1)  | 🚧 Experimental     | `npm install @agglayer/sdk@alpha` | `develop`            | Tag push |
+| `dev`    | Development releases             | 🔧 Development      | `npm install @agglayer/sdk@dev`   | `develop`            | Tag push |
 
-- **`main`**: Production-ready code, stable releases only
-- **`develop`**: Integration branch, prerelease versions only
+## 🏷️ GitHub Tags
 
-### 🚫 **Stable Release Restrictions**
+**Primary Method**: Tag-based releases are the recommended approach for all releases.
 
-- **ONLY `main` branch** can create stable releases (`latest` channel)
-- **`develop` branch** is restricted to prerelease channels only
-- **No other branches** can create any releases
+### Tag Format
 
-## Release Channels
+- **Stable**: `v1.0.0`, `v2.1.0` (semantic versioning)
+- **Beta**: `v1.0.0-beta.1`, `v1.0.0-beta.2`
+- **Alpha**: `v1.0.0-alpha.1`, `v1.0.0-alpha.2`
+- **Dev**: `v1.0.0-dev.1`, `v1.0.0-dev.2`
 
-### 🚀 **Latest** (Stable)
+### Benefits of Tag-Based Releases
 
-- **Channel**: `latest`
-- **Branch**: `main` ONLY
-- **Usage**: `npm install @agglayer/sdk`
-- **Purpose**: Production-ready, stable releases
-- **Trigger**: Manual workflow dispatch ONLY (no auto-release)
-- **GitHub Tags**: ✅ Creates version tags (v1.0.0)
+- ✅ **Automatic channel detection** from tag format
+- ✅ **Automatic branch detection** (main for stable, develop for prereleases)
+- ✅ **Version synchronization** with package.json
+- ✅ **Repository updates** with version changes
+- ✅ **Quality checks** before release
+- ✅ **GitHub release creation** with release notes
 
-### 🧪 **Beta** (Prerelease)
+## 🔄 Release Workflows
 
-- **Channel**: `beta`
-- **Branch**: `develop` or `main`
-- **Usage**: `npm install @agglayer/sdk@beta`
-- **Purpose**: Feature-complete, testing phase
-- **Trigger**: Auto-release from develop branch or manual workflow dispatch
-- **GitHub Tags**: ✅ Creates prerelease tags (v1.0.0-beta.1)
+### 1. Tag Release (`tag-release.yml`) - **Primary Method**
 
-### 🔧 **Dev** (Development)
+**Trigger**:
 
-- **Channel**: `dev`
-- **Branch**: `develop` or `main`
-- **Usage**: `npm install @agglayer/sdk@dev`
-- **Purpose**: Development builds with experimental features
-- **Trigger**: Manual workflow dispatch only
-- **GitHub Tags**: ✅ Creates prerelease tags (v1.0.0-dev.1)
+- **Automatic**: Push a Git tag (e.g., `git push origin v1.0.0-beta.1`)
+- **Manual**: GitHub Actions → "Tag Release" → Run workflow
 
-### ⚡ **Alpha** (Early Access)
+**Smart Features**:
 
-- **Channel**: `alpha`
-- **Branch**: `develop` or `main`
-- **Usage**: `npm install @agglayer/sdk@alpha`
-- **Purpose**: Early access to cutting-edge features
-- **Trigger**: Manual workflow dispatch only
-- **GitHub Tags**: ✅ Creates prerelease tags (v1.0.0-alpha.1)
+- **Auto Channel Detection**: Detects npm dist-tag from Git tag format
+  - `v1.0.0-beta.1` → `beta` channel
+  - `v1.0.0-alpha.1` → `alpha` channel
+  - `v1.0.0-dev.1` → `dev` channel
+  - `v1.0.0` → `latest` channel
 
-## GitHub Tags
+- **Auto Branch Detection**: Detects target branch from release type
+  - Beta/Alpha/Dev tags → `develop` branch
+  - Stable tags → `main` branch
 
-### 🏷️ **Automatic Tag Creation**
+**Process**:
 
-All releases automatically create GitHub tags:
+1. ✅ Tag validation and format checking
+2. 🔍 Working directory validation
+3. 📦 Dependency installation
+4. 🔍 Quality checks (typecheck, lint, format)
+5. 🏗️ Build packages
+6. 🧪 Run tests
+7. 🔍 Tag existence verification
+8. 🌿 Checkout appropriate branch (main/develop)
+9. 📝 Update package.json version to match tag
+10. 📤 Commit and push version changes
+11. 📦 Publish to NPM with correct channel
+12. 🏷️ Create GitHub release with simple release notes
+13. ✅ Release verification
 
-- **Stable releases**: `v1.0.0`, `v1.1.0`, `v2.0.0`
-- **Prerelease versions**: `v1.0.0-beta.1`, `v1.0.0-alpha.1`, `v1.0.0-dev.1`
+### 2. Manual Release (`release.yml`) - **Alternative Method**
 
-### 📦 **Tag-Based Releases**
-
-You can also trigger releases by creating tags manually:
-
-```bash
-# Create a tag
-git tag v1.0.0
-git push origin v1.0.0
-
-# This automatically triggers the tag-release workflow
-```
-
-### 🔄 **Tag Workflow Benefits**
-
-- **Version Control**: Clear version history in GitHub
-- **Release Notes**: Automatic changelog generation
-- **Rollback**: Easy to identify and revert to specific versions
-- **CI/CD**: Triggers automated builds and deployments
-
-## Release Workflows
-
-### 1. Manual Release (`release.yml`)
-
-**Trigger**: GitHub Actions → Release Packages → Run workflow
+**Trigger**: GitHub Actions → "Release Packages" → Run workflow
 
 **Options**:
 
 - **Channel**: alpha, dev, beta, latest
 - **Branch**: main, develop (default: main)
 - **Force**: Override version existence check (default: false)
+- **Release Notes**: Custom release notes for GitHub release
+
+**Smart Features**:
+
+- **Auto Branch Detection**: Detects target branch from channel
+  - Beta/Alpha/Dev channels → `develop` branch
+  - Latest channel → `main` branch
 
 **Process**:
 
@@ -102,198 +94,171 @@ git push origin v1.0.0
 5. 🏗️ Build packages
 6. 🧪 Run tests
 7. 🔍 Version existence check (unless forced)
-8. 🚀 Release with Lerna
-9. ✅ Release verification
+8. 🌿 Checkout appropriate branch (main/develop)
+9. 📦 Publish to NPM with specified channel
+10. 📤 Push changes to repository
+11. 🏷️ Create GitHub release with custom release notes
+12. ✅ Release verification
 
-### 2. Auto Release (`auto-release.yml`)
+## 🚀 Release Process
 
-**Triggers**:
+### Tag-Based Release Steps
 
-- **Push to `develop`** → Auto-prerelease to `beta` (creates GitHub tag)
-- **Pull Requests** → Run tests only
+#### 1. **Create and Push Tag**
 
-**Note**: Stable releases (`latest` channel) are **manual only** - no auto-release from main branch
+```bash
+# For beta release
+git tag v1.0.0-beta.1
+git push origin v1.0.0-beta.1
 
-### 3. Tag Release (`tag-release.yml`)
+# For stable release
+git tag v1.0.0
+git push origin v1.0.0
+```
 
-**Triggers**:
+#### 2. **Automatic Workflow Execution**
 
-- **Push tags** → `git push origin v1.0.0`
-- **Manual dispatch** → Specify tag and channel
+- Workflow automatically detects channel from tag format
+- Workflow automatically detects target branch from release type
+- Quality checks, build, and tests run automatically
+- Package is published to correct npm channel
+- GitHub release is created with simple release notes
 
-**Options**:
+#### 3. **Verification**
 
-- **Tag**: Version tag (e.g., v1.0.0, v1.0.0-beta.1)
-- **Channel**: latest, beta, alpha, dev
-
-**Process**:
-
-1. ✅ Tag format validation
-2. 🔍 Quality checks
-3. 🏗️ Build packages
-4. 🧪 Run tests
-5. 📦 Publish from existing tag
-6. ✅ Release verification
-
-## Release Process
+- Check npm registry: `npm view @agglayer/sdk@beta`
+- Check GitHub releases page
+- Verify package installation: `npm install @agglayer/sdk@beta`
 
 ### Manual Release Steps
 
-1. **Prepare Release**
+#### 1. **Trigger Manual Release**
 
-   ```bash
-   # Ensure you're on the correct branch
-   git checkout main  # or develop
+1. Go to GitHub Actions → "Release Packages"
+2. Click "Run workflow"
+3. Fill in the required fields:
+   - **Channel**: Select appropriate channel (beta, alpha, dev, latest)
+   - **Branch**: Select target branch (auto-detected based on channel)
+   - **Force**: Check if you want to override version existence check
+   - **Release Notes**: Enter custom release notes
 
-   # Ensure working directory is clean
-   git status
+#### 2. **Workflow Execution**
 
-   # Run tests locally
-   bun run test:run
-   ```
+- Workflow runs quality checks and builds
+- Package is published to specified npm channel
+- GitHub release is created with your custom release notes
 
-2. **Trigger Release**
-   - Go to GitHub Actions
-   - Select "Release Packages" workflow
-   - Click "Run workflow"
-   - Choose channel and branch
-   - Click "Run workflow"
+#### 3. **Verification**
 
-3. **Monitor Release**
-   - Watch the workflow progress
-   - Check for any failures
-   - Verify package is published to NPM
+- Check npm registry for the published package
+- Verify GitHub release was created
+- Test package installation
 
-### Auto Release Process
+## 📦 Package Management
 
-1. **Push to Main** (Stable Release)
+### Version Bumping
 
-   ```bash
-   git push origin main
-   # Automatically triggers release to 'latest' channel
-   ```
+- **Tag Release**: Version is automatically updated to match the Git tag
+- **Manual Release**: Uses current version in package.json
 
-2. **Push to Develop** (Beta Release)
-   ```bash
-   git push origin develop
-   # Automatically triggers prerelease to 'beta' channel
-   ```
+### Repository Synchronization
 
-## Version Management
+- **Tag Release**: Commits version changes to appropriate branch (main/develop)
+- **Manual Release**: Pushes any changes to the target branch
 
-### Semantic Versioning
+### Release Notes
 
-- **Major** (1.0.0): Breaking changes
-- **Minor** (0.1.0): New features, backward compatible
-- **Patch** (0.0.1): Bug fixes, backward compatible
+- **Tag Release**: Uses simple template: `"🚀 Release from tag $TAG_NAME"`
+- **Manual Release**: Uses user-provided release notes from workflow input
 
-### Conventional Commits
+## 🔧 Development Workflow
 
-The release process uses conventional commits to determine version bumps:
+### For Beta/Alpha/Dev Releases
 
-- `feat:` → Minor version bump
-- `fix:` → Patch version bump
-- `BREAKING CHANGE:` → Major version bump
+1. Work on `develop` branch
+2. Create appropriate tag: `v1.0.0-beta.1`
+3. Push tag: `git push origin v1.0.0-beta.1`
+4. Workflow automatically publishes to `develop` branch and `beta` channel
 
-### Prerelease Versions
+### For Stable Releases
 
-- **Alpha**: `1.0.0-alpha.1`
-- **Beta**: `1.0.0-beta.1`
-- **RC**: `1.0.0-rc.1`
+1. Merge `develop` to `main` branch
+2. Create stable tag: `v1.0.0`
+3. Push tag: `git push origin v1.0.0`
+4. Workflow automatically publishes to `main` branch and `latest` channel
 
-## Quality Gates
-
-All releases must pass:
-
-1. **Type Checking**: `bun run typecheck`
-2. **Linting**: `bun run lint`
-3. **Formatting**: `bun run format:check`
-4. **Building**: `bun run build`
-5. **Testing**: `bun run test:run`
-
-## Troubleshooting
+## 🚨 Troubleshooting
 
 ### Common Issues
 
-1. **Version Already Exists**
+#### 1. **Version Already Exists**
 
-   ```
-   Error: Version 1.0.0 already exists on latest channel
-   ```
+```
+Error: You cannot publish over the previously published versions: 1.0.0-beta.1
+```
 
-   **Solution**: Use `force: true` option or bump version
+**Solution**: Use a new version number or check the `Force` option in manual release
 
-2. **Working Directory Not Clean**
+#### 2. **Tag Doesn't Exist**
 
-   ```
-   Error: Working directory is not clean
-   ```
+```
+Error: Tag v1.0.0-beta.1 does not exist
+```
 
-   **Solution**: Commit or stash changes before release
+**Solution**: Create and push the tag first:
 
-3. **Tests Failing**
+```bash
+git tag v1.0.0-beta.1
+git push origin v1.0.0-beta.1
+```
 
-   ```
-   Error: Tests failed
-   ```
+#### 3. **Quality Checks Fail**
 
-   **Solution**: Fix failing tests before release
+**Solution**: Fix the issues locally first:
 
-4. **Build Failing**
-   ```
-   Error: Build output directory 'dist' not found
-   ```
-   **Solution**: Check build configuration and dependencies
+```bash
+bun run typecheck
+bun run lint
+bun run test:run
+bun run build
+```
 
-### Rollback Process
+#### 4. **Permission Denied**
 
-If a release fails or needs to be rolled back:
+**Solution**: Ensure you have:
 
-1. **Check NPM Registry**
+- Write access to the repository
+- NPM_TOKEN secret configured
+- SEMANTIC_RELEASE_BOT_APP_ID and SEMANTIC_RELEASE_BOT_APP_PRIVATE_KEY secrets configured
 
-   ```bash
-   npm view @agglayer/sdk@latest version
-   ```
+### Verification Commands
 
-2. **Unpublish (if necessary)**
+```bash
+# Check published package
+npm view @agglayer/sdk@beta
 
-   ```bash
-   npm unpublish @agglayer/sdk@1.0.0 --force
-   ```
+# Install and test
+npm install @agglayer/sdk@beta
 
-3. **Revert Git Changes**
-   ```bash
-   git revert <commit-hash>
-   git push origin main
-   ```
+# Check GitHub releases
+gh release list
+```
 
-## Security
+## 📚 Additional Resources
 
-### Required Secrets
+- [Semantic Versioning](https://semver.org/)
+- [npm Publishing Guide](https://docs.npmjs.com/cli/v8/commands/npm-publish)
+- [GitHub Actions Documentation](https://docs.github.com/en/actions)
+- [Conventional Commits](https://www.conventionalcommits.org/)
 
-- `SEMANTIC_RELEASE_BOT_APP_ID`: GitHub App ID
-- `SEMANTIC_RELEASE_BOT_APP_PRIVATE_KEY`: GitHub App private key
-- `NPM_TOKEN`: NPM authentication token
+## 🔄 Workflow Status
 
-### Permissions
+| Workflow          | Status    | Purpose                    |
+| ----------------- | --------- | -------------------------- |
+| `tag-release.yml` | ✅ Active | Primary release method     |
+| `release.yml`     | ✅ Active | Alternative manual release |
+| `test.yml`        | ✅ Active | Quality checks and testing |
 
-- GitHub App: Repository and release permissions
-- NPM Token: Publish permissions for `@agglayer` scope
+---
 
-## Best Practices
-
-1. **Always test locally** before triggering a release
-2. **Use appropriate channels** for different release types
-3. **Follow conventional commits** for automatic versioning
-4. **Monitor release progress** and verify success
-5. **Keep release notes** updated and descriptive
-6. **Use force option sparingly** and with caution
-
-## Support
-
-For release-related issues:
-
-1. Check the GitHub Actions logs
-2. Verify NPM package status
-3. Review this documentation
-4. Contact the development team
+**Note**: Changelog generation is currently disabled in all workflows. To re-enable, uncomment the changelog-related sections in the workflow files.

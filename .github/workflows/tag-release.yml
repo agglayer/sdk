@@ -117,18 +117,18 @@ jobs:
           git config --global user.email "semantic-release-bot@users.noreply.github.com"
           git config --global user.name "Semantic Release Bot"
 
-      - name: Generate Changelog
-        run: |
-          echo "📝 Generating changelog from conventional commits..."
-          npm run changelog
+      # - name: Generate Changelog
+      #   run: |
+      #     echo "📝 Generating changelog from conventional commits..."
+      #     npm run changelog
 
-          # Check if changelog was updated
-          if git diff --quiet CHANGELOG.md; then
-              echo "ℹ️  No new changes to add to changelog"
-          else
-              echo "✅ Changelog updated with new changes"
-              echo "📝 Changelog will be committed in the publish step"
-          fi
+      #     # Check if changelog was updated
+      #     if git diff --quiet CHANGELOG.md; then
+      #         echo "ℹ️  No new changes to add to changelog"
+      #     else
+      #         echo "✅ Changelog updated with new changes"
+      #         echo "📝 Changelog will be committed in the publish step"
+      #     fi
 
       - name: Publish from Tag
         env:
@@ -185,11 +185,11 @@ jobs:
           git commit -m "chore: bump version to $VERSION" --no-verify
 
           # Commit changelog changes if any
-          if ! git diff --quiet CHANGELOG.md; then
-              echo "📝 Committing changelog changes"
-              git add CHANGELOG.md
-              git commit -m "docs: update changelog for $TAG_NAME" --no-verify
-          fi
+          # if ! git diff --quiet CHANGELOG.md; then
+          #     echo "📝 Committing changelog changes"
+          #     git add CHANGELOG.md
+          #     git commit -m "docs: update changelog for $TAG_NAME" --no-verify
+          # fi
 
           # Push changes directly to target branch
           git push origin $TARGET_BRANCH
@@ -201,15 +201,17 @@ jobs:
           echo "📝 Creating GitHub release..."
 
           # Generate release notes from changelog
-          if [[ -f "CHANGELOG.md" ]]; then
-              # Extract the latest version section from changelog (handles both formats)
-              RELEASE_NOTES=$(awk '/^# [0-9]/{if(flag) exit; flag=1} flag' CHANGELOG.md | sed '1d' | sed '/^# [0-9]/,$d' | head -20)
-              if [[ -z "$RELEASE_NOTES" ]]; then
-                  RELEASE_NOTES="🚀 Release from tag $TAG_NAME"
-              fi
-          else
-              RELEASE_NOTES="🚀 Release from tag $TAG_NAME"
-          fi
+          # if [[ -f "CHANGELOG.md" ]]; then
+          #     # Extract the latest version section from changelog (handles both formats)
+          #     RELEASE_NOTES=$(awk '/^# [0-9]/{if(flag) exit; flag=1} flag' CHANGELOG.md | sed '1d' | sed '/^# [0-9]/,$d' | head -20)
+          #     if [[ -z "$RELEASE_NOTES" ]]; then
+          #         RELEASE_NOTES="🚀 Release from tag $TAG_NAME"
+          #     fi
+          # else
+          #     RELEASE_NOTES="🚀 Release from tag $TAG_NAME"
+          # fi
+
+          RELEASE_NOTES="🚀 Release from tag $TAG_NAME"
 
           gh release create "$TAG_NAME" \
             --title "Release $TAG_NAME" \
