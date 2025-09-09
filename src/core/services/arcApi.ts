@@ -28,7 +28,7 @@ export class ArcApiService {
   async chains({
     withSupportedTokens = false,
     limit = 20,
-    startAfter = 0,
+    startAfter,
     chainIds,
   }: ChainsQueryParams = {}): Promise<Response<ApiResponse<ChainsResponse>>> {
     return this.httpClient.get('/metadata/chains', {
