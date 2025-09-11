@@ -49,7 +49,7 @@ export class ArcApiService {
     builtTransactionRequestBody: BuildTransactionRequestBody
   ): Promise<Response<ApiResponse<BuildTransactionResponse>>> {
     return this.httpClient.post(
-      '/build-transaction',
+      '/routes/build-transaction',
       builtTransactionRequestBody
     );
   }
