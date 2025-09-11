@@ -11,10 +11,10 @@ import type {
   TransactionsRequestQueryParams,
   TransactionsResponse,
   ChainsResponse,
-  BuildTransactionRequestBody,
-  BuildTransactionResponse,
+  Route,
 } from '@/types';
 import { ArcApiService } from './services/arcApi';
+import { UnsignedTransaction } from 'types/core/_arcApiUnsignedTransaction';
 
 export class CoreClient {
   private config: CoreConfig;
@@ -108,14 +108,21 @@ export class CoreClient {
   }
 
   /**
-   * Build transaction from a step object
+   * Get calldata from a route
+   * If route has transactionRequest field, return it directly as calldata
+   * Otherwise, call buildTransaction on route.steps[0] and return that as calldata
    */
-  async buildTransaction(
-    builtTransactionRequestBody: BuildTransactionRequestBody
-  ): Promise<BuildTransactionResponse> {
-    const response = await this.arcApiService.buildTransaction(
-      builtTransactionRequestBody
-    );
+  async getUnsignedTransaction(route: Route): Promise<UnsignedTransaction> {
+    if (route.transactionRequest) {
+      return route.transactionRequest;
+    }
+
+    // If no transactionRequest, call buildTransaction on first step
+    if (route.steps.length === 0 || !route.steps[0]) {
+      throw new Error('Route has no steps to build transaction from');
+    }
+
+    const response = await this.arcApiService.buildTransaction(route.steps[0]);
     if (response.data.status === 'success') {
       return response.data.data;
     }

@@ -5,6 +5,7 @@
  */
 
 import { TokenInfo, TokenReference } from './_arcApiTokens';
+import { UnsignedTransaction } from './_arcApiUnsignedTransaction';
 
 export interface RoutePreferences {
   readonly prioritize?: 'COST' | 'SPEED';
@@ -91,17 +92,6 @@ export interface Step {
   readonly relatedSteps: string[] | null;
 }
 
-// This will be used by client for transaction execution
-export interface TransactionRequest {
-  readonly to: string;
-  readonly data: string;
-  readonly value: string;
-  readonly gasLimit: string;
-  readonly gasPrice?: string;
-  readonly chainId: number;
-  readonly from?: string;
-}
-
 export interface ProviderMetadata {
   readonly lifi?: {
     readonly integrator: string | null;
@@ -163,7 +153,7 @@ export interface Route {
   readonly steps: Step[];
 
   // Ready-to-execute transaction data (for quotes)
-  readonly transactionRequest?: TransactionRequest;
+  readonly transactionRequest?: UnsignedTransaction;
 
   // Provider-specific metadata
   readonly providerMetadata: ProviderMetadata;
