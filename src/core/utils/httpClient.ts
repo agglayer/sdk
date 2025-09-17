@@ -208,11 +208,12 @@ export class HttpClient {
       }
 
       if (Array.isArray(value)) {
-        value.forEach((item, index) => {
-          if (item !== undefined && item !== null) {
-            result[`${fullKey}[${index}]`] = String(item);
-          }
-        });
+        const filteredValues = value.filter(
+          (item) => item !== undefined && item !== null
+        );
+        if (filteredValues.length > 0) {
+          result[fullKey] = filteredValues.join(',');
+        }
       } else if (typeof value === 'object') {
         Object.assign(
           result,

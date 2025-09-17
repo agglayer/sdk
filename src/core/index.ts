@@ -15,6 +15,11 @@ import type {
 } from '@/types';
 import { ArcApiService } from './services/arcApi';
 import { UnsignedTransaction } from 'types/core/_arcApiUnsignedTransaction';
+import {
+  DEFAULT_CHAINS_PER_PAGE,
+  DEFAULT_CHAINS_WITH_TOKENS_PER_PAGE,
+  MAX_TRANSACTIONS_PER_PAGE,
+} from '../constants';
 
 export class CoreClient {
   private config: CoreConfig;
@@ -40,41 +45,122 @@ export class CoreClient {
   }
 
   /**
+   * Generic pagination helper for chains API calls (limit and offset based pagination)
+   * Handles automatic pagination to fetch all available data
+   * @param params - Parameters for the chains API call
+   * @param pageSize - Number of items per page (defaults to DEFAULT_CHAINS_PER_PAGE)
+   */
+  private async getAllChainsPaginated(
+    params: {
+      chainIds?: number[];
+      withSupportedTokens?: boolean;
+      limit?: number;
+      offset?: number;
+    },
+    pageSize: number = DEFAULT_CHAINS_PER_PAGE
+  ): Promise<ChainsResponse> {
+    // First call to get initial data and check total count
+    const firstResponse = await this.arcApiService.chains({
+      ...params,
+      limit: pageSize,
+    });
+
+    if (firstResponse.data.status !== 'success') {
+      throw new Error(firstResponse.data.message);
+    }
+
+    const firstPageData = firstResponse.data.data;
+    const pagination = firstResponse.data.pagination;
+
+    // The API returns chains directly as an array in the data field
+    const firstPageChains = Array.isArray(firstPageData) ? firstPageData : [];
+
+    // If no pagination info or total is within first page, return first page data
+    if (!pagination?.total || pagination.total <= pageSize) {
+      return {
+        chains: firstPageChains,
+      };
+    }
+
+    // Calculate how many additional pages we need to fetch
+    const totalPages = Math.ceil(pagination.total / pageSize);
+    const remainingPages = totalPages - 1; // We already have the first page
+
+    if (remainingPages === 0) {
+      return {
+        chains: firstPageChains,
+      };
+    }
+
+    // Create array of promises for remaining pages (parallel calls)
+    const remainingPagePromises = Array.from(
+      { length: remainingPages },
+      (_, index) => {
+        const offset = (index + 1) * pageSize;
+        return this.arcApiService.chains({
+          ...params,
+          limit: pageSize,
+          offset,
+        });
+      }
+    );
+
+    // Execute all remaining page calls in parallel
+    const remainingResponses = await Promise.all(remainingPagePromises);
+
+    // Check for errors in any of the responses
+    for (const response of remainingResponses) {
+      if (response.data.status !== 'success') {
+        throw new Error(response.data.message);
+      }
+    }
+
+    // Combine all chain data from all pages
+    const allChains = [
+      ...firstPageChains,
+      ...remainingResponses.flatMap((response) => {
+        if (response.data.status === 'success') {
+          return Array.isArray(response.data.data) ? response.data.data : [];
+        }
+        return [];
+      }),
+    ];
+
+    // Return combined data
+    return {
+      chains: allChains,
+    };
+  }
+
+  /**
    * Get all chains metadata from AggLayer API
+   * Handles pagination automatically to fetch all available chains
    */
   async getAllChains(): Promise<ChainsResponse> {
-    // todo: user should get all data, handle pagination here, once backend adds pagination
-    const response = await this.arcApiService.chains();
-    if (response.data.status === 'success') {
-      return response.data.data;
-    }
-    throw new Error(response.data.message);
+    return this.getAllChainsPaginated({});
   }
 
   /**
    * Get chain metadata by id from AggLayer API
+   * Handles pagination automatically to fetch all available chain metadata
    * @param ids - the ids of the chains to get metadata for
    */
   async getChainMetadataByChainIds(ids: number[]): Promise<ChainsResponse> {
-    // todo: user should get all data, handle pagination here, once backend adds pagination
-    const response = await this.arcApiService.chains({ chainIds: ids });
-    if (response.data.status === 'success') {
-      return response.data.data;
-    }
-    throw new Error(response.data.message);
+    return this.getAllChainsPaginated({ chainIds: ids });
   }
 
   /**
    * Get all tokens from AggLayer API
+   *
+   * Developer Note: This method is not recommended to use frequently or from frontend.
+   * As it can be very slow and resource intensive.
+   * It is recommended to use getChainDataAndTokensByChainIds instead.
    */
-  async getTokens(): Promise<ChainsResponse> {
-    const response = await this.arcApiService.chains({
-      withSupportedTokens: true,
-    });
-    if (response.data.status === 'success') {
-      return response.data.data;
-    }
-    throw new Error(response.data.message);
+  async getAllTokens(): Promise<ChainsResponse> {
+    return this.getAllChainsPaginated(
+      { withSupportedTokens: true },
+      DEFAULT_CHAINS_WITH_TOKENS_PER_PAGE
+    );
   }
 
   /**
@@ -84,14 +170,10 @@ export class CoreClient {
   async getChainDataAndTokensByChainIds(
     ids: number[]
   ): Promise<ChainsResponse> {
-    const response = await this.arcApiService.chains({
+    return this.getAllChainsPaginated({
       chainIds: ids,
       withSupportedTokens: true,
     });
-    if (response.data.status === 'success') {
-      return response.data.data;
-    }
-    throw new Error(response.data.message);
   }
 
   /**
@@ -135,6 +217,16 @@ export class CoreClient {
   async getTransactions(
     transactionsRequestQueryParams: TransactionsRequestQueryParams
   ): Promise<TransactionsResponse> {
+    // validate limit
+    if (
+      transactionsRequestQueryParams.limit &&
+      transactionsRequestQueryParams.limit > MAX_TRANSACTIONS_PER_PAGE
+    ) {
+      throw new Error(
+        `Limit cannot be greater than ${MAX_TRANSACTIONS_PER_PAGE}`
+      );
+    }
+
     const response = await this.arcApiService.transactions(
       transactionsRequestQueryParams
     );

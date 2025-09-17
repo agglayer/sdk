@@ -12,6 +12,7 @@ export type ApiResponse<T = unknown> = SuccessResponse<T> | ErrorResponse;
 export interface SuccessResponse<T = unknown> {
   readonly status: 'success';
   readonly data: T;
+  readonly pagination?: OffsetPagination | CursorPagination;
 }
 
 // Comprehensive error response following RFC 7807 Problem Details
@@ -21,4 +22,17 @@ export interface ErrorResponse {
   readonly name: string;
   readonly code: number;
   readonly details?: Record<string, unknown>;
+}
+
+export interface Pagination {
+  readonly total?: number;
+  readonly limit?: number;
+}
+
+export interface OffsetPagination extends Pagination {
+  readonly offset?: number;
+}
+
+export interface CursorPagination extends Pagination {
+  readonly nextStartAfterCursor?: string;
 }

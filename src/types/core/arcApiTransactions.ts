@@ -68,5 +68,4 @@ export interface TransactionsRequestQueryParams {
 
 export type TransactionsResponse = {
   transactions: Transaction[];
-  nextStartAfter?: number;
 };

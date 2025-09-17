@@ -29,10 +29,9 @@ export type ChainsQueryParams = {
   readonly withSupportedTokens?: boolean;
   readonly chainIds?: readonly number[];
   readonly limit?: number;
-  readonly startAfter?: number;
+  readonly offset?: number;
 };
 
 export type ChainsResponse = {
   readonly chains: IChain[];
-  readonly nextStartAfter?: number;
 };

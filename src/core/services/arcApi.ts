@@ -25,16 +25,17 @@ export class ArcApiService {
   }
 
   // responsible for both chains metadata and tokens
+  // supports limit/offset based pagination
   async chains({
     withSupportedTokens = false,
-    limit = 20,
-    startAfter,
+    limit = 10,
+    offset,
     chainIds,
   }: ChainsQueryParams = {}): Promise<Response<ApiResponse<ChainsResponse>>> {
     return this.httpClient.get('/metadata/chains', {
       withSupportedTokens,
       limit,
-      startAfter,
+      offset,
       chainIds,
     });
   }
@@ -54,6 +55,7 @@ export class ArcApiService {
     );
   }
 
+  // supports cursor based pagination only
   async transactions(
     transactionsRequestQueryParams: TransactionsRequestQueryParams
   ): Promise<Response<ApiResponse<TransactionsResponse>>> {
