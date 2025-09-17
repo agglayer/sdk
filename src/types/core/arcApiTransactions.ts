@@ -59,7 +59,7 @@ export interface Transaction {
 }
 
 export interface TransactionsRequestQueryParams {
-  readonly fromAddress?: string;
+  readonly address?: string;
   readonly sorceNetworkIds?: string;
   readonly destinationNetworkIds?: string;
   readonly limit?: number;
