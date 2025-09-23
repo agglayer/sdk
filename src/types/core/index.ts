@@ -11,3 +11,4 @@ export * from './arcApiChains';
 export * from './arcApiRoutes';
 export * from './arcApiTransactions';
 export * from './arcApiBuildTransaction';
+export * from './arcApiBuildClaimTransaction';

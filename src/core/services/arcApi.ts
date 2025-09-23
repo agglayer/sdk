@@ -15,6 +15,7 @@ import {
   BuildTransactionResponse,
   TransactionsRequestQueryParams,
   TransactionsResponse,
+  BuildClaimTransactionResponse,
 } from '../../types/core';
 
 export class ArcApiService {
@@ -53,6 +54,16 @@ export class ArcApiService {
       '/routes/build-transaction',
       builtTransactionRequestBody
     );
+  }
+
+  async buildClaimTransaction(
+    sourceNetworkId: number,
+    depositCount: number
+  ): Promise<Response<ApiResponse<BuildClaimTransactionResponse>>> {
+    return this.httpClient.get('/routes/build-transaction-for-claim', {
+      sourceNetworkId,
+      depositCount,
+    });
   }
 
   // supports cursor based pagination only

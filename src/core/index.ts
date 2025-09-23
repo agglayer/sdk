@@ -12,6 +12,7 @@ import type {
   TransactionsResponse,
   ChainsResponse,
   Route,
+  BuildClaimTransactionRequestParam,
 } from '@/types';
 import { ArcApiService } from './services/arcApi';
 import { UnsignedTransaction } from 'types/core/_arcApiUnsignedTransaction';
@@ -205,6 +206,28 @@ export class CoreClient {
     }
 
     const response = await this.arcApiService.buildTransaction(route.steps[0]);
+    if (response.data.status === 'success') {
+      return response.data.data;
+    }
+    throw new Error(response.data.message);
+  }
+
+  /**
+   * Get calldata for claim step
+   * Needs to be called separately as claim step is not part of route.
+   *
+   * @developer Note: Do not misinterpret network ID as chain ID.
+   *
+   * @param sourceNetworkId - The source network ID where the transfer was initiated.
+   * @param depositCount - The deposit count associated with the transfer.
+   */
+  async getClaimUnsignedTransaction(
+    buildClaimTxParams: BuildClaimTransactionRequestParam
+  ): Promise<UnsignedTransaction> {
+    const response = await this.arcApiService.buildClaimTransaction(
+      buildClaimTxParams.sourceNetworkId,
+      buildClaimTxParams.depositCount
+    );
     if (response.data.status === 'success') {
       return response.data.data;
     }
