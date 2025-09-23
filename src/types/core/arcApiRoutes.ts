@@ -163,8 +163,8 @@ export interface Route {
 
   // Timestamps
   readonly createdAt: number;
-  readonly expiresAt: number | null;
-  readonly estimatedCompletionTime: number | null;
+  readonly expiresAt: number | null; // or 1 min, whichever is smaller
+  readonly estimatedCompletionTime: number | null; // in seconds
 }
 
 export interface RouteStep {

@@ -17,6 +17,11 @@ export interface IChain {
     name: string;
     symbol: string;
     decimals: number;
+    address: string;
+    logoURI: string;
+    priceUSD: string;
+    originTokenAddress?: string; // only for agglayer chains
+    originChainId?: number; // only for agglayer chains
   };
   networkId?: number; // only applicable for "agglayer" chains
   bridgeAddress?: string; // only applicable for "agglayer" chains
