@@ -151,10 +151,6 @@ export class HttpClient {
 
       clearTimeout(timeoutId);
 
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-      }
-
       let data: T;
       const contentType = response.headers.get('content-type');
 
@@ -162,6 +158,17 @@ export class HttpClient {
         data = (await response.json()) as T;
       } else {
         data = (await response.text()) as T;
+      }
+
+      if (!response.ok) {
+        // For JSON responses, the error details are in the parsed data
+        // For non-JSON responses, create a generic error
+        if (contentType?.includes('application/json')) {
+          // The error details are already parsed in data, let the caller handle it
+          // This allows the Core client to properly check response.data.status
+        } else {
+          throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+        }
       }
 
       return {

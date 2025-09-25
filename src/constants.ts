@@ -4,11 +4,11 @@
 
 // network ids
 export const NETWORKS = {
-  SEPOLIA: 11155111,
-  CARDONA: 2442,
+  ETHEREUM: 1,
+  KATANA: 747474,
 } as const;
 
-export const DEFAULT_NETWORK = NETWORKS.SEPOLIA;
+export const DEFAULT_NETWORK = NETWORKS.ETHEREUM;
 
 // todo: add logic to handle max limit
 export const MAX_CHAINS_PER_PAGE = 100;

@@ -16,6 +16,7 @@ import type {
 } from '@/types';
 import { ArcApiService } from './services/arcApi';
 import { UnsignedTransaction } from 'types/core/_arcApiUnsignedTransaction';
+import { ApiError } from './utils/apiError';
 import {
   DEFAULT_CHAINS_PER_PAGE,
   DEFAULT_CHAINS_WITH_TOKENS_PER_PAGE,
@@ -34,6 +35,7 @@ export class CoreClient {
     }
 
     if (!this.config.apiBaseUrl) {
+      // todo: add default url, once prod url is available
       throw new Error('API base URL is required');
     }
 
@@ -60,77 +62,84 @@ export class CoreClient {
     },
     pageSize: number = DEFAULT_CHAINS_PER_PAGE
   ): Promise<ChainsResponse> {
-    // First call to get initial data and check total count
-    const firstResponse = await this.arcApiService.chains({
-      ...params,
-      limit: pageSize,
-    });
+    try {
+      // First call to get initial data and check total count
+      const firstResponse = await this.arcApiService.chains({
+        ...params,
+        limit: pageSize,
+      });
 
-    if (firstResponse.data.status !== 'success') {
-      throw new Error(firstResponse.data.message);
-    }
-
-    const firstPageData = firstResponse.data.data;
-    const pagination = firstResponse.data.pagination;
-
-    // The API returns chains directly as an array in the data field
-    const firstPageChains = Array.isArray(firstPageData) ? firstPageData : [];
-
-    // If no pagination info or total is within first page, return first page data
-    if (!pagination?.total || pagination.total <= pageSize) {
-      return {
-        chains: firstPageChains,
-      };
-    }
-
-    // Calculate how many additional pages we need to fetch
-    const totalPages = Math.ceil(pagination.total / pageSize);
-    const remainingPages = totalPages - 1; // We already have the first page
-
-    if (remainingPages === 0) {
-      return {
-        chains: firstPageChains,
-      };
-    }
-
-    // Create array of promises for remaining pages (parallel calls)
-    const remainingPagePromises = Array.from(
-      { length: remainingPages },
-      (_, index) => {
-        const offset = (index + 1) * pageSize;
-        return this.arcApiService.chains({
-          ...params,
-          limit: pageSize,
-          offset,
-        });
+      if (firstResponse.data.status !== 'success') {
+        throw ApiError.fromErrorResponse(firstResponse.data);
       }
-    );
 
-    // Execute all remaining page calls in parallel
-    const remainingResponses = await Promise.all(remainingPagePromises);
+      const firstPageData = firstResponse.data.data;
+      const pagination = firstResponse.data.pagination;
 
-    // Check for errors in any of the responses
-    for (const response of remainingResponses) {
-      if (response.data.status !== 'success') {
-        throw new Error(response.data.message);
+      // The API returns chains directly as an array in the data field
+      const firstPageChains = Array.isArray(firstPageData) ? firstPageData : [];
+
+      // If no pagination info or total is within first page, return first page data
+      if (!pagination?.total || pagination.total <= pageSize) {
+        return {
+          chains: firstPageChains,
+        };
       }
-    }
 
-    // Combine all chain data from all pages
-    const allChains = [
-      ...firstPageChains,
-      ...remainingResponses.flatMap((response) => {
-        if (response.data.status === 'success') {
-          return Array.isArray(response.data.data) ? response.data.data : [];
+      // Calculate how many additional pages we need to fetch
+      const totalPages = Math.ceil(pagination.total / pageSize);
+      const remainingPages = totalPages - 1; // We already have the first page
+
+      if (remainingPages === 0) {
+        return {
+          chains: firstPageChains,
+        };
+      }
+
+      // Create array of promises for remaining pages (parallel calls)
+      const remainingPagePromises = Array.from(
+        { length: remainingPages },
+        (_, index) => {
+          const offset = (index + 1) * pageSize;
+          return this.arcApiService.chains({
+            ...params,
+            limit: pageSize,
+            offset,
+          });
         }
-        return [];
-      }),
-    ];
+      );
 
-    // Return combined data
-    return {
-      chains: allChains,
-    };
+      // Execute all remaining page calls in parallel
+      const remainingResponses = await Promise.all(remainingPagePromises);
+
+      // Check for errors in any of the responses
+      for (const response of remainingResponses) {
+        if (response.data.status !== 'success') {
+          throw ApiError.fromErrorResponse(response.data);
+        }
+      }
+
+      // Combine all chain data from all pages
+      const allChains = [
+        ...firstPageChains,
+        ...remainingResponses.flatMap((response) => {
+          if (response.data.status === 'success') {
+            return Array.isArray(response.data.data) ? response.data.data : [];
+          }
+          return [];
+        }),
+      ];
+
+      // Return combined data
+      return {
+        chains: allChains,
+      };
+    } catch (error) {
+      if (error instanceof ApiError) {
+        throw error;
+      }
+      throw ApiError.createFallbackError(error as Error, 'Get chains metadata');
+    }
   }
 
   /**
@@ -183,11 +192,18 @@ export class CoreClient {
   async getRoutes(
     routesRequestParams: RoutesRequestParams
   ): Promise<RoutesResponse> {
-    const response = await this.arcApiService.routes(routesRequestParams);
-    if (response.data.status === 'success') {
-      return response.data.data;
+    try {
+      const response = await this.arcApiService.routes(routesRequestParams);
+      if (response.data.status === 'success') {
+        return response.data.data;
+      }
+      throw ApiError.fromErrorResponse(response.data);
+    } catch (error) {
+      if (error instanceof ApiError) {
+        throw error;
+      }
+      throw ApiError.createFallbackError(error as Error, 'Get routes');
     }
-    throw new Error(response.data.message);
   }
 
   /**
@@ -202,14 +218,29 @@ export class CoreClient {
 
     // If no transactionRequest, call buildTransaction on first step
     if (route.steps.length === 0 || !route.steps[0]) {
-      throw new Error('Route has no steps to build transaction from');
+      throw ApiError.createFallbackError(
+        new Error('Route has no steps to build transaction from'),
+        'Get unsigned transaction'
+      );
     }
 
-    const response = await this.arcApiService.buildTransaction(route.steps[0]);
-    if (response.data.status === 'success') {
-      return response.data.data;
+    try {
+      const response = await this.arcApiService.buildTransaction(
+        route.steps[0]
+      );
+      if (response.data.status === 'success') {
+        return response.data.data;
+      }
+      throw ApiError.fromErrorResponse(response.data);
+    } catch (error) {
+      if (error instanceof ApiError) {
+        throw error;
+      }
+      throw ApiError.createFallbackError(
+        error as Error,
+        'Get unsigned transaction'
+      );
     }
-    throw new Error(response.data.message);
   }
 
   /**
@@ -224,14 +255,24 @@ export class CoreClient {
   async getClaimUnsignedTransaction(
     buildClaimTxParams: BuildClaimTransactionRequestParam
   ): Promise<UnsignedTransaction> {
-    const response = await this.arcApiService.buildClaimTransaction(
-      buildClaimTxParams.sourceNetworkId,
-      buildClaimTxParams.depositCount
-    );
-    if (response.data.status === 'success') {
-      return response.data.data;
+    try {
+      const response = await this.arcApiService.buildClaimTransaction(
+        buildClaimTxParams.sourceNetworkId,
+        buildClaimTxParams.depositCount
+      );
+      if (response.data.status === 'success') {
+        return response.data.data;
+      }
+      throw ApiError.fromErrorResponse(response.data);
+    } catch (error) {
+      if (error instanceof ApiError) {
+        throw error;
+      }
+      throw ApiError.createFallbackError(
+        error as Error,
+        'Get claim unsigned transaction'
+      );
     }
-    throw new Error(response.data.message);
   }
 
   /**
@@ -245,17 +286,25 @@ export class CoreClient {
       transactionsRequestQueryParams.limit &&
       transactionsRequestQueryParams.limit > MAX_TRANSACTIONS_PER_PAGE
     ) {
-      throw new Error(
-        `Limit cannot be greater than ${MAX_TRANSACTIONS_PER_PAGE}`
+      throw ApiError.createFallbackError(
+        new Error(`Limit cannot be greater than ${MAX_TRANSACTIONS_PER_PAGE}`),
+        'Get transactions'
       );
     }
 
-    const response = await this.arcApiService.transactions(
-      transactionsRequestQueryParams
-    );
-    if (response.data.status === 'success') {
-      return response.data.data;
+    try {
+      const response = await this.arcApiService.transactions(
+        transactionsRequestQueryParams
+      );
+      if (response.data.status === 'success') {
+        return response.data.data;
+      }
+      throw ApiError.fromErrorResponse(response.data);
+    } catch (error) {
+      if (error instanceof ApiError) {
+        throw error;
+      }
+      throw ApiError.createFallbackError(error as Error, 'Get transactions');
     }
-    throw new Error(response.data.message);
   }
 }

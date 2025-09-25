@@ -25,6 +25,37 @@ export class ChainRegistry {
   }
 
   private initializeDefaultChains() {
+    // Ethereum Mainnet
+    this.registerChain({
+      chainId: 1,
+      networkId: 0,
+      name: 'Ethereum',
+      rpcUrl: 'https://eth.llamarpc.com',
+      nativeCurrency: { name: 'Ether', symbol: 'ETH', decimals: 18 },
+      blockExplorer: { name: 'Etherscan', url: 'https://etherscan.io' },
+      bridgeAddress: '',
+      proofApiUrl:
+        'https://api-gateway.polygon.technology/api/v3/proof/mainnet/',
+      isTestnet: false,
+    });
+
+    // Katana
+    this.registerChain({
+      chainId: 747474,
+      networkId: 20,
+      name: 'Katana',
+      rpcUrl: 'https://rpc.katana.network',
+      nativeCurrency: { name: 'Ethereum', symbol: 'ETH', decimals: 18 },
+      blockExplorer: {
+        name: 'Katana Explorer',
+        url: 'https://katanascan.com',
+      },
+      bridgeAddress: '',
+      proofApiUrl:
+        'https://api-gateway.polygon.technology/api/v3/proof/mainnet/',
+      isTestnet: false,
+    });
+
     // Ethereum Sepolia Testnet
     this.registerChain({
       chainId: 11155111,
@@ -42,22 +73,7 @@ export class ChainRegistry {
       isTestnet: true,
     });
 
-    // Polygon Cardona Testnet
-    this.registerChain({
-      chainId: 2442,
-      networkId: 1,
-      name: 'Polygon Cardona',
-      rpcUrl: 'https://rpc.cardona.zkevm-rpc.com',
-      nativeCurrency: { name: 'Ethereum', symbol: 'ETH', decimals: 18 },
-      blockExplorer: {
-        name: 'Cardona PolygonScan',
-        url: 'https://cardona-zkevm.polygonscan.com',
-      },
-      bridgeAddress: '0x528e26b25a34a4A5d0dbDa1d57D318153d2ED582',
-      proofApiUrl:
-        'https://api-gateway.polygon.technology/api/v3/proof/testnet/',
-      isTestnet: true,
-    });
+    // todo: add bokuto testnet details
   }
 
   /**
