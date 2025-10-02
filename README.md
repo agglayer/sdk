@@ -1,6 +1,6 @@
 # AggLayer SDK
 
-[![License: ISC](https://img.shields.io/badge/License-ISC-blue.svg?style=flat-square)](https://opensource.org/licenses/ISC)
+[![License: Source Available](https://img.shields.io/badge/License-Source%20Available-blue.svg?style=flat-square)](./LICENSE-SOURCE-AVAILABLE)
 [![TypeScript](https://img.shields.io/badge/TypeScript-4.9+-blue?style=flat-square&logo=typescript)](https://www.typescriptlang.org/)
 [![Node.js](https://img.shields.io/badge/Node.js-18+-green?style=flat-square&logo=node.js)](https://nodejs.org/)
 [![NPM Version](https://img.shields.io/npm/v/@agglayer/sdk?style=flat-square)](https://www.npmjs.com/package/@agglayer/sdk)
