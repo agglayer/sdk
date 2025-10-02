@@ -12,3 +12,4 @@ export * from './arcApiRoutes';
 export * from './arcApiTransactions';
 export * from './arcApiBuildTransaction';
 export * from './arcApiBuildClaimTransaction';
+export * from './arcApiTokenMapping';

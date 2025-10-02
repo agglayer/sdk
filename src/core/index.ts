@@ -13,6 +13,8 @@ import type {
   ChainsResponse,
   Route,
   BuildClaimTransactionRequestParam,
+  TokenMappingQueryParams,
+  TokenMappingResponse,
 } from '@/types';
 import { ArcApiService } from './services/arcApi';
 import { UnsignedTransaction } from 'types/core/_arcApiUnsignedTransaction';
@@ -303,6 +305,34 @@ export class CoreClient {
         throw error;
       }
       throw ApiError.createFallbackError(error as Error, 'Get transactions');
+    }
+  }
+
+  /**
+   * Get token mappings by token address
+   * @developer Note: Do not misinterpret network ID as chain ID.
+   *
+   * @param tokenAddress
+   */
+  async getTokenMappings(
+    tokenMappingQueryParams: TokenMappingQueryParams
+  ): Promise<TokenMappingResponse> {
+    try {
+      const response = await this.arcApiService.tokenMappings(
+        tokenMappingQueryParams
+      );
+      if (response.data.status === 'success') {
+        return response.data.data;
+      }
+      throw ApiError.fromErrorResponse(response.data);
+    } catch (error) {
+      if (error instanceof ApiError) {
+        throw error;
+      }
+      throw ApiError.createFallbackError(
+        error as Error,
+        'Get custom token mappings'
+      );
     }
   }
 }

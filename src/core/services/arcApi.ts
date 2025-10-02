@@ -16,6 +16,8 @@ import {
   TransactionsRequestQueryParams,
   TransactionsResponse,
   BuildClaimTransactionResponse,
+  TokenMappingQueryParams,
+  TokenMappingResponse,
 } from '../../types/core';
 
 export class ArcApiService {
@@ -73,5 +75,12 @@ export class ArcApiService {
     return this.httpClient.get('/transactions', {
       transactionsRequestQueryParams,
     });
+  }
+
+  async tokenMappings(
+    tokenMappingQueryParams: TokenMappingQueryParams
+  ): Promise<Response<ApiResponse<TokenMappingResponse>>> {
+    const { tokenAddress } = tokenMappingQueryParams;
+    return this.httpClient.get(`/token-mappings/${tokenAddress}`);
   }
 }
