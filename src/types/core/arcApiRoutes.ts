@@ -98,7 +98,8 @@ export interface ProviderMetadata {
     readonly transactionRequest?: unknown; // Keep original transaction data
   };
   readonly agglayer?: {
-    readonly bridgeAddress: string | null;
+    readonly bridgeAddress: string | undefined;
+    readonly claimTransactionRequired: boolean | undefined;
   };
   readonly [key: string]: unknown; // Allow for future providers
 }
@@ -114,7 +115,7 @@ export interface RiskFactors {
 export interface Route {
   // Universal route identifiers
   readonly id: string; // Route/Quote ID from provider or generated
-  readonly provider: string[]; // "LIFI" | "AGGLAYER"
+  readonly provider: string[]; // "lifi" | "agglayer"
 
   // Response type identification
   readonly isQuote: boolean; // true for executable quotes, false for route discovery
@@ -153,7 +154,7 @@ export interface Route {
   readonly steps: Step[];
 
   // Ready-to-execute transaction data (for quotes)
-  readonly transactionRequest?: UnsignedTransaction;
+  readonly transactionRequest?: UnsignedTransaction | undefined;
 
   // Provider-specific metadata
   readonly providerMetadata: ProviderMetadata;
@@ -184,7 +185,7 @@ export interface RoutesRequestParams {
   readonly fromTokenAddress: string;
   readonly toTokenAddress: string;
   readonly amount: string;
-  readonly fromAddress: string;
+  readonly fromAddress?: string;
   readonly toAddress?: string;
   readonly slippage?: number;
   readonly preferences?: RoutePreferences;
