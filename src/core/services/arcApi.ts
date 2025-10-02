@@ -60,7 +60,7 @@ export class ArcApiService {
     sourceNetworkId: number,
     depositCount: number
   ): Promise<Response<ApiResponse<BuildClaimTransactionResponse>>> {
-    return this.httpClient.get('/routes/build-transaction-for-claim', {
+    return this.httpClient.post('/routes/build-transaction-for-claim', {
       sourceNetworkId,
       depositCount,
     });
