@@ -18,13 +18,17 @@ export { SDK_MODES } from './types';
 // Re-export error classes
 export { ApiError } from './core/utils/apiError';
 
+const defaultConfig: SDKConfig = {
+  mode: [SDK_MODES.CORE],
+};
+
 export class AggLayerSDK {
   private config: SDKConfig;
 
   private core?: CoreClient;
   private native?: NativeClient;
 
-  constructor(config: SDKConfig) {
+  constructor(config: SDKConfig = defaultConfig) {
     this.config = config;
 
     /**
@@ -41,22 +45,15 @@ export class AggLayerSDK {
       this.config.mode = ['CORE'];
     }
 
-    if (config.mode.includes(SDK_MODES.CORE)) {
-      if (!this.config.core) {
-        throw new Error('Core config is required');
-      }
-
-      this.core = new CoreClient(this.config.core);
+    // Initialize core submodule if enabled
+    if (this.config.mode?.includes(SDK_MODES.CORE)) {
+      this.core = new CoreClient(this.config?.core);
     }
 
     // Initialize native submodule if enabled
     if (this.config.mode?.includes(SDK_MODES.NATIVE)) {
-      if (!this.config.native) {
-        throw new Error('NATIVE config is required');
-      }
-
       const nativeConfig = {
-        defaultNetwork: this.config.native?.defaultNetwork || DEFAULT_NETWORK,
+        defaultNetwork: this.config.native?.defaultNetwork ?? DEFAULT_NETWORK,
         ...(this.config.native?.chains && {
           chains: this.config.native.chains,
         }),

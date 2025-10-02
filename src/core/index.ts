@@ -18,6 +18,8 @@ import { ArcApiService } from './services/arcApi';
 import { UnsignedTransaction } from 'types/core/_arcApiUnsignedTransaction';
 import { ApiError } from './utils/apiError';
 import {
+  ARC_API_BASE_URL,
+  ARC_API_DEFAULT_TIMEOUT,
   DEFAULT_CHAINS_PER_PAGE,
   DEFAULT_CHAINS_WITH_TOKENS_PER_PAGE,
   MAX_TRANSACTIONS_PER_PAGE,
@@ -27,23 +29,19 @@ export class CoreClient {
   private config: CoreConfig;
   private arcApiService: ArcApiService;
 
-  constructor(config: CoreConfig) {
-    this.config = config;
-
-    if (!this.config) {
-      throw new Error('Config is required');
-    }
-
-    if (!this.config.apiBaseUrl) {
-      // todo: add default url, once prod url is available
-      throw new Error('API base URL is required');
-    }
+  constructor(config?: CoreConfig) {
+    // build config first
+    this.config = {
+      ...config,
+      apiBaseUrl: config?.apiBaseUrl || ARC_API_BASE_URL,
+      apiTimeout: config?.apiTimeout || ARC_API_DEFAULT_TIMEOUT,
+    };
 
     const { apiBaseUrl, apiTimeout } = this.config;
 
     this.arcApiService = new ArcApiService({
-      baseUrl: apiBaseUrl,
-      timeout: apiTimeout ?? 30000,
+      baseUrl: apiBaseUrl || ARC_API_BASE_URL,
+      timeout: apiTimeout || ARC_API_DEFAULT_TIMEOUT,
     });
   }
 

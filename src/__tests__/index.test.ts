@@ -40,6 +40,20 @@ describe('AggLayerSDK', () => {
   });
 
   describe('Constructor and Initialization', () => {
+    it('should create an instance with no config (undefined)', () => {
+      const sdk = new AggLayerSDK();
+      expect(sdk).toBeInstanceOf(AggLayerSDK);
+      expect(CoreClient).toHaveBeenCalledWith(undefined);
+      expect(NativeClient).not.toHaveBeenCalled();
+    });
+
+    it('should create an instance with empty config object', () => {
+      const sdk = new AggLayerSDK({});
+      expect(sdk).toBeInstanceOf(AggLayerSDK);
+      expect(CoreClient).toHaveBeenCalledWith(undefined);
+      expect(NativeClient).not.toHaveBeenCalled();
+    });
+
     it('should create an instance with CORE mode only', () => {
       const sdk = new AggLayerSDK(mockSDKConfig);
       expect(sdk).toBeInstanceOf(AggLayerSDK);
@@ -86,6 +100,7 @@ describe('AggLayerSDK', () => {
       };
       const sdk = new AggLayerSDK(config);
       expect(sdk).toBeInstanceOf(AggLayerSDK);
+      // When mode is undefined/not provided, defaults to CORE mode
       expect(CoreClient).toHaveBeenCalledWith(mockCoreConfig);
       expect(NativeClient).not.toHaveBeenCalled();
     });
@@ -100,6 +115,28 @@ describe('AggLayerSDK', () => {
       expect(sdk).toBeInstanceOf(AggLayerSDK);
       expect(CoreClient).toHaveBeenCalledWith(mockCoreConfig);
       expect(NativeClient).not.toHaveBeenCalled();
+    });
+
+    it('should use undefined core config when only mode is provided', () => {
+      const config = {
+        mode: [SDK_MODES.CORE],
+      };
+      const sdk = new AggLayerSDK(config);
+      expect(sdk).toBeInstanceOf(AggLayerSDK);
+      expect(CoreClient).toHaveBeenCalledWith(undefined);
+      expect(NativeClient).not.toHaveBeenCalled();
+    });
+
+    it('should use default native config when NATIVE mode is provided without native config', () => {
+      const config = {
+        mode: [SDK_MODES.NATIVE],
+      };
+      const sdk = new AggLayerSDK(config);
+      expect(sdk).toBeInstanceOf(AggLayerSDK);
+      expect(CoreClient).not.toHaveBeenCalled();
+      expect(NativeClient).toHaveBeenCalledWith({
+        defaultNetwork: DEFAULT_NETWORK,
+      });
     });
 
     it('should use DEFAULT_NETWORK when native defaultNetwork is not provided', () => {
@@ -140,30 +177,64 @@ describe('AggLayerSDK', () => {
     });
   });
 
-  describe('Error Handling', () => {
-    it('should throw error when CORE mode is enabled but core config is missing', () => {
+  describe('Flexible Configuration', () => {
+    it('should handle minimal config with just core overrides', () => {
       const config = {
-        mode: ['CORE'],
-        native: mockNativeConfig,
+        core: { apiBaseUrl: 'https://custom-api.com' },
       };
-      expect(() => new AggLayerSDK(config)).toThrow('Core config is required');
+      const sdk = new AggLayerSDK(config);
+      expect(sdk).toBeInstanceOf(AggLayerSDK);
+      expect(CoreClient).toHaveBeenCalledWith({
+        apiBaseUrl: 'https://custom-api.com',
+      });
+      expect(NativeClient).not.toHaveBeenCalled();
     });
 
-    it('should throw error when NATIVE mode is enabled but native config is missing', () => {
+    it('should handle minimal config with just native overrides', () => {
       const config = {
-        mode: ['NATIVE'],
-        core: mockCoreConfig,
+        mode: [SDK_MODES.NATIVE],
+        native: { defaultNetwork: 137 },
       };
-      expect(() => new AggLayerSDK(config)).toThrow(
-        'NATIVE config is required'
-      );
+      const sdk = new AggLayerSDK(config);
+      expect(sdk).toBeInstanceOf(AggLayerSDK);
+      expect(CoreClient).not.toHaveBeenCalled();
+      expect(NativeClient).toHaveBeenCalledWith({
+        defaultNetwork: 137,
+      });
     });
 
-    it('should throw error when both modes are enabled but configs are missing', () => {
+    it('should merge user config with defaults for both modes', () => {
       const config = {
-        mode: ['CORE', 'NATIVE'],
+        mode: [SDK_MODES.CORE, SDK_MODES.NATIVE],
+        core: { apiTimeout: 5000 },
+        native: {
+          defaultNetwork: 1,
+          chains: [{ chainId: 1, name: 'Ethereum' }],
+        },
       };
-      expect(() => new AggLayerSDK(config)).toThrow('Core config is required');
+      const sdk = new AggLayerSDK(config);
+      expect(sdk).toBeInstanceOf(AggLayerSDK);
+      expect(CoreClient).toHaveBeenCalledWith({ apiTimeout: 5000 });
+      expect(NativeClient).toHaveBeenCalledWith({
+        defaultNetwork: 1,
+        chains: [{ chainId: 1, name: 'Ethereum' }],
+      });
+    });
+
+    it('should work with partial native config', () => {
+      const config = {
+        mode: [SDK_MODES.NATIVE],
+        native: {
+          chains: [{ chainId: 137, name: 'Polygon' }],
+          // defaultNetwork should use DEFAULT_NETWORK
+        },
+      };
+      const sdk = new AggLayerSDK(config);
+      expect(sdk).toBeInstanceOf(AggLayerSDK);
+      expect(NativeClient).toHaveBeenCalledWith({
+        defaultNetwork: DEFAULT_NETWORK,
+        chains: [{ chainId: 137, name: 'Polygon' }],
+      });
     });
   });
 
@@ -225,7 +296,7 @@ describe('AggLayerSDK', () => {
   });
 
   describe('Edge Cases', () => {
-    it('should handle undefined mode gracefully', () => {
+    it('should handle undefined mode gracefully - defaults to CORE mode', () => {
       const config = {
         mode: undefined,
         core: mockCoreConfig,
@@ -234,9 +305,10 @@ describe('AggLayerSDK', () => {
       const sdk = new AggLayerSDK(config);
       expect(sdk).toBeInstanceOf(AggLayerSDK);
       expect(CoreClient).toHaveBeenCalledWith(mockCoreConfig);
+      expect(NativeClient).not.toHaveBeenCalled();
     });
 
-    it('should handle null mode gracefully', () => {
+    it('should handle null mode gracefully - defaults to CORE mode', () => {
       const config = {
         mode: null,
         core: mockCoreConfig,
@@ -245,9 +317,10 @@ describe('AggLayerSDK', () => {
       const sdk = new AggLayerSDK(config);
       expect(sdk).toBeInstanceOf(AggLayerSDK);
       expect(CoreClient).toHaveBeenCalledWith(mockCoreConfig);
+      expect(NativeClient).not.toHaveBeenCalled();
     });
 
-    it('should handle mode with invalid values by defaulting to CORE', () => {
+    it('should handle mode with invalid values - no modules initialized', () => {
       const config = {
         mode: ['INVALID_MODE'],
         core: mockCoreConfig,
@@ -255,40 +328,101 @@ describe('AggLayerSDK', () => {
       };
       const sdk = new AggLayerSDK(config);
       expect(sdk).toBeInstanceOf(AggLayerSDK);
-      // The SDK should still work with invalid modes, but core won't be initialized
-      // since the mode array doesn't contain 'CORE'
+      // Invalid modes don't initialize any modules
       expect(CoreClient).not.toHaveBeenCalled();
+      expect(NativeClient).not.toHaveBeenCalled();
     });
   });
 
-  describe('Configuration Validation', () => {
-    it('should validate that core config has required fields', () => {
-      const invalidCoreConfig = {};
+  describe('Default Configuration Behavior', () => {
+    it('should use undefined core config when none provided', () => {
       const config = {
-        mode: ['CORE'],
-        core: invalidCoreConfig,
-        native: mockNativeConfig,
+        mode: [SDK_MODES.CORE],
       };
-      // This should not throw during construction, but CoreClient constructor might validate
-      expect(() => new AggLayerSDK(config)).not.toThrow();
+      const sdk = new AggLayerSDK(config);
+      expect(sdk).toBeInstanceOf(AggLayerSDK);
+      expect(CoreClient).toHaveBeenCalledWith(undefined);
+    });
+
+    it('should use default native config when none provided', () => {
+      const config = {
+        mode: [SDK_MODES.NATIVE],
+      };
+      const sdk = new AggLayerSDK(config);
+      expect(sdk).toBeInstanceOf(AggLayerSDK);
+      expect(NativeClient).toHaveBeenCalledWith({
+        defaultNetwork: DEFAULT_NETWORK,
+      });
     });
 
     it('should handle partial native config gracefully', () => {
-      const partialLxlyConfig = {
+      const partialNativeConfig = {
         defaultNetwork: 1,
         // Missing chains and customRpcUrls
       };
       const config = {
-        mode: ['NATIVE'],
-        core: mockCoreConfig,
-        native: partialLxlyConfig,
+        mode: [SDK_MODES.NATIVE],
+        native: partialNativeConfig,
       };
       const sdk = new AggLayerSDK(config);
       expect(sdk).toBeInstanceOf(AggLayerSDK);
       expect(NativeClient).toHaveBeenCalledWith({
         defaultNetwork: 1,
-        chains: undefined,
-        customRpcUrls: undefined,
+      });
+    });
+
+    it('should preserve user-provided config values', () => {
+      const userCoreConfig = {
+        apiBaseUrl: 'https://custom.api',
+        apiTimeout: 10000,
+      };
+      const userNativeConfig = {
+        defaultNetwork: 137,
+        chains: [{ chainId: 137 }],
+        customRpcUrls: { 137: 'https://polygon-rpc.com' },
+      };
+      const config = {
+        mode: [SDK_MODES.CORE, SDK_MODES.NATIVE],
+        core: userCoreConfig,
+        native: userNativeConfig,
+      };
+      const sdk = new AggLayerSDK(config);
+      expect(sdk).toBeInstanceOf(AggLayerSDK);
+      expect(CoreClient).toHaveBeenCalledWith(userCoreConfig);
+      expect(NativeClient).toHaveBeenCalledWith({
+        defaultNetwork: 137,
+        chains: [{ chainId: 137 }],
+        customRpcUrls: { 137: 'https://polygon-rpc.com' },
+      });
+    });
+
+    it('should handle deeply nested config merging correctly', () => {
+      const config = {
+        mode: [SDK_MODES.NATIVE],
+        native: {
+          customRpcUrls: { 1: 'https://eth-mainnet.custom' },
+          // Missing defaultNetwork and chains
+        },
+      };
+      const sdk = new AggLayerSDK(config);
+      expect(sdk).toBeInstanceOf(AggLayerSDK);
+      expect(NativeClient).toHaveBeenCalledWith({
+        defaultNetwork: DEFAULT_NETWORK,
+        customRpcUrls: { 1: 'https://eth-mainnet.custom' },
+      });
+    });
+
+    it('should work with falsy but valid config values', () => {
+      const config = {
+        mode: [SDK_MODES.NATIVE],
+        native: {
+          defaultNetwork: 0, // Falsy but valid network ID
+        },
+      };
+      const sdk = new AggLayerSDK(config);
+      expect(sdk).toBeInstanceOf(AggLayerSDK);
+      expect(NativeClient).toHaveBeenCalledWith({
+        defaultNetwork: 0, // Should preserve the 0 value, not use DEFAULT_NETWORK
       });
     });
   });

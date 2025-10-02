@@ -13,7 +13,7 @@ import type { CoreConfig } from './core';
 import type { NativeConfig } from './native';
 
 export interface SDKConfig {
-  mode: SDKMode[];
-  core: CoreConfig;
-  native: NativeConfig;
+  mode?: SDKMode[];
+  core?: CoreConfig;
+  native?: NativeConfig;
 }

@@ -5,14 +5,14 @@
 [![Node.js](https://img.shields.io/badge/Node.js-18+-green?style=flat-square&logo=node.js)](https://nodejs.org/)
 [![NPM Version](https://img.shields.io/npm/v/@agglayer/sdk?style=flat-square)](https://www.npmjs.com/package/@agglayer/sdk)
 
-A comprehensive TypeScript SDK for interacting with the AggLayer ecosystem, providing seamless integration with ARC API services and blockchain operations. Engineered with enterprise-grade architecture, strict type safety, and exceptional developer experience.
+A comprehensive TypeScript SDK for interacting with the AggLayer ecosystem, providing seamless integration with ARC API services and blockchain operations. Engineered with enterprise-grade architecture, **flexible zero-config setup**, strict type safety, and exceptional developer experience.
 
 ## 🚀 Quick Start
 
 ### Installation
 
 ```bash
-# Production (stable)
+# Production (stable) - NOT YET AVAILABLE
 npm install @agglayer/sdk
 
 # Beta (testing)
@@ -24,46 +24,26 @@ npm install @agglayer/sdk@beta
 ```typescript
 import { AggLayerSDK, SDK_MODES } from '@agglayer/sdk';
 
-// Minimal configuration - Core module only
-const sdk = new AggLayerSDK({
-  mode: [SDK_MODES.CORE],
+// 🎯 NEW: Flexible Configuration - Zero setup required!
+// No configuration needed - uses intelligent defaults
+const sdk = new AggLayerSDK();
+
+// Or explicitly configure modes and settings
+const sdkWithConfig = new AggLayerSDK({
+  mode: [SDK_MODES.CORE, SDK_MODES.NATIVE],
   core: {
     apiBaseUrl: 'https://api.agglayer.com',
+    apiTimeout: 30000,
   },
-  native: {} as any, // Required but unused
+  native: {
+    defaultNetwork: 1, // Ethereum mainnet
+  },
 });
 
 // Access modules
 const core = sdk.getCore();
+const native = sdkWithConfig.getNative();
 ```
-
-## 🔧 Architecture & Design Principles
-
-The SDK employs a **modular microservice architecture** with strict separation of concerns:
-
-### Core Module (`SDK_MODES.CORE`)
-
-Core module primarily supports the features based on ARC API
-
-- **Chain Registry**: Comprehensive chain management
-- **Route Discovery**: Intelligently find routes for bridging, across agglayer bridge and other aggregators
-- **Transaction Orchestration**: Prepare unsigned executable transactions based on routes
-- **Transactions Activity and History**: Track status of transactions to perform aadditional functions like claim or view history of transactions.
-
-### Native Module (`SDK_MODES.NATIVE`)
-
-Interact with blockchain and agglayer bridge directly, this does not involve any additional APIs(except for proof generation)
-
-- **ERC20 Token Operations**: Standards-compliant token interactions(getBalance, getAllowance, buildApprove, etc)
-- **Bridge Infrastructure**: Cross-chain asset transfer protocols (like bridgeTo, claimAsset, etc via ERC20 interface)
-
-### Key Design Principles
-
-- **Type-First Development**: 100% TypeScript with strict mode enabled
-- **Immutable Data Structures**: Predictable state management
-- **Error-First Callbacks**: Comprehensive error handling patterns
-- **Zero-Configuration Defaults**: Sensible defaults with override capability
-- **Modular Loading**: Tree-shakeable imports for optimized bundles
 
 ## Usage Examples
 
@@ -361,7 +341,7 @@ interface CoreConfig {
 
 **Default Values:**
 
-- `apiBaseUrl`: `'https://api.agglayer.com'`
+- `apiBaseUrl`: `'https://arc-api.polygon.technology'`
 - `apiTimeout`: `30000` (30 seconds)
 
 #### Native Module Configuration
@@ -414,7 +394,6 @@ const coreOnlySDK = new AggLayerSDK({
     apiTimeout: 45000, // Increased timeout for complex operations
     // websocketBaseUrl: 'wss://ws.agglayer.com'
   },
-  native: {} as any, // Required but unused
 });
 
 const core = coreOnlySDK.getCore();
@@ -425,7 +404,6 @@ const core = coreOnlySDK.getCore();
 ```typescript
 const nativeOnlySDK = new AggLayerSDK({
   mode: [SDK_MODES.NATIVE],
-  core: {} as any, // Required but unused
   native: {
     defaultNetwork: 1, // Ethereum Mainnet
     customRpcUrls: {
@@ -484,9 +462,38 @@ The SDK includes a comprehensive registry of popular networks:
 - **Ethereum Mainnet** (Chain ID: 1)
 - **Katana** (Chain ID: 747474)
 - **Sepolia Testnet** (Chain ID: 11155111)
-- **Cardona Testnet** (Chain ID: 2442)
+<!-- - **Bokuto Testnet** (Chain ID: 2442) -->
 
 Additional networks can be added via the `chains` configuration option.
+
+## 🔧 Architecture & Design Principles
+
+The SDK employs a **modular microservice architecture** with strict separation of concerns:
+
+### Core Module (`SDK_MODES.CORE`)
+
+Core module primarily supports the features based on ARC API
+
+- **Chain Registry**: Comprehensive chain management
+- **Route Discovery**: Intelligently find routes for bridging, across agglayer bridge and other aggregators
+- **Transaction Orchestration**: Prepare unsigned executable transactions based on routes
+- **Transactions Activity and History**: Track status of transactions to perform aadditional functions like claim or view history of transactions.
+
+### Native Module (`SDK_MODES.NATIVE`)
+
+Interact with blockchain and agglayer bridge directly, this does not involve any additional APIs(except for proof generation)
+
+- **ERC20 Token Operations**: Standards-compliant token interactions(getBalance, getAllowance, buildApprove, etc)
+- **Bridge Infrastructure**: Cross-chain asset transfer protocols (like bridgeTo, claimAsset, etc via ERC20 interface)
+
+### Key Design Principles
+
+- **Type-First Development**: 100% TypeScript with strict mode enabled
+- **Flexible Configuration**: Zero-config defaults with progressive customization
+- **Immutable Data Structures**: Predictable state management
+- **Error-First Callbacks**: Comprehensive error handling patterns
+- **Smart Defaults**: Intelligent fallbacks that work out-of-the-box
+- **Modular Loading**: Tree-shakeable imports for optimized bundles
 
 ## � Release Channels & Versioning
 
@@ -497,14 +504,51 @@ The SDK follows semantic versioning with multiple release channels for different
 | `latest` | Stable production releases | ✅ Production Ready | `npm install @agglayer/sdk`       | Production applications         |
 | `beta`   | Release candidates         | ⚠️ Testing          | `npm install @agglayer/sdk@beta`  | Pre-production testing          |
 | `alpha`  | Early feature previews     | 🚧 Experimental     | `npm install @agglayer/sdk@alpha` | Feature development             |
-| `dev`    | Nightly development builds | 🔧 Development      | `npm install @agglayer/sdk@dev`   | SDK development & bleeding edge |
+| `dev`    | Internal use               | 🔧 Development      | `npm install @agglayer/sdk@dev`   | SDK development & bleeding edge |
 
 ### Release Strategy
 
 - **Stable releases** (`v1.0.0`, `v2.0.0`): Thoroughly tested, API-stable versions
 - **Beta releases** (`v1.0.0-beta.1`): Feature-complete candidates with minimal changes expected
 - **Alpha releases** (`v1.0.0-alpha.1`): Early access to new features, API may change
-- **Dev releases** (`v1.0.0-dev.1`): Automated nightly builds from main branch
+- **Dev releases** (`v1.0.0-dev.1`): Internal use
+
+## Quick Reference
+
+### Common Configuration Patterns
+
+```typescript
+// Development with testnet
+const devSdk = new AggLayerSDK({
+  mode: [SDK_MODES.CORE, SDK_MODES.NATIVE],
+  core: {
+    apiBaseUrl: 'https://api-testnet.agglayer.com',
+  },
+  native: {
+    defaultNetwork: 11155111, // Sepolia testnet
+  },
+});
+
+// Production with custom timeouts
+const prodSdk = new AggLayerSDK({
+  core: {
+    apiTimeout: 60000, // 60 second timeout
+  },
+});
+
+// Multi-chain setup
+const multiChainSdk = new AggLayerSDK({
+  mode: [SDK_MODES.NATIVE],
+  native: {
+    defaultNetwork: 1,
+    customRpcUrls: {
+      1: 'https://ethereum-mainnet.infura.io/v3/YOUR_KEY',
+      137: 'https://polygon-mainnet.infura.io/v3/YOUR_KEY',
+      42161: 'https://arbitrum-mainnet.infura.io/v3/YOUR_KEY',
+    },
+  },
+});
+```
 
 ## 🔧 Development & Contributing
 
@@ -587,6 +631,8 @@ try {
 
 ### Upcoming Features
 
+- User input validations
+- Runtime api response validation using zod
 - WebSocket support for real-time updates of transactions and their status
 
 ---

@@ -24,6 +24,7 @@ export class ChainRegistry {
     return ChainRegistry.instance;
   }
 
+  // DEV: if adding new default chains, also update README.md
   private initializeDefaultChains() {
     // Ethereum Mainnet
     this.registerChain({
