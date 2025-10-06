@@ -73,7 +73,7 @@ export class ArcApiService {
     transactionsRequestQueryParams: TransactionsRequestQueryParams
   ): Promise<Response<ApiResponse<TransactionsResponse>>> {
     return this.httpClient.get('/transactions', {
-      transactionsRequestQueryParams,
+      ...transactionsRequestQueryParams,
     });
   }
 
