@@ -19,6 +19,10 @@ import {
   TokenMappingQueryParams,
   TokenMappingResponse,
 } from '../../types/core';
+import {
+  TokenMetadataRequestParam,
+  TokenMetadataResponse,
+} from 'types/core/arcApiTokenMetadata';
 
 export class ArcApiService {
   private httpClient: HttpClient;
@@ -41,6 +45,14 @@ export class ArcApiService {
       offset,
       chainIds,
     });
+  }
+
+  async tokenMetadata(
+    tokenMetadataRequestParam: TokenMetadataRequestParam
+  ): Promise<Response<ApiResponse<TokenMetadataResponse>>> {
+    return this.httpClient.get(
+      `/metadata/tokens/${tokenMetadataRequestParam.tokenAddress}`
+    );
   }
 
   async routes(

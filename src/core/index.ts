@@ -15,6 +15,8 @@ import type {
   BuildClaimTransactionRequestParam,
   TokenMappingQueryParams,
   TokenMappingResponse,
+  TokenMetadataRequestParam,
+  TokenMetadataResponse,
 } from '@/types';
 import { ArcApiService } from './services/arcApi';
 import { UnsignedTransaction } from 'types/core/_arcApiUnsignedTransaction';
@@ -184,6 +186,29 @@ export class CoreClient {
       chainIds: ids,
       withSupportedTokens: true,
     });
+  }
+
+  /**
+   * Get token metadata by token address from ARC API
+   * @param tokenMetadataRequestParam - Object containing the token address
+   */
+  async getTokenMetadata(
+    tokenMetadataRequestParam: TokenMetadataRequestParam
+  ): Promise<TokenMetadataResponse> {
+    try {
+      const response = await this.arcApiService.tokenMetadata(
+        tokenMetadataRequestParam
+      );
+      if (response.data.status === 'success') {
+        return response.data.data;
+      }
+      throw ApiError.fromErrorResponse(response.data);
+    } catch (error) {
+      if (error instanceof ApiError) {
+        throw error;
+      }
+      throw ApiError.createFallbackError(error as Error, 'Get token metadata');
+    }
   }
 
   /**
