@@ -9,7 +9,7 @@ import type {
   RoutesRequestParams,
   RoutesResponse,
   TransactionsRequestQueryParams,
-  TransactionsResponse,
+  PaginatedTransactionsResponse,
   ChainsResponse,
   Route,
   BuildClaimTransactionRequestParam,
@@ -301,11 +301,12 @@ export class CoreClient {
   }
 
   /**
-   * Get all transactions via web sockets
+   * Get all transactions with pagination information
+   * @param transactionsRequestQueryParams - Parameters for the transactions API call
    */
   async getTransactions(
     transactionsRequestQueryParams: TransactionsRequestQueryParams
-  ): Promise<TransactionsResponse> {
+  ): Promise<PaginatedTransactionsResponse> {
     // validate limit
     if (
       transactionsRequestQueryParams.limit &&
@@ -322,7 +323,12 @@ export class CoreClient {
         transactionsRequestQueryParams
       );
       if (response.data.status === 'success') {
-        return response.data.data;
+        return {
+          transactions: response.data.data,
+          ...(response.data.pagination && {
+            pagination: response.data.pagination,
+          }),
+        };
       }
       throw ApiError.fromErrorResponse(response.data);
     } catch (error) {

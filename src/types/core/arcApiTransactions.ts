@@ -4,6 +4,8 @@
  * Defines the core request and response types for the transactions endpoint.
  */
 
+import type { CursorPagination } from './_arcApiBase';
+
 export interface Transaction {
   // Universal identifiers
   id: string; // Primary key: transactionId for LiFi, hubUID for Agglayer
@@ -66,6 +68,10 @@ export interface TransactionsRequestQueryParams {
   readonly startAfter?: number;
 }
 
-export type TransactionsResponse = {
-  transactions: Transaction[];
-};
+export type TransactionsResponse = Transaction[];
+
+// For exposing paginated response
+export interface PaginatedTransactionsResponse {
+  readonly transactions: TransactionsResponse;
+  readonly pagination?: CursorPagination;
+}
