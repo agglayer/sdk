@@ -18,11 +18,9 @@ import {
   BuildClaimTransactionResponse,
   TokenMappingQueryParams,
   TokenMappingResponse,
-} from '../../types/core';
-import {
   TokenMetadataRequestParam,
   TokenMetadataResponse,
-} from 'types/core/arcApiTokenMetadata';
+} from 'types/core';
 
 export class ArcApiService {
   private httpClient: HttpClient;
