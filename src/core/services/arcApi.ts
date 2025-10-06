@@ -18,7 +18,9 @@ import {
   BuildClaimTransactionResponse,
   TokenMappingQueryParams,
   TokenMappingResponse,
-} from '../../types/core';
+  TokenMetadataRequestParam,
+  TokenMetadataResponse,
+} from 'types/core';
 
 export class ArcApiService {
   private httpClient: HttpClient;
@@ -41,6 +43,14 @@ export class ArcApiService {
       offset,
       chainIds,
     });
+  }
+
+  async tokenMetadata(
+    tokenMetadataRequestParam: TokenMetadataRequestParam
+  ): Promise<Response<ApiResponse<TokenMetadataResponse>>> {
+    return this.httpClient.get(
+      `/metadata/tokens/${tokenMetadataRequestParam.tokenAddress}`
+    );
   }
 
   async routes(
@@ -73,7 +83,7 @@ export class ArcApiService {
     transactionsRequestQueryParams: TransactionsRequestQueryParams
   ): Promise<Response<ApiResponse<TransactionsResponse>>> {
     return this.httpClient.get('/transactions', {
-      transactionsRequestQueryParams,
+      ...transactionsRequestQueryParams,
     });
   }
 
