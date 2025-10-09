@@ -10,6 +10,10 @@
 export const ARC_API_BASE_URL = 'https://arc-api.polygon.technology';
 export const ARC_API_DEFAULT_TIMEOUT = 30000; // in ms
 
+// LiFi API constants
+export const LIFI_API_BASE_URL = 'https://li.quest';
+export const LIFI_API_DEFAULT_TIMEOUT = 5000; // in ms
+
 // todo: add logic to handle max limit
 export const MAX_CHAINS_PER_PAGE = 100;
 export const DEFAULT_CHAINS_PER_PAGE = 100;

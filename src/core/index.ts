@@ -17,13 +17,18 @@ import type {
   TokenMappingResponse,
   TokenMetadataRequestParam,
   TokenMetadataResponse,
+  LiFiStatusRequestParams,
+  LiFiStatusResponse,
 } from '@/types';
 import { ArcApiService } from './services/arcApi';
-import { UnsignedTransaction } from 'types/core/_arcApiUnsignedTransaction';
+import { LiFiApiService } from './services/lifiApi';
+import { UnsignedTransaction } from '../types/core/arcApi/_arcApiUnsignedTransaction';
 import { ApiError } from './utils/apiError';
 import {
   ARC_API_BASE_URL,
   ARC_API_DEFAULT_TIMEOUT,
+  LIFI_API_BASE_URL,
+  LIFI_API_DEFAULT_TIMEOUT,
   DEFAULT_CHAINS_PER_PAGE,
   DEFAULT_CHAINS_WITH_TOKENS_PER_PAGE,
   MAX_TRANSACTIONS_PER_PAGE,
@@ -32,6 +37,7 @@ import {
 export class CoreClient {
   private config: CoreConfig;
   private arcApiService: ArcApiService;
+  private lifiApiService: LiFiApiService;
 
   constructor(config?: CoreConfig) {
     // build config first
@@ -46,6 +52,11 @@ export class CoreClient {
     this.arcApiService = new ArcApiService({
       baseUrl: apiBaseUrl || ARC_API_BASE_URL,
       timeout: apiTimeout || ARC_API_DEFAULT_TIMEOUT,
+    });
+
+    this.lifiApiService = new LiFiApiService({
+      baseUrl: LIFI_API_BASE_URL,
+      timeout: LIFI_API_DEFAULT_TIMEOUT,
     });
   }
 
@@ -363,6 +374,34 @@ export class CoreClient {
       throw ApiError.createFallbackError(
         error as Error,
         'Get custom token mappings'
+      );
+    }
+  }
+
+  /**
+   * Check the status of a LiFi cross-chain transfer
+   *
+   * @param lifiStatusRequestParams - Status request parameters
+   * @param lifiStatusRequestParams.txHash - The transaction hash on the sending chain, destination chain or lifi step id
+   * @param lifiStatusRequestParams.bridge - Optional: The bridging tool used for the transfer
+   * @param lifiStatusRequestParams.fromChain - Optional: The sending chain (chain id or chain key)
+   * @param lifiStatusRequestParams.toChain - Optional: The receiving chain (chain id or chain key)
+   */
+  async getLiFiTransferStatus(
+    lifiStatusRequestParams: LiFiStatusRequestParams
+  ): Promise<LiFiStatusResponse> {
+    try {
+      const response = await this.lifiApiService.getStatus(
+        lifiStatusRequestParams
+      );
+      return response.data;
+    } catch (error) {
+      if (error instanceof ApiError) {
+        throw error;
+      }
+      throw ApiError.createFallbackError(
+        error as Error,
+        'Get LiFi transfer status'
       );
     }
   }
