@@ -19,10 +19,10 @@ import type {
   TokenMetadataResponse,
   LiFiStatusRequestParams,
   LiFiStatusResponse,
+  UnsignedTransaction,
 } from '@/types';
 import { ArcApiService } from './services/arcApi';
 import { LiFiApiService } from './services/lifiApi';
-import { UnsignedTransaction } from '../types/core/arcApi/_arcApiUnsignedTransaction';
 import { ApiError } from './utils/apiError';
 import {
   ARC_API_BASE_URL,

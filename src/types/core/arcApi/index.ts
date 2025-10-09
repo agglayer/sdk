@@ -6,6 +6,7 @@
 
 export * from './_arcApiBase';
 export * from './_arcApiTokens';
+export * from './_arcApiUnsignedTransaction';
 export * from './arcApiChains';
 export * from './arcApiRoutes';
 export * from './arcApiTransactions';
