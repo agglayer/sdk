@@ -4,7 +4,7 @@
  * Custom error class to preserve API error details
  */
 
-import type { ErrorResponse } from '../../types/core/_arcApiBase';
+import type { ErrorResponse } from '../../types/core/arcApi/_arcApiBase';
 
 export class ApiError extends Error {
   public readonly code: number;
