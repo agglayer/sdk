@@ -6,58 +6,82 @@
 
 import type { CursorPagination } from './_arcApiBase';
 
+interface Token {
+  name: string;
+  symbol: string;
+  decimals: number;
+  logoURI: string;
+}
+
+interface SendingToken extends Token {
+  // Agglayer specific
+  originTokenAddress: string;
+  originTokenNetwork: number | null; // Agglayer specific
+}
+
+interface ReceivingToken extends Token {
+  tokenAddress: string;
+}
+
+interface IntermediateToken extends Token {
+  tokenAddress: string;
+}
+
+interface Network {
+  chainId: number;
+  networkId: number | null; // Agglayer uses networkId, LiFi uses chainId
+}
+
+interface Step {
+  txHash: string;
+  network: Network;
+  timestamp: number;
+  amount: string;
+  amountUSD: string;
+  includedSteps: unknown[];
+}
+
+interface SendingStep extends Step {
+  token: SendingToken;
+}
+
+interface ReceivingStep extends Step {
+  token: ReceivingToken;
+}
+
+interface IntermediateStep extends Step {
+  token: IntermediateToken;
+}
+
 export interface Transaction {
   // Universal identifiers
   id: string; // Primary key: transactionId for LiFi, hubUID for Agglayer
   transactionHash: string; // Main transaction hash
-  bridgeHash: string | null; // Bridge-specific hash (Agglayer has this, LiFi uses transactionId)
 
   // Protocol specific
   protocols: string[]; // "LIFI", "AGGLAYER"
   status: string; // "BRIDGED", "LEAF_INCLUDED", "READY_TO_CLAIM", "CLAIMED", "REFUND_IN_PROGRESS", "REFUNDED"
-  timestamp: number;
 
   // Address information
   fromAddress: string;
   toAddress: string; // receiverAddress for Agglayer
 
-  sending: {
-    txHash: string; // Main transaction hash, Agglayer bridge tx hash
-    network: {
-      chainId: number;
-      networkId: number | null; // Agglayer uses networkId, LiFi uses chainId
-    };
-    timestamp: number;
-    token: {
-      originTokenAddress: string;
-      originTokenNetwork: number | null; // Agglayer specific
-    };
-    amount: string;
-    includedSteps: unknown[] | null; // LiFi specific
-  };
-  receiving: {
-    txHash: string | null; // Agglayer claim tx hash
-    network: {
-      chainId: number;
-      networkId: number | null; // Agglayer uses networkId, LiFi uses chainId
-    };
-    timestamp: number | null;
-    amount: string;
-    tokenAddress: string;
-  } | null;
+  sending: SendingStep;
+  receiving: ReceivingStep | null;
 
-  // Agglayer specific fields
-  leafType: string | null;
-  depositCount: number | null;
-  transactionIndex: number | null;
-  blockNumber: number | null;
-  leafIndex: number | null;
+  intermediateSteps: IntermediateStep[];
+
+  transactionHashes: string[];
 
   // Metadata
   metadata: {
     integrator: string | null;
     feeCosts: unknown[] | null; // LiFi specific
+    // Agglayer specific fields
+    leafType: string | null;
+    depositCount: number | null;
   };
+  lastUpdatedAt: number;
 }
 
 export interface TransactionsRequestQueryParams {
