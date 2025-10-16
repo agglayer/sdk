@@ -6,6 +6,16 @@
 
 import type { CursorPagination } from './_arcApiBase';
 
+export enum TransactionStatus {
+  BRIDGED = 'BRIDGED',
+  LEAF_INCLUDED = 'LEAF_INCLUDED',
+  READY_TO_CLAIM = 'READY_TO_CLAIM',
+  CLAIMED = 'CLAIMED',
+  REFUND_IN_PROGRESS = 'REFUND_IN_PROGRESS',
+  REFUNDED = 'REFUNDED',
+  FAILED = 'FAILED',
+}
+
 interface Token {
   name: string;
   symbol: string;
@@ -86,8 +96,9 @@ export interface Transaction {
 
 export interface TransactionsRequestQueryParams {
   readonly address?: string;
-  readonly sourceNetworkIds?: string;
-  readonly destinationNetworkIds?: string;
+  readonly sourceChainIds?: number[];
+  readonly destinationChainIds?: number[];
+  readonly statuses?: TransactionStatus[];
   readonly limit?: number;
   readonly startAfter?: number;
 }
