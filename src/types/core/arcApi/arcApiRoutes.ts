@@ -4,7 +4,7 @@
  * Defines the core request and response types for the routes endpoint.
  */
 
-import { TokenInfo, TokenReference } from './_arcApiTokens';
+import { TokenInfo } from './_arcApiTokens';
 import { UnsignedTransaction } from './_arcApiUnsignedTransaction';
 
 export interface RoutePreferences {
@@ -18,11 +18,11 @@ export interface RoutePreferences {
 export interface FeeCost {
   readonly name: string;
   readonly description?: string;
-  readonly token: TokenInfo;
   readonly amount: string;
   readonly amountUSD?: string;
   readonly percentage?: string;
   readonly included: boolean;
+  readonly token: TokenInfo;
 }
 
 export interface GasCost {
@@ -33,7 +33,7 @@ export interface GasCost {
   readonly limit: string;
   readonly amount: string;
   readonly amountUSD?: string;
-  readonly token: TokenReference;
+  readonly token: TokenInfo;
 }
 
 export type StepType = 'swap' | 'cross' | 'lifi';

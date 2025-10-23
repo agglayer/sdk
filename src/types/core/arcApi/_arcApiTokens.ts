@@ -17,9 +17,3 @@ export interface TokenInfo {
   readonly originTokenAddress?: string; // Agglayer specific
   readonly originTokenNetwork?: number | null; // Agglayer specific
 }
-
-// Simplified token reference for cost breakdowns
-export interface TokenReference {
-  readonly address: string;
-  readonly chainId: number;
-}
