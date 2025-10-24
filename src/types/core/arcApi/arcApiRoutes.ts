@@ -18,11 +18,11 @@ export interface RoutePreferences {
 export interface FeeCost {
   readonly name: string;
   readonly description?: string;
-  readonly token: TokenInfo;
   readonly amount: string;
   readonly amountUSD?: string;
   readonly percentage?: string;
   readonly included: boolean;
+  readonly token: TokenReference;
 }
 
 export interface GasCost {

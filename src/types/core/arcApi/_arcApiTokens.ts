@@ -22,4 +22,8 @@ export interface TokenInfo {
 export interface TokenReference {
   readonly address: string;
   readonly chainId: number;
+  readonly name: string;
+  readonly symbol: string;
+  readonly decimals: number;
+  readonly logoURI?: string;
 }
