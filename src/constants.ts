@@ -35,3 +35,6 @@ export const NETWORKS = {
 } as const;
 
 export const DEFAULT_NETWORK = NETWORKS.ETHEREUM;
+
+// Zero address for native ETH
+export const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000';

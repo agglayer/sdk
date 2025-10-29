@@ -6,11 +6,17 @@
 
 import { encodeFunctionData, type Address, type Hex } from 'viem';
 import { bridgeAbi } from './abi/bridge';
+import { ZERO_ADDRESS } from '../../constants';
 import type { TransactionParams } from '@/types';
 
 export interface BuildContext {
   bridgeAddress: string;
-  estimateGas: (data: Hex, to: string, from?: string) => Promise<string>;
+  estimateGas: (
+    data: Hex,
+    to: string,
+    from?: string,
+    value?: bigint
+  ) => Promise<string>;
   getNonce: (address?: string) => Promise<string | undefined>;
 }
 
@@ -37,18 +43,29 @@ export async function buildBridgeAsset(
     ],
   });
 
+  // Check if this is native ETH bridging (token is zero address)
+  const isNativeETH = token.toLowerCase() === ZERO_ADDRESS;
+  const value = isNativeETH ? amount : undefined;
+
   const [nonce, gas] = await Promise.all([
     ctx.getNonce(from),
-    ctx.estimateGas(data, ctx.bridgeAddress, from),
+    ctx.estimateGas(data, ctx.bridgeAddress, from, value),
   ]);
 
-  return {
+  const result: TransactionParams = {
     from,
     to: ctx.bridgeAddress,
     data,
     gas,
     nonce,
   };
+
+  // For native ETH, set the value field to match the amount
+  if (isNativeETH) {
+    result.value = amount.toString();
+  }
+
+  return result;
 }
 
 export async function buildClaimAsset(

@@ -43,12 +43,14 @@ export abstract class BaseContract {
   protected async estimateGas(
     data: Hex,
     to: string,
-    from?: string
+    from?: string,
+    value?: bigint
   ): Promise<string> {
     const gasEstimate = await this.client.estimateGas({
       account: from as Address,
       to: to as Address,
       data,
+      value,
     });
     return gasEstimate.toString();
   }
