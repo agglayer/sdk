@@ -186,12 +186,14 @@ export class ERC20 extends BaseContract {
    *
    * @param transactionHash - Hash of the bridge transaction on the source network
    * @param sourceNetworkId - Network ID of the source network (where bridge tx happened)
+   * @param leafIndex - Leaf index for the claim proof
    * @param bridgeIndex - Index of bridge event in transaction (default: 0)
    * @param from - From address for the claim transaction
    */
   async claimAsset(
     transactionHash: string,
     sourceNetworkId: number,
+    leafIndex: number,
     bridgeIndex = 0,
     from?: string
   ): Promise<TransactionParams> {
@@ -199,6 +201,7 @@ export class ERC20 extends BaseContract {
     return bridge.buildClaimAssetFromHash(
       transactionHash,
       sourceNetworkId,
+      leafIndex,
       bridgeIndex,
       from
     );
@@ -209,12 +212,14 @@ export class ERC20 extends BaseContract {
    *
    * @param transactionHash - Hash of the bridge transaction on the source network
    * @param sourceNetworkId - Network ID of the source network (where bridge tx happened)
+   * @param leafIndex - Leaf index for the claim proof
    * @param bridgeIndex - Index of bridge event in transaction (default: 0)
    * @param from - From address for the claim transaction
    */
   async claimMessage(
     transactionHash: string,
     sourceNetworkId: number,
+    leafIndex: number,
     bridgeIndex = 0,
     from?: string
   ): Promise<TransactionParams> {
@@ -222,6 +227,7 @@ export class ERC20 extends BaseContract {
     return bridge.buildClaimMessageFromHash(
       transactionHash,
       sourceNetworkId,
+      leafIndex,
       bridgeIndex,
       from
     );
