@@ -53,7 +53,8 @@ export class Bridge extends BaseContract {
     return buildBridgeAssetTx(
       {
         bridgeAddress: this.bridgeAddress,
-        estimateGas: (data, to, from) => this.estimateGas(data, to, from),
+        estimateGas: (data, to, from, value) =>
+          this.estimateGas(data, to, from, value),
         getNonce: (address) => this.getNonce(address),
       },
       params.destinationNetwork,
@@ -85,7 +86,8 @@ export class Bridge extends BaseContract {
     return buildClaimAssetTx(
       {
         bridgeAddress: this.bridgeAddress,
-        estimateGas: (data, to, from) => this.estimateGas(data, to, from),
+        estimateGas: (data, to, from, value) =>
+          this.estimateGas(data, to, from, value),
         getNonce: (address) => this.getNonce(address),
       },
       params.smtProofLocalExitRoot,
@@ -169,7 +171,8 @@ export class Bridge extends BaseContract {
     return buildBridgeMessageTx(
       {
         bridgeAddress: this.bridgeAddress,
-        estimateGas: (data, to, from) => this.estimateGas(data, to, from),
+        estimateGas: (data, to, from, value) =>
+          this.estimateGas(data, to, from, value),
         getNonce: (address) => this.getNonce(address),
       },
       params.destinationNetwork,
@@ -199,7 +202,8 @@ export class Bridge extends BaseContract {
     return buildClaimMessageTx(
       {
         bridgeAddress: this.bridgeAddress,
-        estimateGas: (data, to, from) => this.estimateGas(data, to, from),
+        estimateGas: (data, to, from, value) =>
+          this.estimateGas(data, to, from, value),
         getNonce: (address) => this.getNonce(address),
       },
       params.smtProofLocalExitRoot,

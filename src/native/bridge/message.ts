@@ -10,7 +10,12 @@ import type { TransactionParams } from '@/types';
 
 export interface BuildContext {
   bridgeAddress: string;
-  estimateGas: (data: Hex, to: string, from?: string) => Promise<string>;
+  estimateGas: (
+    data: Hex,
+    to: string,
+    from?: string,
+    value?: bigint
+  ) => Promise<string>;
   getNonce: (address?: string) => Promise<string | undefined>;
 }
 
