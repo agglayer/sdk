@@ -215,6 +215,7 @@ const bridgeAssetTx = await bridge.buildBridgeAsset(
 const claimAssetTx = await bridge.buildClaimAssetFromHash(
   '0xBridgeTxHash123456789012345678901234567890123456789012345678',
   11155111, // source network where bridge tx occurred
+  10000, // leaf index for the claim proof
   0, // bridge event index in tx (usually 0)
   '0xFromAddress12345678901234567890123456789012345' // claimer address
 );
@@ -250,6 +251,7 @@ const bridgeMessageTx = await bridge.buildBridgeMessage(
 const claimMessageTx = await bridge.buildClaimMessageFromHash(
   '0xBridgeMessageTxHash12345678901234567890123456789012345678901234',
   11155111, // source network
+  10000, // leaf index for the claim proof
   0, // message event index
   '0xFromAddress12345678901234567890123456789012345' // claimer
 );

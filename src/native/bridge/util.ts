@@ -25,12 +25,19 @@ export interface BridgeEventInfo {
 }
 
 export interface MerkleProof {
-  merkle_proof: string[];
-  rollup_merkle_proof?: string[];
-  exit_root_num?: string; // Match native.js interface
-  l2_exit_root_num?: string; // Match native.js interface
-  main_exit_root: string;
-  rollup_exit_root: string;
+  proof_local_exit_root: string[];
+  proof_rollup_exit_root: string[];
+  l1_info_tree_leaf: {
+    block_num: number;
+    block_pos: number;
+    l1_info_tree_index: number;
+    previous_block_hash: string;
+    timestamp: number;
+    mainnet_exit_root: string;
+    rollup_exit_root: string;
+    global_exit_root: string;
+    hash: string;
+  };
 }
 
 export interface ClaimPayload {
@@ -188,17 +195,18 @@ export class BridgeUtil {
   }
 
   /**
-   * Fetch merkle proof from Polygon's proof API
+   * Fetch merkle proof from Polygon's hub API
    */
   private async fetchMerkleProof(
     networkId: number,
-    depositCount: number
+    depositCount: number,
+    leafIndex: number
   ): Promise<MerkleProof> {
     try {
       const baseUrl = this.proofApiUrl.endsWith('/')
         ? this.proofApiUrl
         : `${this.proofApiUrl}/`;
-      const url = `${baseUrl}merkle-proof?networkId=${networkId}&depositCount=${depositCount}`;
+      const url = `${baseUrl}claim-proof?sourceNetworkId=${networkId}&depositCount=${depositCount}&leafIndex=${leafIndex}`;
 
       const response = await fetch(url);
       if (!response.ok) {
@@ -207,13 +215,16 @@ export class BridgeUtil {
         );
       }
 
-      const data = (await response.json()) as { proof: MerkleProof };
+      const data = (await response.json()) as {
+        status: string;
+        data: MerkleProof;
+      };
 
-      if (!data.proof) {
+      if (data.status !== 'success' || !data.data) {
         throw new Error('Invalid response format: missing proof data');
       }
 
-      return data.proof;
+      return data.data;
     } catch (error) {
       if (error instanceof Error) {
         throw new Error(`Failed to fetch merkle proof: ${error.message}`);
@@ -244,6 +255,7 @@ export class BridgeUtil {
   async buildPayloadForClaim(
     transactionHash: string,
     sourceNetworkId: number,
+    leafIndex: number,
     bridgeIndex = 0
   ): Promise<ClaimPayload> {
     // Extract bridge event data
@@ -256,7 +268,8 @@ export class BridgeUtil {
     // Fetch merkle proof
     const proof = await this.fetchMerkleProof(
       sourceNetworkId,
-      bridgeEvent.depositCount
+      bridgeEvent.depositCount,
+      leafIndex
     );
 
     // Compute global index
@@ -266,11 +279,11 @@ export class BridgeUtil {
     );
 
     return {
-      smtProof: proof.merkle_proof,
-      smtProofRollup: proof.rollup_merkle_proof,
+      smtProof: proof.proof_local_exit_root,
+      smtProofRollup: proof.proof_rollup_exit_root,
       globalIndex: globalIndex.toString(),
-      mainnetExitRoot: proof.main_exit_root,
-      rollupExitRoot: proof.rollup_exit_root,
+      mainnetExitRoot: proof.l1_info_tree_leaf.mainnet_exit_root,
+      rollupExitRoot: proof.l1_info_tree_leaf.rollup_exit_root,
       originNetwork: bridgeEvent.originNetwork,
       originTokenAddress: bridgeEvent.originTokenAddress,
       destinationNetwork: bridgeEvent.destinationNetwork,
@@ -286,11 +299,13 @@ export class BridgeUtil {
   async buildClaimAssetParams(
     transactionHash: string,
     sourceNetworkId: number,
+    leafIndex: number,
     bridgeIndex = 0
   ): Promise<ClaimAssetParams> {
     const payload = await this.buildPayloadForClaim(
       transactionHash,
       sourceNetworkId,
+      leafIndex,
       bridgeIndex
     );
 
@@ -316,11 +331,13 @@ export class BridgeUtil {
   async buildClaimMessageParams(
     transactionHash: string,
     sourceNetworkId: number,
+    leafIndex: number,
     bridgeIndex = 0
   ): Promise<ClaimMessageParams> {
     const payload = await this.buildPayloadForClaim(
       transactionHash,
       sourceNetworkId,
+      leafIndex,
       bridgeIndex
     );
 

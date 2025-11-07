@@ -266,12 +266,14 @@ export class Bridge extends BaseContract {
    *
    * @param transactionHash - Hash of the bridge transaction on the source network
    * @param sourceNetworkId - Network ID of the source network (where bridge tx happened)
+   * @param leafIndex - Leaf index for the claim proof
    * @param bridgeIndex - Index of bridge event in transaction (default: 0)
    * @param from - From address for the claim transaction
    */
   async buildClaimAssetFromHash(
     transactionHash: string,
     sourceNetworkId: number,
+    leafIndex: number,
     bridgeIndex = 0,
     from?: string
   ): Promise<TransactionParams> {
@@ -279,6 +281,7 @@ export class Bridge extends BaseContract {
     const params = await bridgeUtil.buildClaimAssetParams(
       transactionHash,
       sourceNetworkId,
+      leafIndex,
       bridgeIndex
     );
 
@@ -290,12 +293,14 @@ export class Bridge extends BaseContract {
    *
    * @param transactionHash - Hash of the bridge transaction on the source network
    * @param sourceNetworkId - Network ID of the source network (where bridge tx happened)
+   * @param leafIndex - Leaf index for the claim proof
    * @param bridgeIndex - Index of bridge event in transaction (default: 0)
    * @param from - From address for the claim transaction
    */
   async buildClaimMessageFromHash(
     transactionHash: string,
     sourceNetworkId: number,
+    leafIndex: number,
     bridgeIndex = 0,
     from?: string
   ): Promise<TransactionParams> {
@@ -303,6 +308,7 @@ export class Bridge extends BaseContract {
     const params = await bridgeUtil.buildClaimMessageParams(
       transactionHash,
       sourceNetworkId,
+      leafIndex,
       bridgeIndex
     );
 

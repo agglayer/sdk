@@ -35,8 +35,7 @@ export class ChainRegistry {
       nativeCurrency: { name: 'Ether', symbol: 'ETH', decimals: 18 },
       blockExplorer: { name: 'Etherscan', url: 'https://etherscan.io' },
       bridgeAddress: '',
-      proofApiUrl:
-        'https://api-gateway.polygon.technology/api/v3/proof/mainnet/',
+      proofApiUrl: 'https://bridge-hub-api.polygon.technology/mainnet/',
       isTestnet: false,
     });
 
@@ -52,8 +51,7 @@ export class ChainRegistry {
         url: 'https://katanascan.com',
       },
       bridgeAddress: '',
-      proofApiUrl:
-        'https://api-gateway.polygon.technology/api/v3/proof/mainnet/',
+      proofApiUrl: 'https://bridge-hub-api.polygon.technology/mainnet/',
       isTestnet: false,
     });
 
@@ -69,8 +67,7 @@ export class ChainRegistry {
         url: 'https://sepolia.etherscan.io',
       },
       bridgeAddress: '0x528e26b25a34a4A5d0dbDa1d57D318153d2ED582',
-      proofApiUrl:
-        'https://api-gateway.polygon.technology/api/v3/proof/testnet/',
+      proofApiUrl: 'https://bridge-hub-api.polygon.technology/testnet/',
       isTestnet: true,
     });
 
