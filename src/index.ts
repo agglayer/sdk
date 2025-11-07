@@ -14,6 +14,7 @@ export type * from './types';
 
 // Re-export constants and values
 export { SDK_MODES } from './types';
+export { TransactionStatus } from './types';
 
 // Re-export error classes
 export { ApiError } from './core/utils/apiError';

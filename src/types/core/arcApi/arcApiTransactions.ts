@@ -14,6 +14,7 @@ export enum TransactionStatus {
   REFUND_IN_PROGRESS = 'REFUND_IN_PROGRESS',
   REFUNDED = 'REFUNDED',
   FAILED = 'FAILED',
+  PARTIAL = 'PARTIAL',
 }
 
 interface Token {
