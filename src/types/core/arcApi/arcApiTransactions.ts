@@ -91,6 +91,7 @@ export interface Transaction {
     // Agglayer specific fields
     leafType: string | null;
     depositCount: number | null;
+    refuel?: boolean;
   };
   lastUpdatedAt: number;
 }

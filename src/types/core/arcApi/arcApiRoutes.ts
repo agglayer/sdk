@@ -45,6 +45,25 @@ export interface ToolDetails {
   readonly webUrl?: string | null;
 }
 
+export interface RefuelToken {
+  readonly address: string;
+  readonly decimals: number;
+  readonly logoURI: string;
+  readonly name: string;
+  readonly originChainId?: number;
+  readonly originTokenAddress?: string;
+  readonly symbol?: string;
+  readonly priceUSD: string;
+  readonly chainId: number;
+}
+
+export interface RefuelInfo {
+  readonly refuelAddress?: string;
+  readonly buyToken?: RefuelToken;
+  readonly buyAmount?: string;
+  readonly sellAmount?: string;
+}
+
 export interface StepAction {
   readonly fromChainId: number;
   readonly toChainId: number;
@@ -66,6 +85,9 @@ export interface StepAction {
   readonly toContractCallData?: string;
   readonly toFallbackAddress?: string;
   readonly callDataGasLimit?: string;
+
+  // Optional refuel details (AggLayer routes)
+  readonly refuel?: RefuelInfo;
 }
 
 export interface StepEstimate {
@@ -189,6 +211,7 @@ export interface RoutesRequestParams {
   readonly toAddress?: string;
   readonly slippage?: number;
   readonly preferences?: RoutePreferences;
+  readonly refuel?: boolean;
 }
 
 export type RoutesResponse = readonly Route[];
