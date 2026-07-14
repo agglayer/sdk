@@ -1,0 +1,43 @@
+{
+    "bridges": [
+        {
+            "block_num": 220,
+            "block_pos": 0,
+            "from_address": "0x3C4d3AAB4356120117E88225e649f0A7ae0401DE",
+            "tx_hash": "0x84aab3e3fbca250f0d98dadd66805cf8ab875ca9b1859e9e32ff6d2da770ab9c",
+            "global_index": 18446744073709551620,
+            "block_timestamp": 1783930984,
+            "leaf_type": 0,
+            "origin_network": 0,
+            "origin_address": "0x0000000000000000000000000000000000000000",
+            "destination_network": 1,
+            "destination_address": "0x3C4d3AAB4356120117E88225e649f0A7ae0401DE",
+            "amount": "1783930981",
+            "metadata": "0x",
+            "deposit_count": 4,
+            "bridge_hash": "0x0aaf70344d0a776294e609094fcd63829819a5800b7751275e8b055c6e721df3",
+            "txn_sender": "0x3C4d3AAB4356120117E88225e649f0A7ae0401DE",
+            "to_address": "0xC8cbEBf950B9Df44d987c8619f092beA980fF038"
+        },
+        {
+            "block_num": 187,
+            "block_pos": 0,
+            "from_address": "0x3C4d3AAB4356120117E88225e649f0A7ae0401DE",
+            "tx_hash": "0x983b37c99e056bf5413faee71a05b2b79c5add5e9cad588b59b4a621125c5233",
+            "global_index": 18446744073709551619,
+            "block_timestamp": 1783930918,
+            "leaf_type": 0,
+            "origin_network": 0,
+            "origin_address": "0x0000000000000000000000000000000000000000",
+            "destination_network": 1,
+            "destination_address": "0x3C4d3AAB4356120117E88225e649f0A7ae0401DE",
+            "amount": "1783930915",
+            "metadata": "0x",
+            "deposit_count": 3,
+            "bridge_hash": "0xb21a3bf46183e8281871c5bb7901ce04a1fda40d9714fb74d5dbee9f0d34caed",
+            "txn_sender": "0x3C4d3AAB4356120117E88225e649f0A7ae0401DE",
+            "to_address": "0xC8cbEBf950B9Df44d987c8619f092beA980fF038"
+        }
+    ],
+    "count": 7
+}

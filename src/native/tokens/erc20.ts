@@ -68,6 +68,63 @@ export class ERC20 extends BaseContract {
   }
 
   /**
+   * Get on-chain token metadata (name, symbol, decimals, best-effort totalSupply).
+   *
+   * Used by `AggkitBridgeAggregator.getTokenMetadata` to compose the ERC20
+   * branch of token metadata (aggkit's `/token-mappings` has no
+   * name/symbol/decimals fields — design.md §5.1). `totalSupply` reads
+   * tolerate reverts (some tokens omit it) and are simply left undefined.
+   */
+  async getMetadata(): Promise<{
+    name: string;
+    symbol: string;
+    decimals: number;
+    totalSupply?: string;
+  }> {
+    const [name, symbol, decimals] = await Promise.all([
+      this.client.readContract({
+        address: this.tokenAddress as Address,
+        abi: getAbi('ERC20'),
+        functionName: 'name',
+      }),
+      this.client.readContract({
+        address: this.tokenAddress as Address,
+        abi: getAbi('ERC20'),
+        functionName: 'symbol',
+      }),
+      this.client.readContract({
+        address: this.tokenAddress as Address,
+        abi: getAbi('ERC20'),
+        functionName: 'decimals',
+      }),
+    ]);
+
+    const metadata: {
+      name: string;
+      symbol: string;
+      decimals: number;
+      totalSupply?: string;
+    } = {
+      name: name as string,
+      symbol: symbol as string,
+      decimals: Number(decimals),
+    };
+
+    try {
+      const totalSupply = await this.client.readContract({
+        address: this.tokenAddress as Address,
+        abi: getAbi('ERC20'),
+        functionName: 'totalSupply',
+      });
+      metadata.totalSupply = (totalSupply as bigint).toString();
+    } catch {
+      // totalSupply is optional; tolerate reverts (design.md §5.1).
+    }
+
+    return metadata;
+  }
+
+  /**
    * Build approve transaction
    */
   async buildApprove(

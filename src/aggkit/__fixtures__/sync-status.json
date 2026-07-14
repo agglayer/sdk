@@ -1,0 +1,14 @@
+{
+    "l1_info": {
+        "contract_deposit_count": 6,
+        "synchronized_deposit_count": 6,
+        "is_synced": true,
+        "is_active": true
+    },
+    "l2_info": {
+        "contract_deposit_count": 3,
+        "synchronized_deposit_count": 3,
+        "is_synced": true,
+        "is_active": true
+    }
+}

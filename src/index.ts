@@ -19,6 +19,38 @@ export { TransactionStatus } from './types';
 // Re-export error classes
 export { ApiError } from './core/utils/apiError';
 
+// Re-export the standalone aggkit bridge-service module: S4's single-network
+// `AggkitBridgeClient`, plus S5's multi-network `AggkitBridgeAggregator`
+// (fan-out/join/status-derivation/token-metadata; see src/aggkit/index.ts).
+export {
+  AggkitBridgeClient,
+  AggkitBridgeAggregator,
+  AggkitApiError,
+} from './aggkit';
+export type {
+  AggkitApiErrorArgs,
+  AggkitBridgeClientConfig,
+  AggkitBridgesResult,
+  AggkitClaimsResult,
+  AggkitTokenMappingsResult,
+  AggkitBridge,
+  AggkitClaim,
+  AggkitClaimProof,
+  AggkitL1InfoTreeLeaf,
+  AggkitTokenMapping,
+  AggkitSyncStatus,
+  AggkitSyncStatusInfo,
+  AggkitHealthResponse,
+  AggkitErrorBody,
+  AggkitAggregatorConfig,
+  AggkitTransactionStatus,
+  AggkitTransaction,
+  AggkitFailedNetwork,
+  AggkitActivityPage,
+  AggkitPageCursor,
+  AggkitTokenMetadata,
+} from './aggkit';
+
 const defaultConfig: SDKConfig = {
   mode: [SDK_MODES.CORE],
 };

@@ -1,0 +1,22 @@
+{
+    "claims": [
+        {
+            "block_num": 403,
+            "block_timestamp": 1783931103,
+            "tx_hash": "0xda89db2a2c0a46391d4a5d2b0d64c6bb1613f22c161199e028fb887ebb987093",
+            "global_index": "18446744073709551621",
+            "origin_address": "0x0000000000000000000000000000000000000000",
+            "origin_network": 0,
+            "destination_address": "0x3C4d3AAB4356120117E88225e649f0A7ae0401DE",
+            "destination_network": 1,
+            "amount": "1783931047",
+            "from_address": "",
+            "mainnet_exit_root": "0x7f60b230c09611ff3242947444f59a9c682ecbe14bc63d9c2a59af0ff9e530ed",
+            "rollup_exit_root": "0x0000000000000000000000000000000000000000000000000000000000000000",
+            "global_exit_root": "0x1d78257eb87123d56c4fb081909141cebb76cd21c7b66b0e5c6e17494edc2b4f",
+            "metadata": "0x",
+            "is_message": false
+        }
+    ],
+    "count": 1
+}
