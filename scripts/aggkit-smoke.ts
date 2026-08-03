@@ -1,42 +1,73 @@
 /**
  * aggkit-smoke.ts
  *
- * Integration smoke test for the S4/S5 aggkit SDK code (`src/aggkit/*`)
- * against a LIVE aggkit bridge REST instance — NOT a fixture-driven unit
- * test. Exercises: health, sync-status, a real spammer address's activity
- * (via the aggregator), full status derivation against known ground truth,
- * the l1-info-tree-index -> claim-proof roundtrip, and token-mappings.
+ * Integration smoke test for the aggkit SDK code (`src/aggkit/*`) against a
+ * LIVE aggkit-proxy (or haproxy `/aggkitapi`) REST endpoint fronting the
+ * 2-L2 (L2-1/L2-2) devnet — NOT a fixture-driven unit test (design.md §8 S8
+ * item 7). Exercises: per-network sync-status across {0,1,2}, a real
+ * address's multi-network activity fan-out (via the aggregator), a
+ * known-ground-truth CLAIMED check, an L2->L2 row's derived status, the
+ * destination-injected `getClaimInputs` roundtrip for both an L2->L2 and an
+ * L2->L1 deposit, token-mappings, and (optionally) the proxy-502
+ * partial-failure path.
  *
- * Run (see /home/brolygon/repos/plans/aggkit-migration/handoff-sdk.md for
- * the exact command + recorded output from the S6 run):
+ * Run (see /home/brolygon/repos/plans/aggkit-proxy-l2l2/handoff-sdk.md for
+ * the exact command + recorded output from the S8 run):
  *
- *   AGGKIT_URL=http://127.0.0.1:<port> npx tsx scripts/aggkit-smoke.ts
+ *   AGGKIT_URL=http://127.0.0.1:<proxyPort> npx tsx scripts/aggkit-smoke.ts
+ *
+ * Re-resolve the base URL (ports are ephemeral):
+ *   kurtosis port print cdk aggkit-proxy-001 rest          # direct proxy port
+ *   kurtosis port print cdk agglayer-dev-ui-proxy-002 http # haproxy (append /aggkitapi)
  *
  * Env vars:
- *   AGGKIT_URL     required. Direct aggkit REST base (WITHOUT /bridge/v1),
- *                  e.g. http://127.0.0.1:33513. Re-resolve with
- *                  `kurtosis port print cdk aggkit-001-bridge rest`.
- *   L2_NETWORK_ID  optional, default 1 (this enclave's single L2).
- *   FROM_ADDRESS   optional, default the bridge-spammer's observed
- *                  from_address in this enclave. Override if traffic moves
- *                  to a different address after an enclave recreate.
+ *   AGGKIT_URL               required. aggkit-proxy REST base (WITHOUT
+ *                             /bridge/v1) — either the direct proxy port, or
+ *                             `<haproxy>/aggkitapi`.
+ *   PROXY_MODE                optional, default "true". Skips check 1
+ *                             (getHealth) when true (design.md §2.4 gap
+ *                             G3 — aggkit-proxy has no root health route).
+ *                             Set to "false" to run against a single direct
+ *                             aggkit instance instead (pre-S8 behaviour).
+ *   L2_NETWORK_IDS            optional, default "1,2". Comma-separated L2
+ *                             network ids configured on the aggregator, all
+ *                             pointed at AGGKIT_URL (design.md §0.1: one
+ *                             proxy fronts every network).
+ *   FROM_ADDRESS               optional, default the L2-1 test EOA
+ *                             (`0x9BEE1d978DF451350fA93C69c4A1f6fFca12d107`,
+ *                             enclave-notes.md) that sent this round's
+ *                             L2-1->L2-2 and L2-1->L1 lifecycle deposits.
+ *   RUN_PARTIAL_FAILURE_TEST  optional, default "false". When "true", runs
+ *                             the final section: stops `aggkit-002-bridge`
+ *                             via `kurtosis service stop cdk
+ *                             aggkit-002-bridge`, asserts `getActivity`
+ *                             degrades instead of rejecting (design.md §2.2
+ *                             gap G1), then restarts it. Off by default
+ *                             because it mutates the live enclave.
  */
 
+import { execSync } from 'node:child_process';
 import { AggkitBridgeClient } from '../src/aggkit/client';
 import { AggkitBridgeAggregator } from '../src/aggkit/aggregator';
 
 const AGGKIT_URL = process.env['AGGKIT_URL'];
 if (!AGGKIT_URL) {
   console.error(
-    'AGGKIT_URL env var is required (direct aggkit REST base, e.g. http://127.0.0.1:33513).\n' +
-      'Re-resolve with: kurtosis port print cdk aggkit-001-bridge rest'
+    'AGGKIT_URL env var is required (aggkit-proxy REST base, e.g. http://127.0.0.1:33042,\n' +
+      'or <haproxy>/aggkitapi).\n' +
+      'Re-resolve with: kurtosis port print cdk aggkit-proxy-001 rest'
   );
   process.exit(1);
 }
 
-const L2_NETWORK_ID = Number(process.env['L2_NETWORK_ID'] ?? 1);
+const PROXY_MODE = (process.env['PROXY_MODE'] ?? 'true') !== 'false';
+const L2_NETWORK_IDS = (process.env['L2_NETWORK_IDS'] ?? '1,2')
+  .split(',')
+  .map((s) => Number(s.trim()));
 const FROM_ADDRESS =
-  process.env['FROM_ADDRESS'] ?? '0xb22BA8Af891A6D173648B45D3eFC234391bA99D0';
+  process.env['FROM_ADDRESS'] ?? '0x9BEE1d978DF451350fA93C69c4A1f6fFca12d107';
+const RUN_PARTIAL_FAILURE_TEST =
+  process.env['RUN_PARTIAL_FAILURE_TEST'] === 'true';
 
 let failures = 0;
 function assert(cond: unknown, message: string): void {
@@ -49,37 +80,73 @@ function assert(cond: unknown, message: string): void {
 }
 
 async function main(): Promise<void> {
-  const client = new AggkitBridgeClient({
-    baseUrl: AGGKIT_URL as string,
-    networkId: L2_NETWORK_ID,
-  });
+  const primaryNetworkId = L2_NETWORK_IDS[0] as number;
+  const allNetworkIds = [0, ...L2_NETWORK_IDS];
+  const clients = new Map<number, AggkitBridgeClient>();
+  for (const networkId of allNetworkIds) {
+    clients.set(
+      networkId,
+      new AggkitBridgeClient({ baseUrl: AGGKIT_URL as string, networkId })
+    );
+  }
   const aggregator = new AggkitBridgeAggregator({
-    networks: { [L2_NETWORK_ID]: AGGKIT_URL as string },
+    networks: Object.fromEntries(
+      L2_NETWORK_IDS.map((id) => [id, AGGKIT_URL as string])
+    ),
   });
 
-  console.log(`\naggkit-smoke: base=${AGGKIT_URL} l2NetworkId=${L2_NETWORK_ID} fromAddress=${FROM_ADDRESS}`);
-
-  console.log(`\n=== 1. Health (GET /) ===`);
-  const health = await client.getHealth();
-  console.log(health);
-  assert(health.status === 'ok', 'health.status === "ok"');
-  assert(
-    typeof health.version === 'string' && health.version.length > 0,
-    'health.version is a non-empty string'
-  );
-
-  console.log(`\n=== 2. Sync status (GET /bridge/v1/sync-status) ===`);
-  const sync = await client.getSyncStatus();
-  console.log(JSON.stringify(sync, null, 2));
-  assert(sync.l1_info.is_synced === true, 'l1_info.is_synced === true');
-  assert(sync.l2_info.is_synced === true, 'l2_info.is_synced === true');
-  assert(
-    typeof sync.l1_info.contract_deposit_count === 'number',
-    'l1_info.contract_deposit_count is a number'
-  );
+  function mustGetClient(networkId: number): AggkitBridgeClient {
+    const client = clients.get(networkId);
+    if (!client) {
+      throw new Error(
+        `aggkit-smoke: no client configured for network ${networkId}`
+      );
+    }
+    return client;
+  }
 
   console.log(
-    `\n=== 3. Activity for a real spammer address (via AggkitBridgeAggregator.getActivity) ===`
+    `\naggkit-smoke: base=${AGGKIT_URL} proxyMode=${PROXY_MODE} networks=${JSON.stringify(
+      L2_NETWORK_IDS
+    )} fromAddress=${FROM_ADDRESS}`
+  );
+
+  console.log(`\n=== 1. Health (GET /) ===`);
+  if (PROXY_MODE) {
+    console.log(
+      'SKIPPED — design.md §2.4 gap G3: aggkit-proxy has no root health ' +
+        'route (haproxy strips the /aggkitapi prefix and aggkit-proxy only ' +
+        'registers ANY /bridge/v1/*any -> 404). getHealth() is unused by ' +
+        'the aggregator/app and remains a direct-instance-only convenience.'
+    );
+  } else {
+    const health = await mustGetClient(primaryNetworkId).getHealth();
+    console.log(health);
+    assert(health.status === 'ok', 'health.status === "ok"');
+    assert(
+      typeof health.version === 'string' && health.version.length > 0,
+      'health.version is a non-empty string'
+    );
+  }
+
+  console.log(
+    `\n=== 2. Sync status across ALL networks {${allNetworkIds.join(', ')}} (GET /bridge/v1/sync-status?network_id=N) ===`
+  );
+  for (const networkId of allNetworkIds) {
+    const sync = await mustGetClient(networkId).getSyncStatus();
+    console.log(`  network ${networkId}: ${JSON.stringify(sync)}`);
+    assert(
+      sync.l1_info.is_synced === true,
+      `network ${networkId}: l1_info.is_synced === true`
+    );
+    assert(
+      sync.l2_info.is_synced === true,
+      `network ${networkId}: l2_info.is_synced === true`
+    );
+  }
+
+  console.log(
+    `\n=== 3. Full fan-out activity across {${L2_NETWORK_IDS.join(', ')}} (via AggkitBridgeAggregator.getActivity) ===`
   );
   const activity = await aggregator.getActivity({
     fromAddress: FROM_ADDRESS,
@@ -92,14 +159,19 @@ async function main(): Promise<void> {
   );
   assert(
     activity.failedNetworks.length === 0,
-    'no failed networks in the getActivity fan-out'
+    'no failed networks in the getActivity fan-out (healthy enclave)'
   );
   assert(
     activity.data.length > 0,
     'getActivity returned at least one transaction for the real from_address'
   );
 
-  const knownStatuses = ['BRIDGED', 'LEAF_INCLUDED', 'READY_TO_CLAIM', 'CLAIMED'];
+  const knownStatuses = [
+    'BRIDGED',
+    'LEAF_INCLUDED',
+    'READY_TO_CLAIM',
+    'CLAIMED',
+  ];
   const statusCounts: Record<string, number> = {};
   for (const tx of activity.data) {
     statusCounts[tx.status] = (statusCounts[tx.status] ?? 0) + 1;
@@ -110,41 +182,21 @@ async function main(): Promise<void> {
   }
   console.log('status distribution across fetched page:', statusCounts);
 
-  // Flag (do NOT auto-fix, see handoff-sdk.md "Observations for S7"): rows
-  // whose destination_network === 0 (L2-native-gas-token withdrawals back to
-  // L1) use `bridge.origin_network` (always 0 for these, since ETH's asset
-  // origin is L1) as the l1-info-tree-index probe's networkId — but these
-  // deposits were recorded in the L2's OWN local exit tree (queried via
-  // network_id=<L2>), not network 0's tree. Every local index collides with
-  // an unrelated, coincidentally-same-numbered L1-origin deposit, so the
-  // probe can return a superficially "successful" (200) but semantically
-  // WRONG leaf for these rows. Print them here for visibility.
-  const suspectExitRows = activity.data.filter(
-    (tx) => tx.destinationNetwork === 0 && tx.originTokenNetwork === 0
-  );
-  if (suspectExitRows.length > 0) {
-    console.log(
-      `\nNOTE: ${suspectExitRows.length} L2->L1 native-gas-token withdrawal row(s) present on this page ` +
-        `(destinationNetwork=0, originTokenNetwork=0). Their derived status/leafIndexForProof is NOT ` +
-        `verified reliable by this smoke test — see handoff-sdk.md "Observations for S7". Sample: ` +
-        `${JSON.stringify(suspectExitRows.slice(0, 2).map((tx) => ({ bridgeHash: tx.bridgeHash, depositCount: tx.depositCount, status: tx.status, leafIndexForProof: tx.leafIndexForProof })))}`
-    );
-  }
-
   console.log(
     `\n=== 4. Full status derivation for a known-ground-truth deposit ===`
   );
+  const primaryClient = mustGetClient(primaryNetworkId);
   // Ground truth built directly from raw client calls (bypassing the
   // aggregator) so we know independently which bridge_hash is genuinely
   // claimed before checking what the aggregator derives for it.
-  const rawL1OriginBridges = await client.getBridges({
+  const rawL1OriginBridges = await primaryClient.getBridges({
     networkId: 0,
-    networkIds: [L2_NETWORK_ID],
+    networkIds: [primaryNetworkId],
     fromAddress: FROM_ADDRESS,
     pageSize: 200,
   });
-  const rawL2Claims = await client.getClaims({
-    networkId: L2_NETWORK_ID,
+  const rawL2Claims = await primaryClient.getClaims({
+    networkId: primaryNetworkId,
     pageSize: 200,
   });
   const claimedGlobalIndexes = new Set(
@@ -153,11 +205,6 @@ async function main(): Promise<void> {
   const knownClaimedBridge = rawL1OriginBridges.bridges.find((b) =>
     claimedGlobalIndexes.has(b.global_index)
   );
-  assert(
-    !!knownClaimedBridge,
-    'found a real L1->L2 bridge row with a matching raw claim (ground truth for CLAIMED)'
-  );
-
   if (knownClaimedBridge) {
     console.log(
       `ground truth: bridge_hash=${knownClaimedBridge.bridge_hash} deposit_count=${knownClaimedBridge.deposit_count} global_index=${knownClaimedBridge.global_index}`
@@ -184,62 +231,225 @@ async function main(): Promise<void> {
         'raw claims data confirms this global_index is claimed (independent of getActivity pagination)'
       );
     }
+  } else {
+    console.log(
+      '(no L1->L2 claimed row found for this from_address on this network — skipping this ground-truth check)'
+    );
+  }
+
+  console.log(`\n=== 5. L2->L2 row's derived status (design.md §3.4) ===`);
+  const l2l2Row = activity.data.find(
+    (tx) =>
+      L2_NETWORK_IDS.includes(tx.sourceNetwork) &&
+      L2_NETWORK_IDS.includes(tx.destinationNetwork) &&
+      tx.sourceNetwork !== tx.destinationNetwork
+  );
+  assert(
+    l2l2Row !== undefined,
+    'found at least one L2->L2 row in the fetched activity page'
+  );
+  if (l2l2Row) {
+    console.log(
+      `L2->L2 row: bridgeHash=${l2l2Row.bridgeHash} sourceNetwork=${l2l2Row.sourceNetwork} ` +
+        `destinationNetwork=${l2l2Row.destinationNetwork} depositCount=${l2l2Row.depositCount} ` +
+        `status=${l2l2Row.status} leafIndexForProof=${l2l2Row.leafIndexForProof}`
+    );
+    // This round's known-autoclaimed L2-1->L2-2 deposit (enclave-notes.md /
+    // design.md §3.4's fixture-cited walk): tx 0xac862504..., deposit_count=2.
+    // Autoclaim landed well before this smoke run, so the derived status
+    // should be the terminal CLAIMED, not the transient LEAF_INCLUDED window.
+    if (l2l2Row.depositCount === 2 && l2l2Row.sourceNetwork === 1) {
+      assert(
+        l2l2Row.status === 'CLAIMED',
+        'the known-autoclaimed L2-1->L2-2 deposit (deposit_count=2) derives CLAIMED'
+      );
+      assert(
+        l2l2Row.claimTransactionHash !== undefined,
+        'CLAIMED L2->L2 row carries a claimTransactionHash'
+      );
+    }
   }
 
   console.log(
-    `\n=== 5. l1-info-tree-index -> claim-proof roundtrip (via getClaimInputs, L1->L2 origin) ===`
+    `\n=== 6. getClaimInputs — L2->L2 deposit (destination-injected index, design.md §3.5) ===`
   );
-  const sampleDepositCount =
-    knownClaimedBridge?.deposit_count ?? rawL1OriginBridges.bridges[0]?.deposit_count;
+  const originBridges = await primaryClient.getBridges({
+    networkId: primaryNetworkId,
+    fromAddress: FROM_ADDRESS,
+    pageSize: 200,
+  });
+
+  const l2l2Sample = originBridges.bridges.find(
+    (b) =>
+      L2_NETWORK_IDS.includes(b.destination_network) &&
+      b.destination_network !== primaryNetworkId
+  );
   assert(
-    sampleDepositCount !== undefined,
-    'found a real L1->L2 deposit_count to probe'
+    l2l2Sample !== undefined,
+    'found a real L2->L2 deposit to probe getClaimInputs against'
   );
-  if (sampleDepositCount !== undefined) {
-    const { leafIndex, proof } = await aggregator.getClaimInputs({
-      originNetworkId: 0,
-      destinationNetworkId: L2_NETWORK_ID,
-      depositCount: sampleDepositCount,
-    });
+  if (l2l2Sample) {
+    const { leafIndex, proof, sourceL1InfoTreeIndex } =
+      await aggregator.getClaimInputs({
+        originNetworkId: primaryNetworkId,
+        destinationNetworkId: l2l2Sample.destination_network,
+        depositCount: l2l2Sample.deposit_count,
+      });
     console.log(
-      `depositCount=${sampleDepositCount} -> leafIndex=${leafIndex}, proof_local_exit_root.length=${proof.proof_local_exit_root.length}, proof_rollup_exit_root.length=${proof.proof_rollup_exit_root.length}`
+      `L2->L2 depositCount=${l2l2Sample.deposit_count} destinationNetwork=${l2l2Sample.destination_network} -> ` +
+        `sourceL1InfoTreeIndex=${sourceL1InfoTreeIndex}, leafIndex=${leafIndex}, ` +
+        `proof_local_exit_root.length=${proof.proof_local_exit_root.length}, ` +
+        `proof_rollup_exit_root.length=${proof.proof_rollup_exit_root.length}`
     );
-    assert(typeof leafIndex === 'number', 'leafIndex is a number');
+    assert(typeof leafIndex === 'number', 'L2->L2 leafIndex is a number');
+    assert(
+      typeof sourceL1InfoTreeIndex === 'number',
+      'L2->L2 sourceL1InfoTreeIndex is a number'
+    );
+    assert(
+      leafIndex >= sourceL1InfoTreeIndex,
+      'L2->L2 leafIndex (destination-injected) >= sourceL1InfoTreeIndex (design.md F2)'
+    );
     assert(
       proof.proof_local_exit_root.length === 32,
-      'proof_local_exit_root has 32 entries'
+      'L2->L2 proof_local_exit_root has 32 entries'
     );
     assert(
       proof.proof_rollup_exit_root.length === 32,
-      'proof_rollup_exit_root has 32 entries'
+      'L2->L2 proof_rollup_exit_root has 32 entries'
     );
     assert(
       proof.l1_info_tree_leaf.l1_info_tree_index === leafIndex,
-      'l1_info_tree_leaf.l1_info_tree_index matches the probed leafIndex'
+      'L2->L2 l1_info_tree_leaf.l1_info_tree_index matches the returned leafIndex'
     );
   }
 
   console.log(
-    `\n=== 6. Token mappings (this enclave only has native-currency spammer traffic) ===`
+    `\n=== 7. getClaimInputs — L2->L1 deposit (destination 0, no injection step, design.md §3.1 point 4) ===`
   );
-  const mappings = await client.getTokenMappings({ networkId: L2_NETWORK_ID });
-  console.log(JSON.stringify(mappings));
+  const l2l1Sample = originBridges.bridges.find(
+    (b) => b.destination_network === 0
+  );
   assert(
-    Array.isArray(mappings.token_mappings),
-    'token_mappings is an array'
+    l2l1Sample !== undefined,
+    'found a real L2->L1 deposit to probe getClaimInputs against'
   );
+  if (l2l1Sample) {
+    const { leafIndex, proof, sourceL1InfoTreeIndex } =
+      await aggregator.getClaimInputs({
+        originNetworkId: primaryNetworkId,
+        destinationNetworkId: 0,
+        depositCount: l2l1Sample.deposit_count,
+      });
+    console.log(
+      `L2->L1 depositCount=${l2l1Sample.deposit_count} -> ` +
+        `sourceL1InfoTreeIndex=${sourceL1InfoTreeIndex}, leafIndex=${leafIndex}, ` +
+        `proof_local_exit_root.length=${proof.proof_local_exit_root.length}, ` +
+        `proof_rollup_exit_root.length=${proof.proof_rollup_exit_root.length}`
+    );
+    assert(
+      leafIndex === sourceL1InfoTreeIndex,
+      'L2->L1 (destination 0): leafIndex === sourceL1InfoTreeIndex (no injection step, design.md §3.1 point 4)'
+    );
+    assert(
+      proof.proof_local_exit_root.length === 32,
+      'L2->L1 proof_local_exit_root has 32 entries'
+    );
+    assert(
+      proof.proof_rollup_exit_root.length === 32,
+      'L2->L1 proof_rollup_exit_root has 32 entries'
+    );
+  }
+
+  console.log(`\n=== 8. Token mappings ===`);
+  const mappings = await primaryClient.getTokenMappings({
+    networkId: primaryNetworkId,
+  });
+  console.log(JSON.stringify(mappings));
+  assert(Array.isArray(mappings.token_mappings), 'token_mappings is an array');
   assert(
     mappings.count === mappings.token_mappings.length,
     'count matches token_mappings.length'
   );
-  if (mappings.token_mappings.length === 0) {
+
+  console.log(
+    `\n=== 9. Proxy-502 partial-failure path (design.md §2.2 gap G1) ===`
+  );
+  if (!RUN_PARTIAL_FAILURE_TEST) {
     console.log(
-      'NOTE: no ERC20 token mappings observed live in this enclave (native-only bridge-spammer traffic). ' +
-        'AggkitBridgeAggregator.getTokenMetadata() for a real ERC20 was therefore NOT exercised against the ' +
-        'live enclave in this run — client.getTokenMappings() (exercised above) is the part of that code path ' +
-        'that touches the live REST API. getTokenMetadata()\'s native-token branch and its on-chain ERC20 ' +
-        'branch remain covered by the S5 fixture-driven unit tests only. See handoff-sdk.md.'
+      'SKIPPED — set RUN_PARTIAL_FAILURE_TEST=true to run this (mutates the ' +
+        'live enclave: stops then restarts aggkit-002-bridge via `kurtosis ' +
+        'service stop/start cdk aggkit-002-bridge`).'
     );
+  } else if (!L2_NETWORK_IDS.includes(2)) {
+    console.log(
+      'SKIPPED — aggkit-002-bridge backs network 2 (design.md §0.1), which ' +
+        `is not in the configured L2_NETWORK_IDS (${JSON.stringify(L2_NETWORK_IDS)}).`
+    );
+  } else {
+    // aggkit-002-bridge backs network 2 specifically (design.md §0.1's static
+    // BridgeURLs map: 2 -> aggkit-002-bridge); this is NOT "any non-zero
+    // network" — hardcode it to match the exact service being stopped below.
+    const downNetworkId = 2;
+    console.log(
+      `Stopping aggkit-002-bridge (backing network ${downNetworkId})...`
+    );
+    execSync('kurtosis service stop cdk aggkit-002-bridge', {
+      stdio: 'inherit',
+    });
+    try {
+      // The proxy's own port stays open (it's a distinct service) — only the
+      // backend it routes network 2 to is down, so network 2's calls 502
+      // while network 1's fan-out keeps succeeding.
+      const degraded = await aggregator.getActivity({
+        fromAddress: FROM_ADDRESS,
+        pageSize: 50,
+      });
+      console.log(
+        `degraded.failedNetworks=${JSON.stringify(degraded.failedNetworks)} degraded.data.length=${degraded.data.length}`
+      );
+      assert(
+        degraded.failedNetworks.length === 1 &&
+          degraded.failedNetworks[0]?.networkId === downNetworkId,
+        `getActivity degrades with failedNetworks naming ONLY network ${downNetworkId}`
+      );
+      const otherNetworkId = L2_NETWORK_IDS.find((id) => id !== downNetworkId);
+      if (otherNetworkId !== undefined) {
+        const otherNetworkRowsPresent = degraded.data.some(
+          (tx) =>
+            tx.sourceNetwork === otherNetworkId ||
+            tx.destinationNetwork === otherNetworkId
+        );
+        assert(
+          otherNetworkRowsPresent,
+          `network ${otherNetworkId}'s rows are still present while network ${downNetworkId} is down`
+        );
+      }
+    } finally {
+      console.log('Restarting aggkit-002-bridge...');
+      execSync('kurtosis service start cdk aggkit-002-bridge', {
+        stdio: 'inherit',
+      });
+      // Give the proxy a moment to observe the restarted backend before any
+      // subsequent script logic depends on it.
+      const healedDeadline = Date.now() + 15_000;
+      let healed = false;
+      while (Date.now() < healedDeadline && !healed) {
+        try {
+          const status = await mustGetClient(downNetworkId).getSyncStatus();
+          healed = status.l1_info.is_synced && status.l2_info.is_synced;
+        } catch {
+          healed = false;
+        }
+        if (!healed) {
+          await new Promise((resolve) => setTimeout(resolve, 2000));
+        }
+      }
+      assert(
+        healed,
+        `aggkit-002-bridge healed (sync-status 200) within 15s of restart`
+      );
+    }
   }
 
   console.log(
