@@ -142,6 +142,29 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+/** Builds a failed-network attribution from a caught error (design.md §2.2). */
+function toFailedNetwork(
+  networkId: number,
+  error: unknown
+): AggkitFailedNetwork {
+  return {
+    networkId,
+    error: errorMessage(error),
+    ...(error instanceof AggkitApiError
+      ? { httpStatus: error.httpStatus }
+      : {}),
+  };
+}
+
+/**
+ * Result of resolving the destination-injected L1-info-tree leaf a deposit's
+ * `/claim-proof` must be built against (design.md §3.3, F2).
+ */
+type InjectedLeafResolution =
+  | { kind: 'resolved'; leafIndex: number } // injected (or destination is L1)
+  | { kind: 'not-injected' } // 404 "not injected"
+  | { kind: 'unknown'; reason: string }; // no client for destination
+
 export class AggkitBridgeAggregator {
   private readonly clients: Map<number, AggkitBridgeClient>;
 
@@ -300,16 +323,38 @@ export class AggkitBridgeAggregator {
         : b.bridge.block_timestamp - a.bridge.block_timestamp
     );
 
+    // Per-row Tier-2 probe failures (§2.2 G1) are collected separately from
+    // fan-out failures so a failing destination/recording network degrades
+    // this row to a conservative status instead of rejecting the whole call.
+    const probeFailures: AggkitFailedNetwork[] = [];
+    const onNetworkError = (failure: AggkitFailedNetwork): void => {
+      probeFailures.push(failure);
+    };
+
     const data = await Promise.all(
       deduped.map((row) =>
         this.toTransaction(
           row.bridge,
           row.sourceInstanceNetworkId,
           row.recordingNetworkId,
-          claimsByNetwork
+          claimsByNetwork,
+          onNetworkError
         )
       )
     );
+
+    // Merge probe failures into failedNetworks, deduped by networkId (keep
+    // the first message — fan-out failures, collected above, take priority
+    // over a later per-row probe failure for the same network).
+    const seenFailedNetworkIds = new Set(
+      failedNetworks.map((f) => f.networkId)
+    );
+    for (const failure of probeFailures) {
+      if (!seenFailedNetworkIds.has(failure.networkId)) {
+        seenFailedNetworkIds.add(failure.networkId);
+        failedNetworks.push(failure);
+      }
+    }
 
     const anyMore = Object.values(nextCursor).some((v) => v !== EXHAUSTED);
 
@@ -392,27 +437,35 @@ export class AggkitBridgeAggregator {
 
     const readyFlags = await Promise.all(
       unclaimed.map(async (row) => {
-        const probe = await this.clientFor(
-          row.sourceInstanceNetworkId
-        ).getL1InfoTreeIndex({
-          networkId: row.recordingNetworkId,
-          depositCount: row.bridge.deposit_count,
-        });
+        // Guard the whole per-row probe (design.md §2.2 gap G1): a failing
+        // network's probe must under-count the badge, not reject the whole
+        // count call. `useReadyToClaimCount` has no `failedNetworks` surface
+        // by design (`app/hooks/useReadyToClaimCount.ts`).
+        try {
+          const probe = await this.clientFor(
+            row.sourceInstanceNetworkId
+          ).getL1InfoTreeIndex({
+            networkId: row.recordingNetworkId,
+            depositCount: row.bridge.deposit_count,
+          });
 
-        if (probe === null) {
+          if (probe === null) {
+            return false;
+          }
+
+          // Tier-1 membership only checked page 1 of /claims — bounded, cheap,
+          // and wrong once a network's total claims exceed one page (§ bug b).
+          // For candidates that passed the leaf-included probe (i.e. that
+          // would otherwise be counted READY_TO_CLAIM), confirm with a
+          // targeted per-candidate query before counting them.
+          const confirmedClaim = await this.confirmClaimed(
+            row.bridge,
+            row.sourceInstanceNetworkId
+          );
+          return confirmedClaim === null;
+        } catch {
           return false;
         }
-
-        // Tier-1 membership only checked page 1 of /claims — bounded, cheap,
-        // and wrong once a network's total claims exceed one page (§ bug b).
-        // For candidates that passed the leaf-included probe (i.e. that
-        // would otherwise be counted READY_TO_CLAIM), confirm with a
-        // targeted per-candidate query before counting them.
-        const confirmedClaim = await this.confirmClaimed(
-          row.bridge,
-          row.sourceInstanceNetworkId
-        );
-        return confirmedClaim === null;
       })
     );
 
@@ -469,15 +522,72 @@ export class AggkitBridgeAggregator {
   }
 
   /**
-   * Single-tx claim inputs (design.md §7): resolves the L1-info-tree index
-   * then the claim proof. Throws `AggkitApiError` if the deposit is not yet
-   * claimable (l1-info-tree-index probe returns null).
+   * Resolves the L1-info-tree index that `/claim-proof` must be built against for a
+   * deposit landing on `destinationNetworkId` (design.md §3, F2).
+   *  - destinationNetworkId === 0  -> { resolved, sourceL1InfoTreeIndex } (no injection step)
+   *  - destination client missing  -> { unknown } (caller keeps legacy behaviour)
+   *  - 404 "not injected"          -> { not-injected }
+   *  - 200                         -> { resolved, leaf.l1_info_tree_index }  // >= source index
+   * Probe errors are NOT swallowed here; they propagate so callers can attribute them
+   * to `failedNetworks` (§2.2 G1).
+   */
+  private async resolveInjectedLeafIndex(params: {
+    destinationNetworkId: number;
+    sourceL1InfoTreeIndex: number;
+  }): Promise<InjectedLeafResolution> {
+    const { destinationNetworkId, sourceL1InfoTreeIndex } = params;
+
+    // L1 has no injection step — the handler returns the leaf AT the index
+    // for network_id=0 (design.md §3.1 point 4).
+    if (destinationNetworkId === 0) {
+      return { kind: 'resolved', leafIndex: sourceL1InfoTreeIndex };
+    }
+
+    const client = this.clients.get(destinationNetworkId);
+    if (!client) {
+      // Mirrors the existing confirmClaimed fallback (design.md §3.3): an
+      // unconfigured destination L2 keeps today's (possibly reverting)
+      // behaviour rather than regressing into a permanent non-actionable
+      // state. The on-chain revert remains the backstop (design.md §9 risk 1).
+      return {
+        kind: 'unknown',
+        reason: `no client configured for destination network ${destinationNetworkId}`,
+      };
+    }
+
+    const leaf = await client.getInjectedL1InfoLeaf({
+      networkId: destinationNetworkId,
+      leafIndex: sourceL1InfoTreeIndex,
+    });
+
+    if (leaf === null) {
+      return { kind: 'not-injected' };
+    }
+
+    return { kind: 'resolved', leafIndex: leaf.l1_info_tree_index };
+  }
+
+  /**
+   * Single-tx claim inputs (design.md §3.5): resolves the deposit's own
+   * L1-info-tree index on the SOURCE (recording) network, then — for an L2
+   * destination — the destination's INJECTED leaf index for that value, then
+   * the claim proof against the injected index. Throws `AggkitApiError` if
+   * not yet claimable (source not settled, or destination GER not injected).
    */
   async getClaimInputs(params: {
     originNetworkId: number;
     destinationNetworkId: number;
     depositCount: number;
-  }): Promise<{ leafIndex: number; proof: AggkitClaimProof }> {
+  }): Promise<{
+    /** L1-info-tree index passed to /claim-proof: the DESTINATION-INJECTED index when
+     *  destinationNetworkId !== 0, else the source index. */
+    leafIndex: number;
+    proof: AggkitClaimProof;
+    /** NEW (additive): the deposit's own index from /l1-info-tree-index. Equals
+     *  `leafIndex` when the destination is L1 or when injection was exact. Diagnostics
+     *  for S8 smoke / S10 evidence. */
+    sourceL1InfoTreeIndex: number;
+  }> {
     const { originNetworkId, destinationNetworkId, depositCount } = params;
 
     // L1-origin (network 0) has no dedicated instance; its L1 info tree is
@@ -488,12 +598,12 @@ export class AggkitBridgeAggregator {
         ? this.clientFor(destinationNetworkId)
         : this.clientFor(originNetworkId);
 
-    const leafIndex = await client.getL1InfoTreeIndex({
+    const sourceL1InfoTreeIndex = await client.getL1InfoTreeIndex({
       networkId: originNetworkId,
       depositCount,
     });
 
-    if (leafIndex === null) {
+    if (sourceL1InfoTreeIndex === null) {
       throw new AggkitApiError({
         message:
           `Deposit (originNetworkId=${originNetworkId}, depositCount=${depositCount}) ` +
@@ -503,13 +613,35 @@ export class AggkitBridgeAggregator {
       });
     }
 
+    const resolution = await this.resolveInjectedLeafIndex({
+      destinationNetworkId,
+      sourceL1InfoTreeIndex,
+    });
+
+    let leafIndex: number;
+    if (resolution.kind === 'not-injected') {
+      throw new AggkitApiError({
+        message:
+          `Deposit (originNetworkId=${originNetworkId}, depositCount=${depositCount}) ` +
+          `is not yet claimable: destination network ${destinationNetworkId} has not ` +
+          `injected the global exit root for L1-info-tree leaf ${sourceL1InfoTreeIndex}`,
+        httpStatus: 404,
+        endpoint: '/injected-l1-info-leaf',
+      });
+    } else if (resolution.kind === 'unknown') {
+      // Legacy behaviour: the on-chain revert is the backstop (design.md §9 risk 1).
+      leafIndex = sourceL1InfoTreeIndex;
+    } else {
+      leafIndex = resolution.leafIndex;
+    }
+
     const proof = await client.getClaimProof({
       networkId: originNetworkId,
       leafIndex,
       depositCount,
     });
 
-    return { leafIndex, proof };
+    return { leafIndex, proof, sourceL1InfoTreeIndex };
   }
 
   /**
@@ -655,22 +787,30 @@ export class AggkitBridgeAggregator {
 
   /**
    * Joins one bridge row into a UI `Transaction`, deriving `status` per the
-   * §3 state machine: Tier 1 (claims-set membership, free/batch) first, then
-   * Tier 2 (`/l1-info-tree-index` probe, bounded to unclaimed rows only).
+   * §3 state machine addendum (design.md §3.4): Tier 1 (claims-set
+   * membership, free/batch) first, then Tier 2a (`/l1-info-tree-index`
+   * probe, bounded to unclaimed rows only), then — for an L2 destination
+   * only — Tier 2b (the destination-injected-GER gate, §3.1-§3.3).
    *
-   * The Tier-2 probe is keyed by `recordingNetworkId` — the network whose
+   * The Tier-2a probe is keyed by `recordingNetworkId` — the network whose
    * local exit tree actually recorded this deposit (call A vs call B of
    * `fetchNetworkFanout`, see `FetchedBridgeRow`) — NOT `bridge.origin_network`.
    * These coincide for genuine L1-origin deposits and genuine L2-origin
    * tokens, but diverge for withdrawals of an L2's native gas token (design.md
    * §3, "third case"), where `origin_network` is always 0 but the deposit is
    * recorded on the L2's own tree.
+   *
+   * Both Tier-2 probes are guarded (design.md §2.2 gap G1): a throw is
+   * reported to `onNetworkError` and the row derives a conservative,
+   * non-actionable status (`BRIDGED` for a Tier-2a failure, `LEAF_INCLUDED`
+   * for a Tier-2b failure) instead of rejecting the whole `getActivity` call.
    */
   private async toTransaction(
     bridge: AggkitBridge,
     sourceInstanceNetworkId: number,
     recordingNetworkId: number,
-    claimsByNetwork: Map<number, Map<string, AggkitClaim>>
+    claimsByNetwork: Map<number, Map<string, AggkitClaim>>,
+    onNetworkError: (failure: AggkitFailedNetwork) => void
   ): Promise<AggkitTransaction> {
     const destinationClaims = claimsByNetwork.get(bridge.destination_network);
     let matchedClaim = destinationClaims?.get(bridge.global_index);
@@ -682,10 +822,18 @@ export class AggkitBridgeAggregator {
       status = 'CLAIMED';
     } else {
       const client = this.clientFor(sourceInstanceNetworkId);
-      const probe = await client.getL1InfoTreeIndex({
-        networkId: recordingNetworkId,
-        depositCount: bridge.deposit_count,
-      });
+      let probe: number | null;
+      try {
+        probe = await client.getL1InfoTreeIndex({
+          networkId: recordingNetworkId,
+          depositCount: bridge.deposit_count,
+        });
+      } catch (error) {
+        // Tier-2a throw: conservative non-actionable status, attribute the
+        // failure to the recording network (design.md §2.2 G1).
+        onNetworkError(toFailedNetwork(recordingNetworkId, error));
+        probe = null;
+      }
 
       if (probe !== null) {
         // Tier-1 membership only covers page 1 of /claims (bounded, cheap
@@ -700,9 +848,33 @@ export class AggkitBridgeAggregator {
         if (confirmedClaim) {
           matchedClaim = confirmedClaim;
           status = 'CLAIMED';
-        } else {
+        } else if (bridge.destination_network === 0) {
+          // L2->L1: no injection step, unchanged from before §3 (design.md
+          // §3.1 point 4, §3.4).
           status = 'READY_TO_CLAIM';
           leafIndexForProof = probe;
+        } else {
+          try {
+            const resolution = await this.resolveInjectedLeafIndex({
+              destinationNetworkId: bridge.destination_network,
+              sourceL1InfoTreeIndex: probe,
+            });
+
+            if (resolution.kind === 'not-injected') {
+              status = 'LEAF_INCLUDED';
+            } else if (resolution.kind === 'unknown') {
+              status = 'READY_TO_CLAIM';
+              leafIndexForProof = probe;
+            } else {
+              status = 'READY_TO_CLAIM';
+              leafIndexForProof = resolution.leafIndex;
+            }
+          } catch (error) {
+            // Tier-2b throw: conservative non-actionable status, attribute
+            // the failure to the destination network (design.md §2.2 G1).
+            onNetworkError(toFailedNetwork(bridge.destination_network, error));
+            status = 'LEAF_INCLUDED';
+          }
         }
       } else {
         status = 'BRIDGED';

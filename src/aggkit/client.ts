@@ -16,6 +16,7 @@ import type {
   AggkitBridgesResult,
   AggkitClaimsResult,
   AggkitClaimProof,
+  AggkitL1InfoTreeLeaf,
   AggkitTokenMappingsResult,
   AggkitSyncStatus,
   AggkitErrorBody,
@@ -41,6 +42,15 @@ const L1_INFO_TREE_INDEX_NOT_READY_PATTERNS = [
   'not been included',
   'not found',
 ];
+
+/**
+ * Substrings of the `/injected-l1-info-leaf` 404 body that mean "destination GER
+ * not injected yet" rather than a routing/config failure. MUST be message-matched:
+ * aggkit-proxy also answers 404 with `{"error":"bridge service url not found for
+ * network: network N"}` (fixtures/error_404_unknown_network.json), and treating
+ * that as "not ready" would strand rows in LEAF_INCLUDED forever (design.md §3.2).
+ */
+const INJECTED_L1_INFO_LEAF_NOT_READY_PATTERNS = ['not injected'];
 
 type QueryValue = string | number | boolean | number[] | undefined;
 
@@ -190,6 +200,52 @@ export class AggkitBridgeClient {
     return JSON.parse(text) as AggkitClaimProof;
   }
 
+  /**
+   * Destination-side GER-injection probe (design.md §3.2).
+   * For an L2 `networkId`, aggkit returns the leaf of the FIRST injected global exit
+   * root at or AFTER `leafIndex` (so `result.l1_info_tree_index >= leafIndex`).
+   * For `networkId === 0` it returns the leaf AT `leafIndex`.
+   * Returns `null` ONLY for the documented 404 "not injected" branch; every other
+   * non-2xx (incl. any other 404, e.g. the proxy's "bridge service url not found")
+   * throws `AggkitApiError`.
+   */
+  async getInjectedL1InfoLeaf(params: {
+    networkId: 0 | number;
+    leafIndex: number;
+  }): Promise<AggkitL1InfoTreeLeaf | null> {
+    const query = this.buildQuery({
+      network_id: params.networkId,
+      leaf_index: params.leafIndex,
+    });
+
+    const { status, text } = await this.requestRaw(
+      '/injected-l1-info-leaf',
+      query
+    );
+
+    if (status >= 200 && status < 300) {
+      return JSON.parse(text) as AggkitL1InfoTreeLeaf;
+    }
+
+    if (status === 404) {
+      const message = this.parseErrorMessage(text);
+      const lowerMessage = message.toLowerCase();
+      const notReady = INJECTED_L1_INFO_LEAF_NOT_READY_PATTERNS.some(
+        (pattern) => lowerMessage.includes(pattern)
+      );
+      if (notReady) {
+        return null;
+      }
+    }
+
+    throw new AggkitApiError({
+      message: this.parseErrorMessage(text),
+      httpStatus: status,
+      endpoint: '/injected-l1-info-leaf',
+      body: text,
+    });
+  }
+
   async getTokenMappings(params: {
     networkId: number;
     originTokenAddress?: string;
@@ -211,8 +267,17 @@ export class AggkitBridgeClient {
     return JSON.parse(text) as AggkitTokenMappingsResult;
   }
 
+  /**
+   * Sends `network_id` explicitly (design.md §2.3, gap G2): through
+   * aggkit-proxy, an unqualified `/sync-status` request 400s ("missing
+   * mandatory query parameter: network_id") because the proxy has no default
+   * network to route to. Safe against a direct aggkit instance too —
+   * `GetSyncStatusHandler` never reads `network_id`; it always reports that
+   * instance's own L1+L2 status regardless of the query.
+   */
   async getSyncStatus(): Promise<AggkitSyncStatus> {
-    const { status, text } = await this.requestRaw('/sync-status', '');
+    const query = this.buildQuery({ network_id: this.networkId });
+    const { status, text } = await this.requestRaw('/sync-status', query);
     this.assertOk('/sync-status', status, text);
 
     return JSON.parse(text) as AggkitSyncStatus;

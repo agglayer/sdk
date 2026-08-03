@@ -1,0 +1,11 @@
+{
+  "block_num": 1129,
+  "block_pos": 0,
+  "l1_info_tree_index": 7,
+  "previous_block_hash": "0x9b18b16ded46b6ca3a0d964b852cbc43494c75791872009163ac04d65dbe878f",
+  "timestamp": 1785775964,
+  "mainnet_exit_root": "0xb95baa2123d348ef6e6bcce08109f2232881723940ae41612bc4a7801f0ecba2",
+  "rollup_exit_root": "0x1dc6244abad4b765e53a67831f0778a142764a668bb98bb5b63c3d6fa5117b71",
+  "global_exit_root": "0x0994468b497cb06f95d7cffc448daeae8fb0e8a4b2cfa4919aae0415b095a25e",
+  "hash": "0x3052a498ad88cae5731e48474221748f6f399ea8ccbfe02011907c78d3a16095"
+}

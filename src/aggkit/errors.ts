@@ -17,7 +17,7 @@ export interface AggkitApiErrorArgs {
 
 export class AggkitApiError extends Error {
   public override readonly name: string = 'AggkitApiError';
-  /** HTTP status code: 400/404/500/503 for server errors. */
+  /** HTTP status code: 400/404/500/502/503 for server errors (502 = aggkit-proxy backend unreachable, design.md §2.5). */
   public readonly httpStatus: number;
   /** The aggkit endpoint path that was called, e.g. "/bridges". */
   public readonly endpoint: string;

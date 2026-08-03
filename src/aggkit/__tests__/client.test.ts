@@ -38,7 +38,10 @@ describe('AggkitBridgeClient', () => {
     it('appends /bridge/v1 to the base URL', async () => {
       mockFetchOnce(loadFixture('sync-status.json'), 200);
       await client.getSyncStatus();
-      expect(lastFetchUrl()).toBe(`${BASE_URL}/bridge/v1/sync-status`);
+      // getSyncStatus sends network_id explicitly (design.md §2.3, gap G2).
+      expect(lastFetchUrl()).toBe(
+        `${BASE_URL}/bridge/v1/sync-status?network_id=1`
+      );
     });
 
     it('trims a trailing slash from baseUrl before appending /bridge/v1', async () => {
@@ -48,7 +51,9 @@ describe('AggkitBridgeClient', () => {
       });
       mockFetchOnce(loadFixture('sync-status.json'), 200);
       await trailingClient.getSyncStatus();
-      expect(lastFetchUrl()).toBe(`${BASE_URL}/bridge/v1/sync-status`);
+      expect(lastFetchUrl()).toBe(
+        `${BASE_URL}/bridge/v1/sync-status?network_id=1`
+      );
     });
 
     it('requests the root URL (not /bridge/v1) for getHealth', async () => {
@@ -370,6 +375,66 @@ describe('AggkitBridgeClient', () => {
     });
   });
 
+  describe('getInjectedL1InfoLeaf', () => {
+    it('parses the 200 body (l2l2_165346035Z_injected_l1_info_leaf_7.json) — post-injection', async () => {
+      mockFetchOnce(
+        loadFixture('l2l2_165346035Z_injected_l1_info_leaf_7.json'),
+        200
+      );
+
+      const result = await client.getInjectedL1InfoLeaf({
+        networkId: 2,
+        leafIndex: 7,
+      });
+
+      expect(result).not.toBeNull();
+      expect(result?.l1_info_tree_index).toBe(7);
+      expect(result?.mainnet_exit_root).toBe(
+        '0xb95baa2123d348ef6e6bcce08109f2232881723940ae41612bc4a7801f0ecba2'
+      );
+      const url = lastFetchUrl();
+      expect(url).toContain('network_id=2');
+      expect(url).toContain('leaf_index=7');
+    });
+
+    it('returns null for the documented 404 "not injected" branch (l2l2_165338016Z_injected_l1_info_leaf_7.json) — premature window', async () => {
+      mockFetchOnce(
+        loadFixture('l2l2_165338016Z_injected_l1_info_leaf_7.json'),
+        404
+      );
+
+      const result = await client.getInjectedL1InfoLeaf({
+        networkId: 2,
+        leafIndex: 7,
+      });
+
+      expect(result).toBeNull();
+    });
+
+    it('throws (does NOT return null) for the proxy "bridge service url not found" 404 (error_404_unknown_network.json) — §3.7 message-matching hazard', async () => {
+      mockFetchOnce(loadFixture('error_404_unknown_network.json'), 404);
+
+      await expect(
+        client.getInjectedL1InfoLeaf({ networkId: 9, leafIndex: 7 })
+      ).rejects.toMatchObject({
+        httpStatus: 404,
+        endpoint: '/injected-l1-info-leaf',
+        message: 'bridge service url not found for network: network 9',
+      });
+    });
+
+    it('throws AggkitApiError for a 502 (proxy backend unreachable, error_502_stopped_backend.json)', async () => {
+      mockFetchOnce(loadFixture('error_502_stopped_backend.json'), 502);
+
+      await expect(
+        client.getInjectedL1InfoLeaf({ networkId: 2, leafIndex: 7 })
+      ).rejects.toMatchObject({
+        httpStatus: 502,
+        endpoint: '/injected-l1-info-leaf',
+      });
+    });
+  });
+
   describe('getTokenMappings', () => {
     it('parses token_mappings_network1.json (empty — native-only enclave)', async () => {
       mockFetchOnce(loadFixture('token_mappings_network1.json'), 200);
@@ -405,6 +470,20 @@ describe('AggkitBridgeClient', () => {
         is_synced: true,
         is_active: true,
       });
+    });
+
+    it('sends network_id — required for aggkit-proxy, which 400s "missing mandatory query parameter: network_id" on an unqualified request (design.md §2.3, gap G2; §3.7 regression)', async () => {
+      const network2Client = new AggkitBridgeClient({
+        baseUrl: BASE_URL,
+        networkId: 2,
+      });
+      mockFetchOnce(loadFixture('sync_status_network2.json'), 200);
+
+      const result = await network2Client.getSyncStatus();
+
+      expect(lastFetchUrl()).toContain('network_id=2');
+      expect(result.l1_info.is_synced).toBe(true);
+      expect(result.l2_info.is_synced).toBe(true);
     });
   });
 

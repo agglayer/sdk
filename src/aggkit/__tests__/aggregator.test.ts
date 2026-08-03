@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs';
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, vi, type Mock } from 'vitest';
 import { AggkitBridgeAggregator } from '../aggregator';
 import { AggkitApiError } from '../errors';
 import { chainRegistry } from '../../native/chains/registry';
@@ -87,6 +87,21 @@ function claimsBody(claims: unknown[], count: number): string {
 
 function errorBody(message: string): string {
   return JSON.stringify({ error: message });
+}
+
+/** Synthetic `/injected-l1-info-leaf` 200 body (design.md §3.2 shape). */
+function injectedLeafBody(l1InfoTreeIndex: number): string {
+  return JSON.stringify({
+    block_num: 1,
+    block_pos: 0,
+    l1_info_tree_index: l1InfoTreeIndex,
+    previous_block_hash: '0xprevhash',
+    timestamp: 1000,
+    mainnet_exit_root: '0xmainnetexitroot',
+    rollup_exit_root: '0xrollupexitroot',
+    global_exit_root: '0xglobalexitroot',
+    hash: '0xhash',
+  });
 }
 
 /** Minimal synthetic bridge row (small global_index — no BigInt precision concerns). */
@@ -373,6 +388,14 @@ describe('AggkitBridgeAggregator', () => {
           200,
           loadFixture('l1_info_tree_index_valid.json')
         ),
+        // destination_network=1 (L2) -> Tier-2b gate applies (design.md §3.4).
+        // Injected exactly at the source index -> leafIndexForProof unchanged.
+        rule(
+          BASE_1,
+          ['/injected-l1-info-leaf', 'network_id=1', 'leaf_index=1'],
+          200,
+          injectedLeafBody(1)
+        ),
       ]);
 
       const aggregator = new AggkitBridgeAggregator({
@@ -537,7 +560,9 @@ describe('AggkitBridgeAggregator', () => {
       });
       const page = await aggregator.getActivity({ fromAddress: ADDRESS });
 
-      const row = page.data.find((tx) => tx.bridgeHash === '0xnativewithdrawal');
+      const row = page.data.find(
+        (tx) => tx.bridgeHash === '0xnativewithdrawal'
+      );
       expect(row).toBeDefined();
       expect(row?.status).toBe('BRIDGED');
       expect(row?.leafIndexForProof).toBeUndefined();
@@ -643,6 +668,14 @@ describe('AggkitBridgeAggregator', () => {
         }),
         ...networkRules(BASE_2, 6, {}),
         rule(BASE_1, ['/l1-info-tree-index'], 200, '1'),
+        // destination_network=6 (L2) -> Tier-2b gate queries network 6's own
+        // instance (BASE_2). Injected exactly at the source index (design.md §3.4).
+        rule(
+          BASE_2,
+          ['/injected-l1-info-leaf', 'network_id=6', 'leaf_index=1'],
+          200,
+          injectedLeafBody(1)
+        ),
       ]);
 
       const aggregator = new AggkitBridgeAggregator({
@@ -655,6 +688,245 @@ describe('AggkitBridgeAggregator', () => {
       expect(tx).toBeDefined();
       expect(tx?.status).toBe('READY_TO_CLAIM');
       expect(tx?.leafIndexForProof).toBe(1);
+    });
+  });
+
+  describe('getActivity — L2 -> L2 injected-leaf gate (design.md §3.4, live S6 lifecycle fixtures)', () => {
+    // Origin tx 0xac862504..., L2-1 deposit_count=2, global_index=2,
+    // destination_network=2. l2l2_lifecycle_origin_bridges_row.json's Tier-2a
+    // probe (l1-info-tree-index) is 200 with body 7 in both snapshots below;
+    // only the destination's injected-leaf response differs (the premature
+    // 404 vs. the post-injection 200), matching design.md §3.4's table.
+    const TARGET_GLOBAL_INDEX = '2';
+
+    it('LEAF_INCLUDED (not READY_TO_CLAIM) during the premature window: source settled (N=7) but destination GER not yet injected (16:53:38.016Z snapshot)', async () => {
+      installRouter([
+        // confirmClaimed's targeted global_index query (bug-b backstop) MUST
+        // be distinguished from the generic dest_claims rule below (which
+        // carries an unrelated global_index="0" claim) — otherwise the
+        // targeted query would wrongly "confirm" this row as claimed.
+        rule(
+          BASE_2,
+          ['/claims', 'network_id=2', 'global_index=2'],
+          200,
+          claimsBody([], 0)
+        ),
+        ...networkRules(BASE_1, 1, {
+          a: {
+            status: 200,
+            body: loadFixture('l2l2_lifecycle_origin_bridges_row.json'),
+          },
+        }),
+        ...networkRules(BASE_2, 2, {
+          c: {
+            status: 200,
+            body: loadFixture('l2l2_165338016Z_dest_claims.json'),
+          },
+        }),
+        rule(
+          BASE_1,
+          ['/l1-info-tree-index', 'deposit_count=2'],
+          200,
+          loadFixture('l2l2_165338016Z_l1_info_tree_index.json')
+        ),
+        // Other rows in the same fixture (deposit_count 0/1) aren't the
+        // target of this test but still need a rule or the router throws.
+        rule(
+          BASE_1,
+          ['/l1-info-tree-index'],
+          500,
+          loadFixture('l1_info_tree_index_notfound_error.json')
+        ),
+        rule(
+          BASE_2,
+          ['/injected-l1-info-leaf', 'network_id=2', 'leaf_index=7'],
+          404,
+          loadFixture('l2l2_165338016Z_injected_l1_info_leaf_7.json')
+        ),
+      ]);
+
+      const aggregator = new AggkitBridgeAggregator({
+        networks: { 1: BASE_1, 2: BASE_2 },
+      });
+      const page = await aggregator.getActivity({ fromAddress: ADDRESS });
+
+      const row = page.data.find(
+        (tx) => tx.globalIndex === TARGET_GLOBAL_INDEX
+      );
+      expect(row).toBeDefined();
+      expect(row?.status).toBe('LEAF_INCLUDED');
+      expect(row?.leafIndexForProof).toBeUndefined();
+      expect(page.failedNetworks).toEqual([]);
+    });
+
+    it('READY_TO_CLAIM with leafIndexForProof = 7 once the destination GER is injected (16:53:46.035Z snapshot, counterfactual pre-autoclaim)', async () => {
+      installRouter([
+        rule(
+          BASE_2,
+          ['/claims', 'network_id=2', 'global_index=2'],
+          200,
+          claimsBody([], 0)
+        ),
+        ...networkRules(BASE_1, 1, {
+          a: {
+            status: 200,
+            body: loadFixture('l2l2_lifecycle_origin_bridges_row.json'),
+          },
+        }),
+        ...networkRules(BASE_2, 2, {
+          // Still not-yet-claimed (count=1) — isolates the injected-leaf
+          // transition from the autoclaim that landed moments later live.
+          c: {
+            status: 200,
+            body: loadFixture('l2l2_165338016Z_dest_claims.json'),
+          },
+        }),
+        rule(
+          BASE_1,
+          ['/l1-info-tree-index', 'deposit_count=2'],
+          200,
+          loadFixture('l2l2_165338016Z_l1_info_tree_index.json')
+        ),
+        rule(
+          BASE_1,
+          ['/l1-info-tree-index'],
+          500,
+          loadFixture('l1_info_tree_index_notfound_error.json')
+        ),
+        rule(
+          BASE_2,
+          ['/injected-l1-info-leaf', 'network_id=2', 'leaf_index=7'],
+          200,
+          loadFixture('l2l2_165346035Z_injected_l1_info_leaf_7.json')
+        ),
+      ]);
+
+      const aggregator = new AggkitBridgeAggregator({
+        networks: { 1: BASE_1, 2: BASE_2 },
+      });
+      const page = await aggregator.getActivity({ fromAddress: ADDRESS });
+
+      const row = page.data.find(
+        (tx) => tx.globalIndex === TARGET_GLOBAL_INDEX
+      );
+      expect(row).toBeDefined();
+      expect(row?.status).toBe('READY_TO_CLAIM');
+      expect(row?.leafIndexForProof).toBe(7);
+    });
+  });
+
+  describe('getActivity — L2 -> L1 (destination 0) skips Tier-2b entirely (design.md §3.7, live S6 lifecycle fixtures)', () => {
+    it('derives READY_TO_CLAIM with no /injected-l1-info-leaf request', async () => {
+      installRouter([
+        // confirmClaimed's targeted global_index=3 query MUST be
+        // distinguished from the generic claims_network0 rule below (which
+        // carries an unrelated already-claimed global_index="1" row).
+        rule(
+          BASE_1,
+          ['/claims', 'network_id=0', 'global_index=3'],
+          200,
+          claimsBody([], 0)
+        ),
+        ...networkRules(BASE_1, 1, {
+          a: {
+            status: 200,
+            body: loadFixture('l2l1_lifecycle_origin_bridges_row.json'),
+          },
+          d: {
+            status: 200,
+            body: loadFixture('l2l1_lifecycle_claims_network0_unclaimed.json'),
+          },
+        }),
+        rule(
+          BASE_1,
+          ['/l1-info-tree-index', 'deposit_count=3'],
+          200,
+          loadFixture('l2l1_lifecycle_l1_info_tree_index_ready.json')
+        ),
+        // Other rows in the fixture (deposit_count 0/1/2) aren't the target
+        // of this test but still need a rule or the router throws.
+        rule(
+          BASE_1,
+          ['/l1-info-tree-index'],
+          500,
+          loadFixture('l1_info_tree_index_notfound_error.json')
+        ),
+      ]);
+
+      const aggregator = new AggkitBridgeAggregator({
+        networks: { 1: BASE_1 },
+      });
+      const page = await aggregator.getActivity({ fromAddress: ADDRESS });
+
+      const row = page.data.find((tx) => tx.globalIndex === '3');
+      expect(row).toBeDefined();
+      expect(row?.status).toBe('READY_TO_CLAIM');
+      expect(row?.leafIndexForProof).toBe(7);
+
+      const calls = (global.fetch as Mock).mock.calls as [string][];
+      const injectedLeafCalls = calls.filter(([url]) =>
+        url.includes('/injected-l1-info-leaf')
+      );
+      expect(injectedLeafCalls).toHaveLength(0);
+    });
+  });
+
+  describe('getActivity — proxy 502 on a per-row destination probe (design.md §2.2 gap G1, §3.7)', () => {
+    it('resolves (does not reject) the whole getActivity call; the row degrades to LEAF_INCLUDED and failedNetworks names only the failing destination network', async () => {
+      installRouter([
+        rule(
+          BASE_2,
+          ['/claims', 'network_id=2', 'global_index=2'],
+          200,
+          claimsBody([], 0)
+        ),
+        ...networkRules(BASE_1, 1, {
+          a: {
+            status: 200,
+            body: loadFixture('l2l2_lifecycle_origin_bridges_row.json'),
+          },
+        }),
+        ...networkRules(BASE_2, 2, {
+          c: {
+            status: 200,
+            body: loadFixture('l2l2_165338016Z_dest_claims.json'),
+          },
+        }),
+        rule(
+          BASE_1,
+          ['/l1-info-tree-index', 'deposit_count=2'],
+          200,
+          loadFixture('l2l2_165338016Z_l1_info_tree_index.json')
+        ),
+        rule(
+          BASE_1,
+          ['/l1-info-tree-index'],
+          500,
+          loadFixture('l1_info_tree_index_notfound_error.json')
+        ),
+        // Network 2's backend is "stopped" — the destination-injected-leaf
+        // probe 502s (design.md fixtures/error_502_stopped_backend.json).
+        rule(
+          BASE_2,
+          ['/injected-l1-info-leaf'],
+          502,
+          loadFixture('error_502_stopped_backend.json')
+        ),
+      ]);
+
+      const aggregator = new AggkitBridgeAggregator({
+        networks: { 1: BASE_1, 2: BASE_2 },
+      });
+
+      const page = await aggregator.getActivity({ fromAddress: ADDRESS });
+
+      const row = page.data.find((tx) => tx.globalIndex === '2');
+      expect(row).toBeDefined();
+      expect(row?.status).toBe('LEAF_INCLUDED');
+
+      expect(page.failedNetworks).toHaveLength(1);
+      expect(page.failedNetworks[0]?.networkId).toBe(2);
+      expect(page.failedNetworks[0]?.httpStatus).toBe(502);
     });
   });
 
@@ -845,13 +1117,21 @@ describe('AggkitBridgeAggregator', () => {
   });
 
   describe('getClaimInputs', () => {
-    it('L1 -> L2: uses the DESTINATION network client with network_id=0 (origin) for both calls', async () => {
+    it('L1 -> L2: uses the DESTINATION network client with network_id=0 (origin) for both calls, and builds /claim-proof on the destination-injected index (design.md §3.5)', async () => {
       installRouter([
         rule(
           BASE_1,
           ['/l1-info-tree-index', 'network_id=0', 'deposit_count=1'],
           200,
           loadFixture('l1_info_tree_index_valid.json')
+        ),
+        // destinationNetworkId=1 (L2) -> the gate applies; injected exactly
+        // at the source index in this test (no S2-style skip).
+        rule(
+          BASE_1,
+          ['/injected-l1-info-leaf', 'network_id=1', 'leaf_index=1'],
+          200,
+          injectedLeafBody(1)
         ),
         rule(
           BASE_1,
@@ -871,7 +1151,84 @@ describe('AggkitBridgeAggregator', () => {
       });
 
       expect(result.leafIndex).toBe(1);
+      expect(result.sourceL1InfoTreeIndex).toBe(1);
       expect(result.proof.l1_info_tree_leaf.l1_info_tree_index).toBe(1);
+    });
+
+    it('getClaimInputs uses the INJECTED index M > N for /claim-proof (synthetic M=3/N=2, the S2 shape — design.md §3.7)', async () => {
+      installRouter([
+        rule(
+          BASE_1,
+          ['/l1-info-tree-index', 'network_id=0', 'deposit_count=2'],
+          200,
+          '2'
+        ),
+        // Injection skipped ahead: first injected leaf at-or-after N=2 is M=3
+        // (mirrors S2's live 2->3 case, design.md §0.2 F2).
+        rule(
+          BASE_1,
+          ['/injected-l1-info-leaf', 'network_id=1', 'leaf_index=2'],
+          200,
+          injectedLeafBody(3)
+        ),
+        rule(
+          BASE_1,
+          ['/claim-proof', 'network_id=0', 'leaf_index=3', 'deposit_count=2'],
+          200,
+          loadFixture('claim_proof_valid.json')
+        ),
+      ]);
+
+      const aggregator = new AggkitBridgeAggregator({
+        networks: { 1: BASE_1 },
+      });
+      const result = await aggregator.getClaimInputs({
+        originNetworkId: 0,
+        destinationNetworkId: 1,
+        depositCount: 2,
+      });
+
+      expect(result.sourceL1InfoTreeIndex).toBe(2);
+      expect(result.leafIndex).toBe(3);
+    });
+
+    it('getClaimInputs throws 404 /injected-l1-info-leaf while the destination has not injected the GER yet (design.md §3.7)', async () => {
+      installRouter([
+        rule(
+          BASE_1,
+          ['/l1-info-tree-index', 'network_id=1', 'deposit_count=2'],
+          200,
+          loadFixture('l2l2_165338016Z_l1_info_tree_index.json')
+        ),
+        rule(
+          BASE_2,
+          ['/injected-l1-info-leaf', 'network_id=2', 'leaf_index=7'],
+          404,
+          loadFixture('l2l2_165338016Z_injected_l1_info_leaf_7.json')
+        ),
+      ]);
+
+      const aggregator = new AggkitBridgeAggregator({
+        networks: { 1: BASE_1, 2: BASE_2 },
+      });
+
+      let caught: unknown;
+      try {
+        await aggregator.getClaimInputs({
+          originNetworkId: 1,
+          destinationNetworkId: 2,
+          depositCount: 2,
+        });
+      } catch (error) {
+        caught = error;
+      }
+
+      expect(caught).toBeInstanceOf(AggkitApiError);
+      expect((caught as AggkitApiError).httpStatus).toBe(404);
+      expect((caught as AggkitApiError).endpoint).toBe(
+        '/injected-l1-info-leaf'
+      );
+      expect((caught as AggkitApiError).message).toMatch(/not injected/);
     });
 
     it('L2 -> L1: uses the ORIGIN network client with network_id=<origin>', async () => {
@@ -895,6 +1252,44 @@ describe('AggkitBridgeAggregator', () => {
           depositCount: 0,
         })
       ).rejects.toBeInstanceOf(AggkitApiError);
+    });
+
+    it('L2 -> L1 (destination 0) skips Tier-2b entirely: no /injected-l1-info-leaf request is made (design.md §3.7)', async () => {
+      installRouter([
+        rule(
+          BASE_1,
+          ['/l1-info-tree-index', 'network_id=1', 'deposit_count=3'],
+          200,
+          loadFixture('l2l1_lifecycle_l1_info_tree_index_ready.json')
+        ),
+        rule(
+          BASE_1,
+          ['/claim-proof', 'network_id=1', 'leaf_index=7', 'deposit_count=3'],
+          200,
+          loadFixture('claim_proof_valid.json')
+        ),
+        // If the gate wrongly fires for destination 0, this unmatched
+        // /injected-l1-info-leaf request throws immediately (router has no
+        // rule for it) instead of silently succeeding.
+      ]);
+
+      const aggregator = new AggkitBridgeAggregator({
+        networks: { 1: BASE_1 },
+      });
+
+      const result = await aggregator.getClaimInputs({
+        originNetworkId: 1,
+        destinationNetworkId: 0,
+        depositCount: 3,
+      });
+
+      expect(result.sourceL1InfoTreeIndex).toBe(7);
+      expect(result.leafIndex).toBe(7);
+      const calls = (global.fetch as Mock).mock.calls as [string][];
+      const injectedLeafCalls = calls.filter(([url]) =>
+        url.includes('/injected-l1-info-leaf')
+      );
+      expect(injectedLeafCalls).toHaveLength(0);
     });
   });
 
