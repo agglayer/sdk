@@ -184,7 +184,21 @@ export interface AggkitAggregatorConfig {
   retryDelay?: number;
 }
 
-/** UI transaction status (`app/types/transaction.ts` `TransactionStatus`). */
+/**
+ * UI transaction status (`app/types/transaction.ts` `TransactionStatus`).
+ *
+ * State machine (design.md §3.2–§3.3):
+ * - **BRIDGED**: Deposit emitted on source, not yet included in L1 info tree.
+ * - **LEAF_INCLUDED**: Deposit included in L1 info tree on source; for L2 destinations
+ *   only: the source leaf exists but the destination's GER injection lags (common in
+ *   fresh enclaves where L2 block height exceeds L1). Destination's injected leaf will
+ *   eventually catch up. For L1 destinations, this state never occurs (L1 has no "injection"
+ *   concept — leaf inclusion suffices).
+ * - **READY_TO_CLAIM**: Claim proof available; user can call `claimAsset` on destination.
+ *   For L1 destinations: source leaf included. For L2 destinations: both source included
+ *   AND destination injected.
+ * - **CLAIMED**: Claim completed on destination; balance received.
+ */
 export type AggkitTransactionStatus =
   'BRIDGED' | 'LEAF_INCLUDED' | 'READY_TO_CLAIM' | 'CLAIMED';
 
