@@ -34,9 +34,17 @@
  *                             pointed at AGGKIT_URL (design.md §0.1: one
  *                             proxy fronts every network).
  *   FROM_ADDRESS               optional, default the L2-1 test EOA
- *                             (`0x9BEE1d978DF451350fA93C69c4A1f6fFca12d107`,
- *                             enclave-notes.md) that sent this round's
- *                             L2-1->L2-2 and L2-1->L1 lifecycle deposits.
+ *                             (`0x9BEE1d978DF451350fA93C69c4A1f6fFca12d107`)
+ *                             that sent one past round's L2-1->L2-2 and
+ *                             L2-1->L1 lifecycle deposits.
+ *                             NOTE: this default is ENCLAVE-SPECIFIC. Bridge
+ *                             history does not survive `kurtosis enclave rm`,
+ *                             so against any recreated enclave this address
+ *                             has no activity and sections 3/5/6/7 fail for
+ *                             want of data rather than for a real defect.
+ *                             Always pass FROM_ADDRESS explicitly when running
+ *                             against an enclave you did not originally
+ *                             generate traffic on.
  *   RUN_PARTIAL_FAILURE_TEST  optional, default "false". When "true", runs
  *                             the final section: stops `aggkit-002-bridge`
  *                             via `kurtosis service stop cdk
@@ -161,6 +169,23 @@ async function main(): Promise<void> {
     activity.failedNetworks.length === 0,
     'no failed networks in the getActivity fan-out (healthy enclave)'
   );
+  if (activity.data.length === 0) {
+    // The default FROM_ADDRESS is the EOA that sent one specific past round's
+    // lifecycle deposits. Enclave state does NOT survive `kurtosis enclave rm`,
+    // so on any freshly recreated enclave that address has zero traffic and
+    // sections 3/5/6/7 all fail for want of data — indistinguishable, from the
+    // output alone, from a genuine SDK regression. Say so explicitly.
+    console.log(
+      `\n  !! No bridge activity found for fromAddress=${FROM_ADDRESS}.\n` +
+        `     The default address is enclave-specific: it only has traffic on the\n` +
+        `     enclave that originally produced it. If this enclave was recreated,\n` +
+        `     re-run with FROM_ADDRESS set to a wallet that has actually bridged\n` +
+        `     here, e.g. the dev-ui E2E wallet:\n` +
+        `       FROM_ADDRESS=0x... AGGKIT_URL=${AGGKIT_URL} npx tsx scripts/aggkit-smoke.ts\n` +
+        `     The sections below will fail for lack of data, not necessarily\n` +
+        `     because the SDK is broken.`
+    );
+  }
   assert(
     activity.data.length > 0,
     'getActivity returned at least one transaction for the real from_address'
