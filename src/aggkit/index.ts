@@ -26,6 +26,17 @@
  * The proxy multiplexes networks via `?network_id=` query parameter; the URL
  * is the same for all networks. This is the correct configuration for devnets
  * with an aggkit-proxy service fronting multiple L2s.
+ *
+ * ## Bridge Tracking
+ *
+ * `AggkitBridgeClient.getBridgeTracking` / `AggkitBridgeAggregator.getBridgeTracking`
+ * (S8/S9) poll aggkit's `tracker/v1` REST API for a single bridge transaction's
+ * step-by-step progress (registers the tx on first call). See the JSDoc on
+ * those methods for terminal-state/polling guidance, and the
+ * `AggkitTrackingData` family in `types.ts` for the full wire-format
+ * reference, which deviates from aggkit's own `docs/bridgetracker/API.md` in
+ * several places (bare string enums instead of numeric + `_string` pairs,
+ * `step_name` instead of `step`, etc.).
  */
 
 export { AggkitBridgeClient } from './client';

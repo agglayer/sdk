@@ -717,6 +717,14 @@ export class AggkitBridgeAggregator {
    * (design.md §0.1) — and always passes `networkId` through explicitly to
    * `AggkitBridgeClient.getBridgeTracking`'s URL path, since the routed-
    * through L2 instance's own `networkId` is not 0.
+   *
+   * See `AggkitBridgeClient.getBridgeTracking` for terminal-state/polling
+   * guidance, and the `AggkitTrackingData`/`AggkitBridgeStepPath` etc. type
+   * docs in `types.ts` for the full wire-format reference — the real
+   * response deviates from aggkit's own `API.md` in several places (e.g.
+   * `tracking_status`/`bridge_type`/`step_name`/step `status` are bare
+   * string unions on the wire, not the documented numeric + `_string`
+   * companion pairs).
    */
   async getBridgeTracking(
     networkId: number,

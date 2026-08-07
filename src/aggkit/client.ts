@@ -324,6 +324,34 @@ export class AggkitBridgeClient {
    * `AggkitBridgeAggregator.clientForNetworkOrL1` — whose own `this.networkId`
    * is not 0. The URL path always uses the `networkId` argument, never the
    * instance's own `this.networkId` implicitly.
+   *
+   * **Terminal semantics** — stop polling once EITHER is true:
+   * - `tracking_status === 'finished'` (the bridge reached its last step,
+   *   `Claimed`).
+   * - `tracking_status === 'error'` AND `bridge_status === null` — the
+   *   tracker gave up ever resolving the bridge at all (tx not found, or not
+   *   a bridge tx). This is distinct from a per-step error inside
+   *   `all_steps[i].error`: those are non-terminal, the tracker retries them
+   *   on its own, and `tracking_status` stays `'running'` while it does.
+   *
+   * **Polling guidance**: the tracker has no push/subscription channel, only
+   * this REST lookup, so callers must poll. ~5s between calls is a good
+   * default (matches this SDK's own dev-ui consumer) — stop as soon as the
+   * terminal condition above is met, and keep polling through any
+   * non-terminal state, including a regression back to `'registered'` with
+   * `all_steps: null` (see below).
+   *
+   * **Server-side registration/eviction**: the FIRST call for a given
+   * `(networkId, txHash)` pair registers it with the tracker; that initial
+   * response, and any poll before the tracker resolves the bridge, comes
+   * back as `tracking_status: 'registered'` with `bridge_status`,
+   * `step_index`, and `all_steps` all `null` — this is normal, not an error.
+   * The tracker is stateful with a bounded retention window
+   * (`RetentionPeriod`, 30m in the kurtosis-cdk devnet config); if a
+   * tracked-but-not-yet-terminal bridge is evicted, the next poll silently
+   * re-registers it from scratch (`'registered'`, `all_steps: null` again)
+   * rather than erroring — callers should treat this the same as the
+   * original registration, not as a regression to be surfaced to the user.
    */
   async getBridgeTracking(
     txHash: string,
