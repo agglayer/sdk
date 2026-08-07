@@ -283,45 +283,83 @@ export interface AggkitTokenMetadata {
 }
 
 /**
- * ---- Bridge Tracker (S4): aggkit `tracker/v1` REST API, v0.11.0-rc4 ----
+ * ---- Bridge Tracker (S4/S5): aggkit `tracker/v1` REST API, v0.11.0-rc4 ----
  *
  * Canonical TypeScript shapes for `GET /tracker/v1/network/{network_id}/tx/{tx_hash}`
- * (and its `health` sibling), derived verbatim from aggkit
- * `v0.11.0-rc4:docs/bridgetracker/API.md`. All wire field names are
- * `snake_case`; every enum is a numeric raw value on the wire with a
- * companion `<field>_string` field carrying its string representation — both
- * are kept here rather than mapped away. Dates (`start_date`/`end_date`) stay
- * ISO strings as received (never constructed into `Date` in the SDK), and
- * `expected_duration` stays the human-readable duration string (e.g.
- * "5m0s") aggkit serializes it as.
+ * (and its `health` sibling). S4 derived these verbatim from aggkit
+ * `v0.11.0-rc4:docs/bridgetracker/API.md`; S5 reconciled them against LIVE
+ * fixtures captured off a real rc4 enclave
+ * (`/home/brolygon/repos/plans/bridge-tracker/fixtures/`, see that
+ * directory's `README.md` "Deviation / bug found #2" for the writeup) —
+ * the fixtures are treated as the source of truth wherever they disagree
+ * with API.md, which turned out to be in more places than the docs' own
+ * "numeric + `_string` companion" convention would suggest:
+ *
+ * - `tracking_status`, `bridge_type`, and `status` (the step's) ship as
+ *   BARE STRINGS on the wire — no numeric value, no `<field>_string`
+ *   companion, despite API.md's documented convention.
+ * - The step's enum field is not named `step` at all — it's `step_name`,
+ *   also a bare string. Each step entry additionally carries a `step_index`
+ *   integer (redundant with the entry's position in `all_steps`) that
+ *   API.md does not document.
+ * - `bridge_leaf_type` isn't a sibling of `bridge_type` on `BridgeStatus`;
+ *   it (also a bare string, same deviation) lives one level down, nested
+ *   inside an `event` object alongside the origin/destination/amount fields
+ *   API.md never mentions as part of `BridgeStatus` at all.
+ * - Per-step `start_date`/`end_date`/`result`/`error` are OMITTED keys when
+ *   not yet applicable (e.g. a `pending` step has none of them), not `null`
+ *   — confirmed directly from raw fixture JSON, never a `"start_date": null`
+ *   anywhere. `expected_duration` was never observed on the wire at all, in
+ *   any step, at any status — kept as an optional field in case a future
+ *   aggkit build starts emitting it, but unconfirmed.
+ * - `error_type` (`ErrorStep`) and `status` (`CertificateData`) DO match
+ *   the documented numeric + `_string` companion convention exactly — this
+ *   deviation is selective, not blanket.
+ * - `CertificateData.settlement_tx_hash` is an OMITTED key (not `null`)
+ *   until a certificate leaves `Pending`, confirmed by fixtures.
+ *   `CertificateData.previous_ler`'s documented "`null` for a network's
+ *   first certificate" case was never exercised by any fixture (every
+ *   capture already had prior certificates) — kept as `string | null` per
+ *   the docs, unconfirmed either way.
+ *
+ * Top-level `TrackingData` fields that ARE documented as nullable
+ * (`bridge_status`/`step_index`/`all_steps`/`error`) DO serialize as
+ * explicit JSON `null`, confirmed by fixtures (e.g. `"error": null` appears
+ * verbatim throughout) — that part of the docs holds. Dates
+ * (`start_date`/`end_date`) stay ISO strings as received (never constructed
+ * into `Date` in the SDK).
  */
 
-// ---- enums (numeric raw value + string companion, one pair per wire field) ----
-
-/** `TrackingData.tracking_status`: 0->registered, 1->running, 2->error, 3->finished. */
-export type AggkitTrackingStatus = 0 | 1 | 2 | 3;
-/** `TrackingData.tracking_status_string`. */
-export type AggkitTrackingStatusString =
-  'registered' | 'running' | 'error' | 'finished';
-
-/** `BridgeStatus.bridge_type`: 0->L1->L2, 1->L2->L1, 2->L2->L2. */
-export type AggkitBridgeType = 0 | 1 | 2;
-/** `BridgeStatus.bridge_type_string`. */
-export type AggkitBridgeTypeString = 'L1->L2' | 'L2->L1' | 'L2->L2';
-
-/** `BridgeStatus.bridge_leaf_type`: 0->Asset (bridgeAsset), 1->Message (bridgeMessage). */
-export type AggkitBridgeLeafType = 0 | 1;
-/** `BridgeStatus.bridge_leaf_type_string`. */
-export type AggkitBridgeLeafTypeString = 'Asset' | 'Message';
+// ---- enums ----
 
 /**
- * `BridgeStepPath.step`: 0->WaitingGERUpdate, 1->WaitingLERUpdate,
- * 2->PendingInclusion, 3->CertificatePending, 4->WaitL1SettledGER,
- * 5->WaitingGERInjection, 6->WaitingClaim, 7->Claimed.
+ * `TrackingData.tracking_status`: bare string on the wire (fixture-confirmed)
+ * — no numeric value, no `tracking_status_string` companion despite API.md.
  */
-export type AggkitBridgeStep = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7;
-/** `BridgeStepPath.step_string`. */
-export type AggkitBridgeStepString =
+export type AggkitTrackingStatus =
+  'registered' | 'running' | 'error' | 'finished';
+
+/**
+ * `BridgeStatus.bridge_type`: bare string on the wire (fixture-confirmed) —
+ * no numeric value, no `bridge_type_string` companion despite API.md.
+ */
+export type AggkitBridgeType = 'L1->L2' | 'L2->L1' | 'L2->L2';
+
+/**
+ * `BridgeStatus.event.leaf_type`: bare string on the wire (fixture-confirmed,
+ * same deviation as `bridge_type`) — lives nested under `event`, not as a
+ * `BridgeStatus`-level `bridge_leaf_type`/`bridge_leaf_type_string` pair as
+ * API.md documents. Only `'Asset'` was directly observed (all captured
+ * bridges were `bridgeAsset`); `'Message'` is the documented sibling value.
+ */
+export type AggkitBridgeLeafType = 'Asset' | 'Message';
+
+/**
+ * `BridgeStepPath.step_name`: bare string on the wire (fixture-confirmed) —
+ * the field isn't even named `step`, and there is no numeric value or
+ * `step_string` companion despite API.md.
+ */
+export type AggkitBridgeStep =
   | 'WaitingGERUpdate'
   | 'WaitingLERUpdate'
   | 'PendingInclusion'
@@ -331,15 +369,16 @@ export type AggkitBridgeStepString =
   | 'WaitingClaim'
   | 'Claimed';
 
-/** `BridgeStepPath.status`: 0->pending, 1->inProgress, 2->done, 3->error. */
-export type AggkitStepStatus = 0 | 1 | 2 | 3;
-/** `BridgeStepPath.status_string`. */
-export type AggkitStepStatusString =
-  'pending' | 'inProgress' | 'done' | 'error';
+/**
+ * `BridgeStepPath.status`: bare string on the wire (fixture-confirmed) — no
+ * numeric value, no `status_string` companion despite API.md.
+ */
+export type AggkitStepStatus = 'pending' | 'inProgress' | 'done' | 'error';
 
 /**
  * `ErrorStep.error_type`: 0->transient, 1->permanent, 2->exhausted (retries
- * have been given up on).
+ * have been given up on). Fixture-confirmed to match API.md's documented
+ * numeric + `_string` companion convention exactly.
  */
 export type AggkitTrackerErrorType = 0 | 1 | 2;
 /** `ErrorStep.error_type_string`. */
@@ -349,7 +388,8 @@ export type AggkitTrackerErrorTypeString =
 /**
  * `CertificateData.status`: mapped from the agglayer proto (aggkit
  * `agglayer_grpc_client.go`): 0->Pending, 1->Proven, 2->Candidate,
- * 3->InError, 4->Settled.
+ * 3->InError, 4->Settled. Fixture-confirmed to match API.md's documented
+ * numeric + `_string` companion convention exactly.
  */
 export type AggkitCertificateStatus = 0 | 1 | 2 | 3 | 4;
 /** `CertificateData.status_string`. */
@@ -359,19 +399,39 @@ export type AggkitCertificateStatusString =
 // ---- shared structures ----
 
 /**
+ * `BridgeStatus.event`: the underlying `BridgeEvent` (bridgeAsset/
+ * bridgeMessage) log that seeded this bridge. Nested under `bridge_status.
+ * event` on the wire — API.md does not document this nesting (or these
+ * fields as part of `BridgeStatus` at all); confirmed by every lifecycle
+ * fixture.
+ */
+export interface AggkitBridgeStatusEvent {
+  leaf_type: AggkitBridgeLeafType;
+  origin_network: number;
+  /** Origin TOKEN address (0x0 = native). */
+  origin_address: string;
+  destination_network: number;
+  destination_address: string;
+  /** Decimal wei. */
+  amount: string;
+  /** Local leaf index in the origin tree. */
+  deposit_count: number;
+}
+
+/**
  * `TrackingData.bridge_status`: `null` while `tracking_status` is
  * `registered`, and forever `null` if the tracker gives up resolving the
  * bridge (`AggkitTrackingData.error` is set instead).
  */
 export interface AggkitBridgeStatus {
   bridge_type: AggkitBridgeType;
-  bridge_type_string: AggkitBridgeTypeString;
-  bridge_leaf_type: AggkitBridgeLeafType;
-  bridge_leaf_type_string: AggkitBridgeLeafTypeString;
-  /** Block, on the origin network, where the `BridgeEvent` (bridgeAsset/bridgeMessage) was emitted. */
+  /** Block, on the origin network, where the `BridgeEvent` was emitted. */
   block_number: number;
   /** Position of the `BridgeEvent` log within `block_number`. */
   log_index: number;
+  /** Unix seconds; the origin block's timestamp. */
+  block_timestamp: number;
+  event: AggkitBridgeStatusEvent;
 }
 
 /**
@@ -401,7 +461,12 @@ export interface AggkitCertificateData {
   status_string: AggkitCertificateStatusString;
   /** Only set if the proto carries `Error.Message` (relevant for `InError` certs). */
   error?: string;
-  settlement_tx_hash: string | null;
+  /**
+   * Omitted (not `null`) while `status` is still `Pending` — fixture-
+   * confirmed (`lifecycle_l2l1`'s first `CertificatePending` snapshot has no
+   * `settlement_tx_hash` key at all). Present from `Candidate` onward.
+   */
+  settlement_tx_hash?: string;
 }
 
 // ---- per-step `BridgeStepPath.result` shapes (StepResult, keyed by `step`) ----
@@ -475,20 +540,27 @@ export type AggkitBridgeStepResult =
   | AggkitWaitingGERInjectionResult
   | AggkitWaitingClaimResult;
 
-/** One milestone of a bridge's expected route (`AggkitTrackingData.all_steps[i]`). */
+/**
+ * One milestone of a bridge's expected route (`AggkitTrackingData.all_steps[i]`).
+ * `start_date`/`end_date`/`result`/`error` are OMITTED keys (not `null`)
+ * until applicable — fixture-confirmed: a `pending` step has none of these
+ * keys, an `inProgress` step has only `start_date`, a `done` step has both
+ * dates plus `result` (when that step produces one). `expected_duration`
+ * was never observed on the wire in any fixture at any status.
+ */
 export interface AggkitBridgeStepPath {
-  step: AggkitBridgeStep;
-  step_string: AggkitBridgeStepString;
+  /** Position of this entry within `all_steps` (redundant with array index; not documented by API.md). */
+  step_index: number;
+  step_name: AggkitBridgeStep;
   status: AggkitStepStatus;
-  status_string: AggkitStepStatusString;
-  start_date: string | null;
-  end_date: string | null;
-  /** Human-readable duration string (e.g. "5m0s"); never constructed into a `Date` here. */
-  expected_duration: string | null;
-  /** `null` until the step produces it, and for steps without a result. */
-  result: AggkitBridgeStepResult | null;
-  /** Only set when `status` is `error` (3); see `AggkitTrackerErrorStep`. */
-  error: AggkitTrackerErrorStep | null;
+  start_date?: string;
+  end_date?: string;
+  /** Human-readable duration string (e.g. "5m0s"); never constructed into a `Date` here. Undocumented on the wire — never observed in any captured fixture. */
+  expected_duration?: string;
+  /** Present only once the step produces a result; absent for steps without one (e.g. `Claimed`). */
+  result?: AggkitBridgeStepResult;
+  /** Present only when `status` is `error`; see `AggkitTrackerErrorStep`. Never observed in captured fixtures. */
+  error?: AggkitTrackerErrorStep;
 }
 
 /**
@@ -500,7 +572,6 @@ export interface AggkitBridgeStepPath {
  */
 export interface AggkitTrackingData {
   tracking_status: AggkitTrackingStatus;
-  tracking_status_string: AggkitTrackingStatusString;
   network_id: number;
   tx_hash: string;
   /** `null` under the same conditions as `step_index`/`all_steps` — see `error`. */
