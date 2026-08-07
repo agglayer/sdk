@@ -21,6 +21,8 @@ import type {
   AggkitSyncStatus,
   AggkitErrorBody,
   AggkitHealthResponse,
+  AggkitTrackingData,
+  AggkitTrackerErrorData,
 } from './types';
 
 const DEFAULT_TIMEOUT = 30000;
@@ -60,12 +62,14 @@ export class AggkitBridgeClient {
 
   private readonly rootUrl: string;
   private readonly bridgeApiUrl: string;
+  private readonly trackerApiUrl: string;
   private readonly fetchConfig: RawFetchConfig;
 
   constructor(config: AggkitBridgeClientConfig) {
     this.networkId = config.networkId;
     this.rootUrl = config.baseUrl.replace(/\/+$/, '');
     this.bridgeApiUrl = `${this.rootUrl}/bridge/v1`;
+    this.trackerApiUrl = `${this.rootUrl}/tracker/v1`;
     this.fetchConfig = {
       timeout: config.timeout ?? DEFAULT_TIMEOUT,
       retries: config.retries ?? DEFAULT_RETRIES,
@@ -305,6 +309,41 @@ export class AggkitBridgeClient {
     return JSON.parse(text) as AggkitHealthResponse;
   }
 
+  /**
+   * Bridge tracker lookup (aggkit v0.11.0-rc4 `tracker/v1`,
+   * `GET /tracker/v1/network/{network_id}/tx/{tx_hash}`, docs/bridgetracker/API.md).
+   * Registers `txHash` in the tracker's supervised list if it was not
+   * already tracked, and always returns `200 OK` with the current
+   * `AggkitTrackingData` — `bridge_status`/`step_index`/`all_steps` are
+   * `null` until the tracker resolves the bridge (or forever, if it gives up
+   * and sets `error` instead).
+   *
+   * `networkId` defaults to `this.networkId` (the network this client
+   * instance is bound to) but MUST be passed explicitly by callers that
+   * route L1 (network 0) traffic through an L2-keyed client instance — e.g.
+   * `AggkitBridgeAggregator.clientForNetworkOrL1` — whose own `this.networkId`
+   * is not 0. The URL path always uses the `networkId` argument, never the
+   * instance's own `this.networkId` implicitly.
+   */
+  async getBridgeTracking(
+    txHash: string,
+    networkId: number = this.networkId
+  ): Promise<AggkitTrackingData> {
+    const url = `${this.trackerApiUrl}/network/${networkId}/tx/${txHash}`;
+    const { status, text } = await fetchRawText(url, this.fetchConfig);
+
+    if (status < 200 || status >= 300) {
+      throw new AggkitApiError({
+        message: this.parseTrackerErrorMessage(text),
+        httpStatus: status,
+        endpoint: '/tracker/v1/network/{network_id}/tx/{tx_hash}',
+        body: text,
+      });
+    }
+
+    return JSON.parse(text) as AggkitTrackingData;
+  }
+
   private async requestRaw(
     endpoint: string,
     query: string
@@ -331,6 +370,20 @@ export class AggkitBridgeClient {
     try {
       const parsed = JSON.parse(text) as AggkitErrorBody;
       return typeof parsed.error === 'string' ? parsed.error : text;
+    } catch {
+      return text;
+    }
+  }
+
+  /**
+   * The bridge tracker's error body (`ErrorData`) is `{"code", "message"}`,
+   * NOT the bridge-service's `{"error"}` shape `parseErrorMessage` handles —
+   * see `AggkitTrackerErrorData`.
+   */
+  private parseTrackerErrorMessage(text: string): string {
+    try {
+      const parsed = JSON.parse(text) as AggkitTrackerErrorData;
+      return typeof parsed.message === 'string' ? parsed.message : text;
     } catch {
       return text;
     }

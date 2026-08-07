@@ -281,3 +281,257 @@ export interface AggkitTokenMetadata {
   wrappedTokenAddressV1?: string;
   wrappedTokenAddressV2?: string;
 }
+
+/**
+ * ---- Bridge Tracker (S4): aggkit `tracker/v1` REST API, v0.11.0-rc4 ----
+ *
+ * Canonical TypeScript shapes for `GET /tracker/v1/network/{network_id}/tx/{tx_hash}`
+ * (and its `health` sibling), derived verbatim from aggkit
+ * `v0.11.0-rc4:docs/bridgetracker/API.md`. All wire field names are
+ * `snake_case`; every enum is a numeric raw value on the wire with a
+ * companion `<field>_string` field carrying its string representation — both
+ * are kept here rather than mapped away. Dates (`start_date`/`end_date`) stay
+ * ISO strings as received (never constructed into `Date` in the SDK), and
+ * `expected_duration` stays the human-readable duration string (e.g.
+ * "5m0s") aggkit serializes it as.
+ */
+
+// ---- enums (numeric raw value + string companion, one pair per wire field) ----
+
+/** `TrackingData.tracking_status`: 0->registered, 1->running, 2->error, 3->finished. */
+export type AggkitTrackingStatus = 0 | 1 | 2 | 3;
+/** `TrackingData.tracking_status_string`. */
+export type AggkitTrackingStatusString =
+  'registered' | 'running' | 'error' | 'finished';
+
+/** `BridgeStatus.bridge_type`: 0->L1->L2, 1->L2->L1, 2->L2->L2. */
+export type AggkitBridgeType = 0 | 1 | 2;
+/** `BridgeStatus.bridge_type_string`. */
+export type AggkitBridgeTypeString = 'L1->L2' | 'L2->L1' | 'L2->L2';
+
+/** `BridgeStatus.bridge_leaf_type`: 0->Asset (bridgeAsset), 1->Message (bridgeMessage). */
+export type AggkitBridgeLeafType = 0 | 1;
+/** `BridgeStatus.bridge_leaf_type_string`. */
+export type AggkitBridgeLeafTypeString = 'Asset' | 'Message';
+
+/**
+ * `BridgeStepPath.step`: 0->WaitingGERUpdate, 1->WaitingLERUpdate,
+ * 2->PendingInclusion, 3->CertificatePending, 4->WaitL1SettledGER,
+ * 5->WaitingGERInjection, 6->WaitingClaim, 7->Claimed.
+ */
+export type AggkitBridgeStep = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7;
+/** `BridgeStepPath.step_string`. */
+export type AggkitBridgeStepString =
+  | 'WaitingGERUpdate'
+  | 'WaitingLERUpdate'
+  | 'PendingInclusion'
+  | 'CertificatePending'
+  | 'WaitL1SettledGER'
+  | 'WaitingGERInjection'
+  | 'WaitingClaim'
+  | 'Claimed';
+
+/** `BridgeStepPath.status`: 0->pending, 1->inProgress, 2->done, 3->error. */
+export type AggkitStepStatus = 0 | 1 | 2 | 3;
+/** `BridgeStepPath.status_string`. */
+export type AggkitStepStatusString =
+  'pending' | 'inProgress' | 'done' | 'error';
+
+/**
+ * `ErrorStep.error_type`: 0->transient, 1->permanent, 2->exhausted (retries
+ * have been given up on).
+ */
+export type AggkitTrackerErrorType = 0 | 1 | 2;
+/** `ErrorStep.error_type_string`. */
+export type AggkitTrackerErrorTypeString =
+  'transient' | 'permanent' | 'exhausted';
+
+/**
+ * `CertificateData.status`: mapped from the agglayer proto (aggkit
+ * `agglayer_grpc_client.go`): 0->Pending, 1->Proven, 2->Candidate,
+ * 3->InError, 4->Settled.
+ */
+export type AggkitCertificateStatus = 0 | 1 | 2 | 3 | 4;
+/** `CertificateData.status_string`. */
+export type AggkitCertificateStatusString =
+  'Pending' | 'Proven' | 'Candidate' | 'InError' | 'Settled';
+
+// ---- shared structures ----
+
+/**
+ * `TrackingData.bridge_status`: `null` while `tracking_status` is
+ * `registered`, and forever `null` if the tracker gives up resolving the
+ * bridge (`AggkitTrackingData.error` is set instead).
+ */
+export interface AggkitBridgeStatus {
+  bridge_type: AggkitBridgeType;
+  bridge_type_string: AggkitBridgeTypeString;
+  bridge_leaf_type: AggkitBridgeLeafType;
+  bridge_leaf_type_string: AggkitBridgeLeafTypeString;
+  /** Block, on the origin network, where the `BridgeEvent` (bridgeAsset/bridgeMessage) was emitted. */
+  block_number: number;
+  /** Position of the `BridgeEvent` log within `block_number`. */
+  log_index: number;
+}
+
+/**
+ * Carried both in `AggkitBridgeStepPath.error` (that step of an otherwise-
+ * resolved bridge failed) and in `AggkitTrackingData.error` (the tracker
+ * gave up trying to resolve the bridge at all — tx not found, or the tx
+ * exists but emitted no `BridgeEvent`). In the latter case `retry_count`
+ * counts the not-found polls before giving up.
+ */
+export interface AggkitTrackerErrorStep {
+  error_type: AggkitTrackerErrorType;
+  error_type_string: AggkitTrackerErrorTypeString;
+  retry_count: number;
+  /** Human-readable description(s), one entry per occurrence. */
+  description: string[];
+}
+
+/**
+ * The agglayer certificate's current data; carried by the
+ * `CertificatePending` step's `result` (set as soon as a certificate exists,
+ * updated as its status changes, and reflects the final settled data once
+ * `status` is `Settled`).
+ */
+export interface AggkitCertificateData {
+  certificate_id: string;
+  status: AggkitCertificateStatus;
+  status_string: AggkitCertificateStatusString;
+  /** Only set if the proto carries `Error.Message` (relevant for `InError` certs). */
+  error?: string;
+  settlement_tx_hash: string | null;
+}
+
+// ---- per-step `BridgeStepPath.result` shapes (StepResult, keyed by `step`) ----
+
+/** `WaitingGERUpdate` step result: GER resulting from the L1 update, and where it landed. */
+export interface AggkitWaitingGERUpdateResult {
+  l1_info_tree_index: number;
+  ger: string;
+  mer: string;
+  rer: string;
+  block_number: number;
+  block_timestamp: number;
+  log_index: number;
+}
+
+/** `WaitingLERUpdate` step result: LER resulting from the origin L2 update. */
+export interface AggkitWaitingLERUpdateResult {
+  network_id: number;
+  ler: string;
+  block_number: number;
+}
+
+/** `PendingInclusion` step result: the certificate that first includes the bridge. */
+export interface AggkitPendingInclusionResult {
+  certificate_id: string;
+  new_ler: string;
+  /** `null` for a network's first certificate. */
+  previous_ler: string | null;
+}
+
+/**
+ * `WaitL1SettledGER` step result: evidence, read off the settlement tx
+ * receipt once it reaches L1 finality, that the settlement propagated to the
+ * L1 Global Exit Root.
+ */
+export interface AggkitWaitL1SettledGERResult {
+  tx_hash: string;
+  block_number: number;
+  ger: string;
+  /** Never `null` once the step is `done`; see aggkit `API.md` for the resolution rules. */
+  l1_info_tree_index: number | null;
+  has_verify_batches_trusted_aggregator: boolean;
+  has_update_l1_info_tree: boolean;
+  /** Informational only — unlike the other two `has_*` fields, not required for the step to complete. */
+  has_update_l1_info_tree_v2: boolean;
+}
+
+/** `WaitingGERInjection` step result: GER injected on the destination network covering the bridge. */
+export interface AggkitWaitingGERInjectionResult {
+  ger: string;
+}
+
+/** `WaitingClaim` step result: the claim transaction on the destination network. */
+export interface AggkitWaitingClaimResult {
+  claim_tx: string;
+  block_number: number;
+}
+
+/**
+ * `BridgeStepPath.result`: shape depends on that entry's `step`.
+ * `CertificatePending`'s result is the full `AggkitCertificateData`; steps
+ * not covered by aggkit's `StepResult` table (i.e. `Claimed`) never carry a
+ * result.
+ */
+export type AggkitBridgeStepResult =
+  | AggkitWaitingGERUpdateResult
+  | AggkitWaitingLERUpdateResult
+  | AggkitPendingInclusionResult
+  | AggkitCertificateData
+  | AggkitWaitL1SettledGERResult
+  | AggkitWaitingGERInjectionResult
+  | AggkitWaitingClaimResult;
+
+/** One milestone of a bridge's expected route (`AggkitTrackingData.all_steps[i]`). */
+export interface AggkitBridgeStepPath {
+  step: AggkitBridgeStep;
+  step_string: AggkitBridgeStepString;
+  status: AggkitStepStatus;
+  status_string: AggkitStepStatusString;
+  start_date: string | null;
+  end_date: string | null;
+  /** Human-readable duration string (e.g. "5m0s"); never constructed into a `Date` here. */
+  expected_duration: string | null;
+  /** `null` until the step produces it, and for steps without a result. */
+  result: AggkitBridgeStepResult | null;
+  /** Only set when `status` is `error` (3); see `AggkitTrackerErrorStep`. */
+  error: AggkitTrackerErrorStep | null;
+}
+
+/**
+ * Body of every bridge-tracker REST response (always `200 OK`) and of every
+ * WebSocket `status` message (WebSocket itself is a non-goal for this SDK
+ * method). Calling `GET /tracker/v1/network/{network_id}/tx/{tx_hash}`
+ * registers `tx_hash` in the tracker's supervised list if it was not already
+ * tracked.
+ */
+export interface AggkitTrackingData {
+  tracking_status: AggkitTrackingStatus;
+  tracking_status_string: AggkitTrackingStatusString;
+  network_id: number;
+  tx_hash: string;
+  /** `null` under the same conditions as `step_index`/`all_steps` — see `error`. */
+  bridge_status: AggkitBridgeStatus | null;
+  /**
+   * Index into `all_steps` of the step that explains `tracking_status`: the
+   * step in progress when `running`, the step in error when `error`, or the
+   * last step (`Claimed`) when `finished`.
+   */
+  step_index: number | null;
+  /** All expected steps of the bridge's route; `null` until the tracker resolves it. */
+  all_steps: AggkitBridgeStepPath[] | null;
+  /**
+   * Set only if the tracker gave up trying to resolve the bridge at all
+   * (e.g. the tx does not exist on the network, or is not a bridge
+   * transaction). Unrelated to per-step errors, which live in
+   * `all_steps[i].error` instead.
+   */
+  error: AggkitTrackerErrorStep | null;
+}
+
+/**
+ * Bridge-tracker `400` error body (`ErrorData`) — a DIFFERENT shape from the
+ * bridge-service `AggkitErrorBody` (`{"error": "..."}`): the tracker uses
+ * `{"code": ..., "message": "..."}` instead. Reserved for invalid path
+ * parameters (`network_id`/`tx_hash`), before any bridge is registered; once
+ * a bridge is registered, every outcome (including the tracker giving up on
+ * it) is reported through `AggkitTrackingData.error` instead.
+ */
+export interface AggkitTrackerErrorData {
+  /** HTTP-like error code: always 400 (invalid params). */
+  code: number;
+  message: string;
+}

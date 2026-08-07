@@ -22,6 +22,7 @@ import type {
   AggkitFailedNetwork,
   AggkitPageCursor,
   AggkitTokenMetadata,
+  AggkitTrackingData,
   AggkitTransaction,
   AggkitTransactionStatus,
 } from './types';
@@ -705,6 +706,24 @@ export class AggkitBridgeAggregator {
           }
         : {}),
     };
+  }
+
+  /**
+   * Bridge tracker lookup (aggkit v0.11.0-rc4 `tracker/v1`,
+   * `docs/bridgetracker/API.md`): registers (if not already) and returns
+   * `txHash`'s `AggkitTrackingData` from the aggkit instance serving
+   * `networkId`. Routes L1 (`networkId === 0`) through a configured L2
+   * instance, same as `getTokenMetadata` — L1 has no dedicated instance
+   * (design.md §0.1) — and always passes `networkId` through explicitly to
+   * `AggkitBridgeClient.getBridgeTracking`'s URL path, since the routed-
+   * through L2 instance's own `networkId` is not 0.
+   */
+  async getBridgeTracking(
+    networkId: number,
+    txHash: string
+  ): Promise<AggkitTrackingData> {
+    const client = this.clientForNetworkOrL1(networkId);
+    return client.getBridgeTracking(txHash, networkId);
   }
 
   /** Runs the four fan-out calls (§2.1 A-D) for a single configured network. */
