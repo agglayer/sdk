@@ -436,10 +436,14 @@ export interface AggkitBridgeStatus {
 
 /**
  * Carried both in `AggkitBridgeStepPath.error` (that step of an otherwise-
- * resolved bridge failed) and in `AggkitTrackingData.error` (the tracker
- * gave up trying to resolve the bridge at all — tx not found, or the tx
- * exists but emitted no `BridgeEvent`). In the latter case `retry_count`
- * counts the not-found polls before giving up.
+ * resolved bridge failed) and in `AggkitTrackingData.error` (the tracker is
+ * failing to resolve the bridge — tx not found, or the tx exists but emitted
+ * no `BridgeEvent`). In the latter case `retry_count` counts the not-found
+ * polls so far: while `error_type` is `transient` (0) the tracker is still
+ * retrying and `tracking_status` stays `'registered'` (fixture-confirmed —
+ * `tracker_registered.json` carries a transient error at `retry_count: 1`);
+ * once retries are exhausted (`error_type` 2) `tracking_status` becomes
+ * `'error'` and the field is final.
  */
 export interface AggkitTrackerErrorStep {
   error_type: AggkitTrackerErrorType;
@@ -585,9 +589,12 @@ export interface AggkitTrackingData {
   /** All expected steps of the bridge's route; `null` until the tracker resolves it. */
   all_steps: AggkitBridgeStepPath[] | null;
   /**
-   * Set only if the tracker gave up trying to resolve the bridge at all
-   * (e.g. the tx does not exist on the network, or is not a bridge
-   * transaction). Unrelated to per-step errors, which live in
+   * Set while the tracker is failing to resolve the bridge (e.g. the tx does
+   * not exist on the network, or is not a bridge transaction): `transient`
+   * (0) while it is still retrying (`tracking_status` stays `'registered'` —
+   * fixture-confirmed by `tracker_registered.json`), `exhausted` (2) once it
+   * has given up for good (`tracking_status: 'error'`, `bridge_status`
+   * forever `null`). Unrelated to per-step errors, which live in
    * `all_steps[i].error` instead.
    */
   error: AggkitTrackerErrorStep | null;

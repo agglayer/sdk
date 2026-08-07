@@ -331,8 +331,12 @@ export class AggkitBridgeClient {
    * - `tracking_status === 'error'` AND `bridge_status === null` — the
    *   tracker gave up ever resolving the bridge at all (tx not found, or not
    *   a bridge tx). This is distinct from a per-step error inside
-   *   `all_steps[i].error`: those are non-terminal, the tracker retries them
-   *   on its own, and `tracking_status` stays `'running'` while it does.
+   *   `all_steps[i].error`: those are non-terminal — the tracker retries
+   *   them on its own. Note that a per-step error ALSO reports
+   *   `tracking_status: 'error'` (aggkit derives it from the step at
+   *   `step_index` — `bridgetracker/domain/tracking_data.go`), just with
+   *   `bridge_status` populated — which is exactly why the terminal check
+   *   must include `bridge_status === null`, not `tracking_status` alone.
    *
    * **Polling guidance**: the tracker has no push/subscription channel, only
    * this REST lookup, so callers must poll. ~5s between calls is a good
