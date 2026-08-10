@@ -34,9 +34,12 @@
  * step-by-step progress (registers the tx on first call). See the JSDoc on
  * those methods for terminal-state/polling guidance, and the
  * `AggkitTrackingData` family in `types.ts` for the full wire-format
- * reference, which deviates from aggkit's own `docs/bridgetracker/API.md` in
- * several places (bare string enums instead of numeric + `_string` pairs,
- * `step_name` instead of `step`, etc.).
+ * reference. That reference was captured off a live devnet and matches
+ * aggkit's `docs/bridgetracker/API.md` as corrected by v0.11.0-rc5
+ * (agglayer/aggkit#1784): most enums ship as bare strings (no numeric +
+ * `_string` pairs — only `error_type` and certificate `status` keep that
+ * convention), and steps carry `step_name`, not `step`. rc4's API.md
+ * described these differently; the wire format itself never changed.
  */
 
 export { AggkitBridgeClient } from './client';
