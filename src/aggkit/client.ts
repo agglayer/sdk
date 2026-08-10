@@ -56,6 +56,24 @@ const INJECTED_L1_INFO_LEAF_NOT_READY_PATTERNS = ['not injected'];
 
 type QueryValue = string | number | boolean | number[] | undefined;
 
+/**
+ * Strips trailing `/` characters from `url`.
+ *
+ * Implemented as a manual backward scan rather than a regex (e.g. `/\/+$/`)
+ * because `baseUrl` is library/consumer-supplied input: a regex quantifier
+ * anchored at the end of the string is flagged by CodeQL as a potential
+ * ReDoS source (polynomial worst-case matching cost), even though this
+ * particular pattern isn't exploitable in practice. A plain scan is linear
+ * by construction and carries no such risk.
+ */
+function stripTrailingSlashes(url: string): string {
+  let end = url.length;
+  while (end > 0 && url.charAt(end - 1) === '/') {
+    end--;
+  }
+  return url.slice(0, end);
+}
+
 export class AggkitBridgeClient {
   /** The L2 network id this aggkit instance serves. */
   public readonly networkId: number;
@@ -67,7 +85,7 @@ export class AggkitBridgeClient {
 
   constructor(config: AggkitBridgeClientConfig) {
     this.networkId = config.networkId;
-    this.rootUrl = config.baseUrl.replace(/\/+$/, '');
+    this.rootUrl = stripTrailingSlashes(config.baseUrl);
     this.bridgeApiUrl = `${this.rootUrl}/bridge/v1`;
     this.trackerApiUrl = `${this.rootUrl}/tracker/v1`;
     this.fetchConfig = {

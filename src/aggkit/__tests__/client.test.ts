@@ -56,6 +56,35 @@ describe('AggkitBridgeClient', () => {
       );
     });
 
+    it('trims multiple trailing slashes from baseUrl before appending /bridge/v1', async () => {
+      const trailingClient = new AggkitBridgeClient({
+        baseUrl: `${BASE_URL}///`,
+        networkId: 1,
+      });
+      mockFetchOnce(loadFixture('sync-status.json'), 200);
+      await trailingClient.getSyncStatus();
+      expect(lastFetchUrl()).toBe(
+        `${BASE_URL}/bridge/v1/sync-status?network_id=1`
+      );
+    });
+
+    it('trims a very long run of trailing slashes without hanging', async () => {
+      // Regression test for the trailing-slash trim (formerly `/\/+$/`,
+      // flagged by CodeQL as a potential ReDoS source on library-supplied
+      // `baseUrl`). Asserts both correctness and that a long adversarial
+      // input resolves promptly.
+      const manySlashes = `${BASE_URL}${'/'.repeat(50_000)}`;
+      const trailingClient = new AggkitBridgeClient({
+        baseUrl: manySlashes,
+        networkId: 1,
+      });
+      mockFetchOnce(loadFixture('sync-status.json'), 200);
+      await trailingClient.getSyncStatus();
+      expect(lastFetchUrl()).toBe(
+        `${BASE_URL}/bridge/v1/sync-status?network_id=1`
+      );
+    });
+
     it('requests the root URL (not /bridge/v1) for getHealth', async () => {
       mockFetchOnce(loadFixture('health.json'), 200);
       await client.getHealth();
