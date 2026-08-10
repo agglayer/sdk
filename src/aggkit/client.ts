@@ -310,9 +310,12 @@ export class AggkitBridgeClient {
   }
 
   /**
-   * Bridge tracker lookup (aggkit v0.11.0-rc4 `tracker/v1`,
+   * Bridge tracker lookup (aggkit `tracker/v1`,
    * `GET /tracker/v1/network/{network_id}/tx/{tx_hash}`, docs/bridgetracker/API.md).
-   * Registers `txHash` in the tracker's supervised list if it was not
+   * Types were fixture-derived from a v0.11.0-rc4 enclave and live-verified
+   * unchanged on v0.11.0-rc5 (agglayer/aggkit#1781, fixed in PR #1784 —
+   * see `types.ts`'s tracker-section module doc for the full wire-format
+   * writeup). Registers `txHash` in the tracker's supervised list if it was not
    * already tracked, and always returns `200 OK` with the current
    * `AggkitTrackingData` — `bridge_status`/`step_index`/`all_steps` are
    * `null` until the tracker resolves the bridge (or forever, if it gives up

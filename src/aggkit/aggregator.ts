@@ -709,7 +709,7 @@ export class AggkitBridgeAggregator {
   }
 
   /**
-   * Bridge tracker lookup (aggkit v0.11.0-rc4 `tracker/v1`,
+   * Bridge tracker lookup (aggkit `tracker/v1`,
    * `docs/bridgetracker/API.md`): registers (if not already) and returns
    * `txHash`'s `AggkitTrackingData` from the aggkit instance serving
    * `networkId`. Routes L1 (`networkId === 0`) through a configured L2
@@ -720,11 +720,11 @@ export class AggkitBridgeAggregator {
    *
    * See `AggkitBridgeClient.getBridgeTracking` for terminal-state/polling
    * guidance, and the `AggkitTrackingData`/`AggkitBridgeStepPath` etc. type
-   * docs in `types.ts` for the full wire-format reference — the real
-   * response deviates from aggkit's own `API.md` in several places (e.g.
+   * docs in `types.ts` for the full wire-format reference —
    * `tracking_status`/`bridge_type`/`step_name`/step `status` are bare
-   * string unions on the wire, not the documented numeric + `_string`
-   * companion pairs).
+   * string unions on the wire, not numeric + `_string` companion pairs,
+   * matching aggkit's rc5-corrected `API.md` (agglayer/aggkit#1781, fixed
+   * in PR #1784); the wire format itself has been unchanged since rc4.
    */
   async getBridgeTracking(
     networkId: number,
