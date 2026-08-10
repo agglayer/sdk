@@ -657,13 +657,18 @@ export class AggkitBridgeAggregator {
     // L1 (networkId 0) has no dedicated aggkit instance — route through a
     // configured L2 instance, same as `getClaimInputs` (design.md §0.1).
     const client = this.clientForNetworkOrL1(networkId);
-    // TODO(aggkit-migration): `getChainByNetworkId` returns the first
-    // insertion-order match, and Ethereum mainnet is pre-seeded at networkId 0
-    // ahead of any other networkId-0 chain (e.g. a devnet L1). For NATIVE token
-    // metadata on networkId 0 this reports mainnet's nativeCurrency/rpcUrl
-    // rather than the intended chain. ERC20 metadata is read on-chain and is
-    // unaffected in practice; only L1 NATIVE is impacted. See handoff-sdk.md
-    // §3.2 / RELEASE.md residual risk #5.
+    // FIXED (aggkit-migration): `getChainByNetworkId` previously returned the
+    // first insertion-order match, and Ethereum mainnet is pre-seeded at
+    // networkId 0 ahead of any other networkId-0 chain (e.g. a devnet L1).
+    // For NATIVE token metadata on networkId 0 this reported mainnet's
+    // nativeCurrency/rpcUrl instead of the intended chain. `ChainRegistry`
+    // now tracks which chainIds are built-in defaults and, on a networkId
+    // collision, always prefers a consumer-registered chain over a default
+    // one — independent of registration order (see
+    // `src/native/chains/registry.ts`'s `getChainByNetworkId` precedence
+    // note). Consumers that register their L1 (e.g. devnet, networkId 0) no
+    // longer risk resolving the SDK's default mainnet entry. See
+    // handoff-sdk.md §3.2 / RELEASE.md residual risk #5 (resolved).
     const chain = chainRegistry.getChainByNetworkId(networkId);
 
     if (isNativeTokenAddress(tokenAddress)) {

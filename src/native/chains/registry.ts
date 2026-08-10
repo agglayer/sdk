@@ -12,6 +12,14 @@ export class ChainRegistry {
   private static instance: ChainRegistry;
   private chains: Map<number, ChainConfig> = new Map();
   private viemChains: Map<number, Chain> = new Map();
+  // chainIds seeded by `initializeDefaultChains()` at construction time.
+  // Fixed once, at construction — never mutated afterwards, even if a
+  // consumer later re-registers one of these chainIds (see `registerChain`
+  // precedence note below). Used by `getChainByNetworkId` to make
+  // consumer-registered chains win over built-in defaults on networkId
+  // collisions (e.g. a devnet L1 registered at networkId 0 vs. the
+  // pre-seeded Ethereum mainnet default, also at networkId 0).
+  private readonly defaultChainIds = new Set<number>();
 
   private constructor() {
     this.initializeDefaultChains();
@@ -27,7 +35,7 @@ export class ChainRegistry {
   // DEV: if adding new default chains, also update README.md
   private initializeDefaultChains() {
     // Ethereum Mainnet
-    this.registerChain({
+    this.registerDefaultChain({
       chainId: 1,
       networkId: 0,
       name: 'Ethereum',
@@ -40,7 +48,7 @@ export class ChainRegistry {
     });
 
     // Katana
-    this.registerChain({
+    this.registerDefaultChain({
       chainId: 747474,
       networkId: 20,
       name: 'Katana',
@@ -56,7 +64,7 @@ export class ChainRegistry {
     });
 
     // Ethereum Sepolia Testnet
-    this.registerChain({
+    this.registerDefaultChain({
       chainId: 11155111,
       networkId: 0,
       name: 'Ethereum Sepolia',
@@ -75,7 +83,14 @@ export class ChainRegistry {
   }
 
   /**
-   * Register a new chain
+   * Register a new chain.
+   *
+   * Precedence note: chains registered here (by a consumer, at any point
+   * after construction) always take precedence over the SDK's built-in
+   * defaults (registered via `initializeDefaultChains()`/
+   * `registerDefaultChain()`) when `getChainByNetworkId()` resolves a
+   * networkId collision — regardless of registration order. See
+   * `getChainByNetworkId()`.
    */
   registerChain(config: ChainConfig): void {
     this.chains.set(config.chainId, config);
@@ -94,6 +109,17 @@ export class ChainRegistry {
   }
 
   /**
+   * Register a built-in default chain (used only by
+   * `initializeDefaultChains()`). Identical to `registerChain()`, plus
+   * marking the chainId as a default for `getChainByNetworkId()`
+   * precedence purposes.
+   */
+  private registerDefaultChain(config: ChainConfig): void {
+    this.registerChain(config);
+    this.defaultChainIds.add(config.chainId);
+  }
+
+  /**
    * Get chain configuration by ID
    */
   getChain(chainId: number): ChainConfig {
@@ -107,12 +133,24 @@ export class ChainRegistry {
   }
 
   /**
-   * Get chain configuration by network ID
+   * Get chain configuration by network ID.
+   *
+   * Precedence: multiple registered chains can share a `networkId` (e.g. a
+   * consumer-registered devnet L1 and the SDK's pre-seeded Ethereum mainnet
+   * default both at networkId 0, keyed by distinct chainIds). When that
+   * happens, a consumer-registered chain always wins over a built-in
+   * default, independent of registration order — a default is only
+   * returned when no consumer-registered chain shares the networkId.
+   * Ties among multiple consumer-registered (or multiple default) chains
+   * fall back to first-registered, matching prior behavior.
    */
   getChainByNetworkId(networkId: number): ChainConfig {
-    const chain = Array.from(this.chains.values()).find(
+    const matches = Array.from(this.chains.values()).filter(
       (chain) => chain.networkId === networkId
     );
+    const chain =
+      matches.find((chain) => !this.defaultChainIds.has(chain.chainId)) ??
+      matches[0];
     if (!chain) {
       throw new Error(
         `Chain with network ID ${networkId} not found. Available network IDs: ${Array.from(

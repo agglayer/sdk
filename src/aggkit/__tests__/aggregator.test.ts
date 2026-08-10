@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import { http } from 'viem';
 import { describe, it, expect, beforeEach, vi, type Mock } from 'vitest';
 import { AggkitBridgeAggregator } from '../aggregator';
 import { AggkitApiError } from '../errors';
@@ -23,6 +24,12 @@ vi.mock('viem', async (importOriginal) => {
     createPublicClient: vi.fn(() => ({
       readContract: (args: { functionName: string }) => readContractImpl(args),
     })),
+    // Spied (not replaced) so `BaseContract`'s `http(config.rpcUrl)` call
+    // stays observable — used to prove which RPC URL a chain lookup fed
+    // into the transport, without changing any transport behavior (the
+    // `createPublicClient` mock above ignores the transport it's given
+    // anyway).
+    http: vi.fn((url?: string) => actual.http(url)),
   };
 });
 
@@ -1453,6 +1460,81 @@ describe('AggkitBridgeAggregator', () => {
       expect(metadata.decimals).toBe(18);
       expect(metadata.tokenAddress).toBe(TOKEN_ADDRESS);
       expect(metadata.network).toBe(0);
+    });
+
+    it('networkId-0 collision (bridge-tracker-rc5 triage, "SDK networkId: 0 chain-registry collision"): a registered devnet L1 wins over the default Ethereum mainnet chain — no request is ever constructed toward eth.llamarpc.com', async () => {
+      // Reproduces the previously-dormant scenario from console-triage.md:
+      // a consumer registers a devnet L1 at networkId 0 (as
+      // `agglayer-dev-ui`'s aggLayerSdk.tsx does), then requests metadata
+      // for an ERC20 token bridged from that L1 that isn't in the UI's
+      // static token list — exercising the on-chain `ERC20.getMetadata()`
+      // read path, which is where the collision used to leak the default
+      // mainnet chain's rpcUrl (`https://eth.llamarpc.com`) into a real
+      // outbound RPC request instead of the devnet's.
+      const DEVNET_CHAIN_ID = 900000;
+      const DEVNET_RPC = 'http://devnet-l1.internal.test:8545';
+      const TOKEN_ADDRESS = '0x3333333333333333333333333333333333333333';
+
+      chainRegistry.registerChain({
+        chainId: DEVNET_CHAIN_ID,
+        networkId: 0,
+        name: 'Devnet L1',
+        rpcUrl: DEVNET_RPC,
+        nativeCurrency: { name: 'Devnet Ether', symbol: 'dETH', decimals: 18 },
+      });
+
+      readContractImpl = (args) => {
+        switch (args.functionName) {
+          case 'name':
+            return Promise.resolve('Devnet Token');
+          case 'symbol':
+            return Promise.resolve('DVT');
+          case 'decimals':
+            return Promise.resolve(18);
+          case 'totalSupply':
+            return Promise.resolve(0n);
+          default:
+            return Promise.reject(
+              new Error(`unexpected call: ${args.functionName}`)
+            );
+        }
+      };
+
+      installRouter([
+        rule(
+          BASE_1,
+          [
+            '/token-mappings',
+            'network_id=0',
+            `origin_token_address=${TOKEN_ADDRESS}`,
+          ],
+          200,
+          JSON.stringify({ token_mappings: [], count: 0 })
+        ),
+      ]);
+
+      // Ignore any transport calls made by earlier tests in this file —
+      // only this test's own RPC-URL usage matters below.
+      (http as unknown as Mock).mockClear();
+
+      // Only network 1 (an L2) is configured — L1 (networkId 0) has no
+      // dedicated aggkit instance, so this routes through network 1's
+      // configured client, same as the L1-origin test above.
+      const aggregator = new AggkitBridgeAggregator({
+        networks: { 1: BASE_1 },
+      });
+
+      const metadata = await aggregator.getTokenMetadata(TOKEN_ADDRESS, 0);
+
+      expect(metadata.name).toBe('Devnet Token');
+      expect(metadata.symbol).toBe('DVT');
+      expect(metadata.network).toBe(0);
+
+      const rpcUrlsRequested = (http as unknown as Mock).mock.calls.map(
+        (call) => call[0]
+      );
+      expect(rpcUrlsRequested).toContain(DEVNET_RPC);
+      expect(rpcUrlsRequested).not.toContain('https://eth.llamarpc.com');
     });
   });
 });
