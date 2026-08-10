@@ -7,15 +7,13 @@ import type { AggkitTrackingData } from '../types';
 
 // ---------------------------------------------------------------------------
 // Bridge-tracker (`tracker/v1`) unit tests, run against LIVE fixtures
-// captured off a real v0.11.0-rc4 enclave
-// (`/home/brolygon/repos/plans/bridge-tracker/fixtures/`, copied in as
-// `tracker_*.json`). At capture time, these shapes disagreed with rc4's
-// docs/bridgetracker/API.md (agglayer/aggkit#1781); rc4's fixtures were
-// treated as the source of truth over the docs. That gap is now closed
-// upstream: v0.11.0-rc5 (PR agglayer/aggkit#1784) corrected API.md to match
-// the wire format exactly, and the shapes below were live-verified
-// identical on a real rc5 enclave on 2026-08-10 — see
-// `/home/brolygon/repos/plans/bridge-tracker-rc5/verification.md` §4. No
+// captured live from a real v0.11.0-rc4 devnet enclave on 2026-08-07
+// (copied in as `tracker_*.json`). At capture time, these shapes disagreed
+// with rc4's docs/bridgetracker/API.md (agglayer/aggkit#1781); rc4's
+// fixtures were treated as the source of truth over the docs. That gap is
+// now closed upstream: v0.11.0-rc5 (PR agglayer/aggkit#1784) corrected
+// API.md to match the wire format exactly, and the shapes below were
+// re-verified byte-identical on a real rc5 enclave on 2026-08-10. No
 // fixture recapture was needed; these rc4 captures remain valid. See
 // `types.ts`'s tracker-section module doc for the full wire-format writeup.
 // ---------------------------------------------------------------------------

@@ -257,6 +257,51 @@ const claimMessageTx = await bridge.buildClaimMessageFromHash(
 );
 ```
 
+#### Bridge Transaction Tracking
+
+```typescript
+// Poll the aggkit bridge tracker for a single transaction's route/status,
+// keyed by the SOURCE network id and the tx hash that created the bridge.
+const trackingData = await aggregator.getBridgeTracking(
+  11155111, // source network where the bridge tx occurred
+  '0xBridgeTxHash123456789012345678901234567890123456789012345678'
+);
+```
+
+The aggkit tracker (`tracker/v1`) has no push/subscription transport — only
+this REST lookup — so callers must poll. ~5s between calls is a good
+default (matches the dev-ui consumer). Stop polling as soon as either
+terminal condition is met:
+
+- `tracking_status === 'finished'`, or
+- `tracking_status === 'error'` with `bridge_status: null` (the tracker gave
+  up resolving the bridge at all — distinct from a step-level error, which
+  reports `tracking_status: 'error'` too but with `bridge_status` populated
+  and is retried by the tracker on its own).
+
+Keep polling through any other non-terminal state, including a regression
+back to `'registered'` with `all_steps: null` — the FIRST call for a given
+`(networkId, txHash)` pair registers it with the tracker, and the tracker
+is stateful with a bounded retention window (`RetentionPeriod`); if a
+tracked-but-not-yet-terminal bridge is evicted, the next poll silently
+re-registers it from scratch (`'registered'`, `all_steps: null` again)
+rather than erroring.
+
+`tracking_status`, `bridge_type`, and each step's `status`/`step_name` ship
+as bare string unions on the wire — not a numeric value with a `_string`
+companion field, unlike `error_type` and certificate `status`, which do
+keep the int + `_string` pair. See the `AggkitTrackingData` /
+`AggkitBridgeStepPath` JSDoc in `src/aggkit/types.ts` for the full
+wire-format reference.
+
+**Caveat ([agglayer/aggkit#1786](https://github.com/agglayer/aggkit/issues/1786), OPEN)**:
+the tracker's `WaitingClaim` step routinely precedes actual claimability by
+seconds to tens of seconds — it reflects only the tracker's own fast-path
+read of the settlement tx's L1 receipt, not aggkit's separate bridge-service
+L1-info-tree sync that a claim's proof fetch depends on. Gate claim-readiness
+UX on your own check (e.g. the bridge-service's own status/proof
+availability), not on the tracker reaching `WaitingClaim`.
+
 ## ⚙️ Configuration
 
 ### SDK Configuration Options
@@ -464,6 +509,7 @@ The SDK includes a comprehensive registry of popular networks:
 - **Ethereum Mainnet** (Chain ID: 1)
 - **Katana** (Chain ID: 747474)
 - **Sepolia Testnet** (Chain ID: 11155111)
+
 <!-- - **Bokuto Testnet** (Chain ID: 2442) -->
 
 Additional networks can be added via the `chains` configuration option.

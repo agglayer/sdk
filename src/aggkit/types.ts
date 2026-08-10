@@ -3,7 +3,7 @@
  *
  * Canonical TypeScript shapes for the aggkit `bridge/v1` REST surface, derived
  * from live fixtures + aggkit `types.go`. See
- * `/home/brolygon/repos/plans/aggkit-migration/design.md` §1.1 for the
+ * `design.md` §1.1 for the
  * fixture-backed derivation of every field.
  *
  * IMPORTANT: `global_index` is a bare JSON number on `/bridges` (exceeds
@@ -170,7 +170,7 @@ export interface AggkitErrorBody {
 /**
  * ---- Aggregator (S5): multi-network fan-out + status derivation ----
  *
- * See `/home/brolygon/repos/plans/aggkit-migration/design.md` §2-§5 for the
+ * See `design.md` §2-§5 for the
  * fan-out/join/status-derivation/token-metadata algorithms these types
  * support, and `aggregator.ts` for the implementation.
  */
@@ -287,19 +287,16 @@ export interface AggkitTokenMetadata {
  *
  * Canonical TypeScript shapes for `GET /tracker/v1/network/{network_id}/tx/{tx_hash}`
  * (and its `health` sibling). Originally derived from LIVE fixtures captured
- * off a real v0.11.0-rc4 enclave
- * (`/home/brolygon/repos/plans/bridge-tracker/fixtures/`, see that
- * directory's `README.md` "Deviation / bug found #2" for the original
- * writeup), not from rc4's `docs/bridgetracker/API.md` — at the time, the
- * docs disagreed with the live wire format in several places
- * (agglayer/aggkit#1781). That gap is now closed: v0.11.0-rc5
- * (agglayer/aggkit#1784) rewrote `docs/bridgetracker/API.md` to match the
- * wire format exactly; the serializer itself never changed between rc4 and
- * rc5 (PR #1784: "doc-only for the tracker wire format; the serializer is
- * unchanged"). Shapes below were live-verified identical on rc5 on
- * 2026-08-10 (`/home/brolygon/repos/plans/bridge-tracker-rc5/verification.md`
- * §4) — no type-shape changes were needed. The notes below describe the
- * actual wire format, which now matches current upstream docs:
+ * off a real v0.11.0-rc4 devnet enclave on 2026-08-07, not from rc4's
+ * `docs/bridgetracker/API.md` — at the time, the docs disagreed with the
+ * live wire format in several places (agglayer/aggkit#1781). That gap is
+ * now closed: v0.11.0-rc5 (agglayer/aggkit#1784) rewrote
+ * `docs/bridgetracker/API.md` to match the wire format exactly; the
+ * serializer itself never changed between rc4 and rc5 (PR #1784: "doc-only
+ * for the tracker wire format; the serializer is unchanged"). Shapes below
+ * were re-verified byte-identical on a live rc5 enclave on 2026-08-10 — no
+ * type-shape changes were needed. The notes below describe the actual wire
+ * format, which now matches current upstream docs:
  *
  * - `tracking_status`, `bridge_type`, and `status` (the step's) ship as
  *   BARE STRINGS on the wire — no numeric value, no `<field>_string`

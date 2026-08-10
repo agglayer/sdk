@@ -11,7 +11,7 @@
  * L2->L1 deposit, token-mappings, and (optionally) the proxy-502
  * partial-failure path.
  *
- * Run (see /home/brolygon/repos/plans/aggkit-proxy-l2l2/handoff-sdk.md for
+ * Run (see handoff-sdk.md for
  * the exact command + recorded output from the S8 run):
  *
  *   AGGKIT_URL=http://127.0.0.1:<proxyPort> npx tsx scripts/aggkit-smoke.ts
