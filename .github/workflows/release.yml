@@ -12,6 +12,7 @@ on:
           - alpha
           - beta
           - latest
+          - snapshot
       branch:
         description: 'Branch to release from'
         required: false
@@ -33,8 +34,10 @@ jobs:
         run: |
           echo "🔍 Validating release inputs..."
 
-          # Validate branch - only main and develop allowed
-          if [[ "${{ github.event.inputs.branch }}" != "main" && "${{ github.event.inputs.branch }}" != "develop" ]]; then
+          # Validate branch - only main and develop allowed, except for the
+          # snapshot channel: snapshots publish an inert 0.0.0-snapshot.<sha>
+          # version from any branch and never move real dist-tags.
+          if [[ "${{ github.event.inputs.channel }}" != "snapshot" && "${{ github.event.inputs.branch }}" != "main" && "${{ github.event.inputs.branch }}" != "develop" ]]; then
               echo "❌ Error: Can only release from 'main' or 'develop' branches"
               echo "Current branch: ${{ github.event.inputs.branch }}"
               exit 1
@@ -65,6 +68,15 @@ jobs:
           ref: ${{ github.event.inputs.branch || 'main' }}
 
       - uses: oven-sh/setup-bun@v1
+
+      - name: Set Snapshot Version
+        if: ${{ github.event.inputs.channel == 'snapshot' }}
+        run: |
+          # Inert version tuple: 0.0.0-snapshot.<sha> satisfies no ^1.x range,
+          # so no consumer can resolve it without pinning it exactly.
+          SHA=$(git rev-parse --short=7 HEAD)
+          npm pkg set version="0.0.0-snapshot.${SHA}"
+          echo "📦 Snapshot version: $(node -p "require('./package.json').version")"
 
       - name: Install Dependencies
         run: |
@@ -169,18 +181,27 @@ jobs:
               "alpha")
                   RELEASE_NOTES="⚡ Alpha release - early access features"
                   ;;
+              "snapshot")
+                  RELEASE_NOTES="📸 Snapshot release - pin exactly, not on any channel consumers follow"
+                  ;;
           esac
 
           # Version and publish using npm
           echo "📝 Publishing package to NPM..."
           npm publish --tag $DIST_TAG
 
-          # Create GitHub release with changelog
-          echo "📝 Creating GitHub release..."
+          if [[ "$DIST_TAG" == "snapshot" ]]; then
+              # Snapshots are npm-only: no git tag / GitHub release for a
+              # throwaway version that will be superseded by a real release.
+              echo "📸 Snapshot channel - skipping GitHub release creation"
+          else
+              # Create GitHub release with changelog
+              echo "📝 Creating GitHub release..."
 
-          gh release create "v$CURRENT_VERSION" \
-            --title "Release v$CURRENT_VERSION" \
-            --notes "$RELEASE_NOTES"
+              gh release create "v$CURRENT_VERSION" \
+                --title "Release v$CURRENT_VERSION" \
+                --notes "$RELEASE_NOTES"
+          fi
 
           echo "✅ Release completed successfully"
 
