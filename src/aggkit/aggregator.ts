@@ -456,7 +456,8 @@ export class AggkitBridgeAggregator {
           }
 
           // Tier-1 membership only checked page 1 of /claims — bounded, cheap,
-          // and wrong once a network's total claims exceed one page (§ bug b).
+          // and wrong once a network's total claims exceed one page (bug b,
+          // see the claims-pagination correctness regression test).
           // For candidates that passed the leaf-included probe (i.e. that
           // would otherwise be counted READY_TO_CLAIM), confirm with a
           // targeted per-candidate query before counting them.
