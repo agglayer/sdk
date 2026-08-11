@@ -2,10 +2,9 @@
  * AggkitBridgeAggregator
  *
  * Multi-network aggregation + status derivation + token metadata over one
- * `AggkitBridgeClient` per configured L2 network. Implements design.md §2
- * (activity fan-out/merge/cursor), §3 (status derivation state machine),
- * §3.7 (cheap ready-to-claim count), §7 (claim-input orchestration) and §5
- * (token metadata composition).
+ * `AggkitBridgeClient` per configured L2 network: activity fan-out/merge/
+ * cursor, the status-derivation state machine, the cheap ready-to-claim
+ * count, claim-input orchestration and token-metadata composition.
  */
 
 import { AggkitBridgeClient } from './client';
@@ -57,7 +56,7 @@ function isNativeTokenAddress(address: string): boolean {
   return address.toLowerCase() === ZERO_ADDRESS.toLowerCase();
 }
 
-/** One page of a single paginated fan-out call (design.md §2.3). */
+/** One page of a single paginated fan-out call. */
 interface CallPageResult<T> {
   items: T[];
   count: number;
@@ -104,12 +103,12 @@ function mergeClaimsMap(
 /** One bridge row plus the networkId of the aggkit instance it was fetched from. */
 interface FetchedBridgeRow {
   bridge: AggkitBridge;
-  /** The configured L2 network whose instance this row was fetched via (§2.1). */
+  /** The configured L2 network whose instance this row was fetched via. */
   sourceInstanceNetworkId: number;
   /**
    * The network whose LOCAL EXIT TREE recorded this deposit — i.e. the
-   * `network_id` the fan-out call itself used, NOT `bridge.origin_network`
-   * (design.md §3, "third case"). Call A (`getBridges({ networkId: n })`)
+   * `network_id` the fan-out call itself used, NOT `bridge.origin_network`.
+   * Call A (`getBridges({ networkId: n })`)
    * rows are recorded on n's own tree, so `recordingNetworkId === n`. Call B
    * (`getBridges({ networkId: 0, networkIds: [n] })`) rows are recorded on
    * L1's tree, so `recordingNetworkId === 0`.
@@ -124,7 +123,7 @@ interface FetchedBridgeRow {
   recordingNetworkId: number;
 }
 
-/** Result of fanning out the four calls (§2.1 A-D) for one configured network. */
+/** Result of fanning out the four calls (A-D) for one configured network. */
 interface NetworkFanoutResult {
   networkId: number;
   bridgeRowsA: AggkitBridge[];
@@ -143,7 +142,7 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-/** Builds a failed-network attribution from a caught error (design.md §2.2). */
+/** Builds a failed-network attribution from a caught error. */
 function toFailedNetwork(
   networkId: number,
   error: unknown
@@ -159,7 +158,9 @@ function toFailedNetwork(
 
 /**
  * Result of resolving the destination-injected L1-info-tree leaf a deposit's
- * `/claim-proof` must be built against (design.md §3.3, F2).
+ * `/claim-proof` must be built against (a proof built on the deposit's own
+ * source index reverts GlobalExitRootInvalid until the destination has
+ * injected a GER at-or-after it).
  */
 type InjectedLeafResolution =
   | { kind: 'resolved'; leafIndex: number } // injected (or destination is L1)
@@ -203,8 +204,8 @@ export class AggkitBridgeAggregator {
   /**
    * Like `clientFor`, but routes L1 (`networkId === 0`) through a configured
    * L2 instance — L1 has no dedicated aggkit instance; every configured L2
-   * instance's embedded L1 syncer serves `network_id=0` queries identically
-   * (design.md §0.1). Mirrors the routing `getClaimInputs` already applies
+   * instance's embedded L1 syncer serves `network_id=0` queries identically.
+   * Mirrors the routing `getClaimInputs` already applies
    * for the L1-origin case, generalized for callers (like `getTokenMetadata`)
    * that only have a bare `networkId`, not an explicit origin/destination
    * pair to pick a specific instance from.
@@ -229,7 +230,7 @@ export class AggkitBridgeAggregator {
   }
 
   /**
-   * Fan-out + join + status derivation (design.md §2, §3). Never rejects if
+   * Fan-out + join + status derivation. Never rejects if
    * at least one configured network's fan-out succeeds; rejects only if ALL
    * fan-outs fail (or no networks are configured).
    */
@@ -309,7 +310,7 @@ export class AggkitBridgeAggregator {
       );
     }
 
-    // Dedupe by bridge_hash (unique per event, design.md §2.2).
+    // Dedupe by bridge_hash (unique per event).
     const dedupedByHash = new Map<string, FetchedBridgeRow>();
     for (const row of rows) {
       if (!dedupedByHash.has(row.bridge.bridge_hash)) {
@@ -324,7 +325,7 @@ export class AggkitBridgeAggregator {
         : b.bridge.block_timestamp - a.bridge.block_timestamp
     );
 
-    // Per-row Tier-2 probe failures (§2.2 G1) are collected separately from
+    // Per-row Tier-2 probe failures are collected separately from
     // fan-out failures so a failing destination/recording network degrades
     // this row to a conservative status instead of rejecting the whole call.
     const probeFailures: AggkitFailedNetwork[] = [];
@@ -373,7 +374,7 @@ export class AggkitBridgeAggregator {
   }
 
   /**
-   * Cheap ready-to-claim count (design.md §3.7): one bounded (single, large)
+   * Cheap ready-to-claim count: one bounded (single, large)
    * page of bridges+claims per configured network (Tier 1) to build the
    * unclaimed set, then Tier-2 `/l1-info-tree-index` probes bounded to that
    * unclaimed set only — never a full activity scan.
@@ -438,7 +439,7 @@ export class AggkitBridgeAggregator {
 
     const readyFlags = await Promise.all(
       unclaimed.map(async (row) => {
-        // Guard the whole per-row probe (design.md §2.2 gap G1): a failing
+        // Guard the whole per-row probe: a failing
         // network's probe must under-count the badge, not reject the whole
         // count call. `useReadyToClaimCount` has no `failedNetworks` surface
         // by design (`app/hooks/useReadyToClaimCount.ts`).
@@ -492,7 +493,7 @@ export class AggkitBridgeAggregator {
   ): Promise<AggkitClaim | null> {
     const destinationNetworkId = bridge.destination_network;
     // Claims recorded on L1 (destination 0) are visible via any configured
-    // instance's own embedded L1 syncer (design.md §0.1) — use the instance
+    // instance's own embedded L1 syncer — use the instance
     // this row was already fetched through. Claims recorded on a configured
     // L2 network must be queried via that network's own instance (aggkit
     // rejects `network_id`s it doesn't serve).
@@ -503,7 +504,7 @@ export class AggkitBridgeAggregator {
 
     if (!client) {
       // No configured instance can confirm this destination network's
-      // claims (e.g. an unconfigured L2->L2 destination, design.md §3.5).
+      // claims (e.g. an unconfigured L2->L2 destination).
       // Not more precise than the Tier-1/Tier-2 result already computed.
       return null;
     }
@@ -524,13 +525,13 @@ export class AggkitBridgeAggregator {
 
   /**
    * Resolves the L1-info-tree index that `/claim-proof` must be built against for a
-   * deposit landing on `destinationNetworkId` (design.md §3, F2).
+   * deposit landing on `destinationNetworkId`.
    *  - destinationNetworkId === 0  -> { resolved, sourceL1InfoTreeIndex } (no injection step)
    *  - destination client missing  -> { unknown } (caller keeps legacy behaviour)
    *  - 404 "not injected"          -> { not-injected }
    *  - 200                         -> { resolved, leaf.l1_info_tree_index }  // >= source index
    * Probe errors are NOT swallowed here; they propagate so callers can attribute them
-   * to `failedNetworks` (§2.2 G1).
+   * to `failedNetworks`.
    */
   private async resolveInjectedLeafIndex(params: {
     destinationNetworkId: number;
@@ -539,17 +540,17 @@ export class AggkitBridgeAggregator {
     const { destinationNetworkId, sourceL1InfoTreeIndex } = params;
 
     // L1 has no injection step — the handler returns the leaf AT the index
-    // for network_id=0 (design.md §3.1 point 4).
+    // for network_id=0.
     if (destinationNetworkId === 0) {
       return { kind: 'resolved', leafIndex: sourceL1InfoTreeIndex };
     }
 
     const client = this.clients.get(destinationNetworkId);
     if (!client) {
-      // Mirrors the existing confirmClaimed fallback (design.md §3.3): an
+      // Mirrors the existing confirmClaimed fallback: an
       // unconfigured destination L2 keeps today's (possibly reverting)
       // behaviour rather than regressing into a permanent non-actionable
-      // state. The on-chain revert remains the backstop (design.md §9 risk 1).
+      // state. The on-chain revert remains the backstop.
       return {
         kind: 'unknown',
         reason: `no client configured for destination network ${destinationNetworkId}`,
@@ -569,7 +570,7 @@ export class AggkitBridgeAggregator {
   }
 
   /**
-   * Single-tx claim inputs (design.md §3.5): resolves the deposit's own
+   * Single-tx claim inputs: resolves the deposit's own
    * L1-info-tree index on the SOURCE (recording) network, then — for an L2
    * destination — the destination's INJECTED leaf index for that value, then
    * the claim proof against the injected index. Throws `AggkitApiError` if
@@ -592,7 +593,7 @@ export class AggkitBridgeAggregator {
     const { originNetworkId, destinationNetworkId, depositCount } = params;
 
     // L1-origin (network 0) has no dedicated instance; its L1 info tree is
-    // read via the destination L2's instance (design.md §0.1). L2-origin
+    // read via the destination L2's instance. L2-origin
     // deposits are read via their own origin instance.
     const client =
       originNetworkId === 0
@@ -630,7 +631,7 @@ export class AggkitBridgeAggregator {
         endpoint: '/injected-l1-info-leaf',
       });
     } else if (resolution.kind === 'unknown') {
-      // Legacy behaviour: the on-chain revert is the backstop (design.md §9 risk 1).
+      // Legacy behaviour: the on-chain revert is the backstop.
       leafIndex = sourceL1InfoTreeIndex;
     } else {
       leafIndex = resolution.leafIndex;
@@ -646,7 +647,7 @@ export class AggkitBridgeAggregator {
   }
 
   /**
-   * Token metadata composition (design.md §5.2): native check, then
+   * Token metadata composition: native check, then
    * token-mappings resolution (best-effort) + on-chain `ERC20.getMetadata()`
    * reads. Output shape matches the UI's existing `TokenMetadata` contract.
    */
@@ -655,9 +656,9 @@ export class AggkitBridgeAggregator {
     networkId: number
   ): Promise<AggkitTokenMetadata> {
     // L1 (networkId 0) has no dedicated aggkit instance — route through a
-    // configured L2 instance, same as `getClaimInputs` (design.md §0.1).
+    // configured L2 instance, same as `getClaimInputs`.
     const client = this.clientForNetworkOrL1(networkId);
-    // FIXED (aggkit-migration): `getChainByNetworkId` previously returned the
+    // FIXED: `getChainByNetworkId` previously returned the
     // first insertion-order match, and Ethereum mainnet is pre-seeded at
     // networkId 0 ahead of any other networkId-0 chain (e.g. a devnet L1).
     // For NATIVE token metadata on networkId 0 this reported mainnet's
@@ -667,8 +668,7 @@ export class AggkitBridgeAggregator {
     // one — independent of registration order (see
     // `src/native/chains/registry.ts`'s `getChainByNetworkId` precedence
     // note). Consumers that register their L1 (e.g. devnet, networkId 0) no
-    // longer risk resolving the SDK's default mainnet entry. See
-    // handoff-sdk.md §3.2 / RELEASE.md residual risk #5 (resolved).
+    // longer risk resolving the SDK's default mainnet entry.
     const chain = chainRegistry.getChainByNetworkId(networkId);
 
     if (isNativeTokenAddress(tokenAddress)) {
@@ -718,8 +718,8 @@ export class AggkitBridgeAggregator {
    * `docs/bridgetracker/API.md`): registers (if not already) and returns
    * `txHash`'s `AggkitTrackingData` from the aggkit instance serving
    * `networkId`. Routes L1 (`networkId === 0`) through a configured L2
-   * instance, same as `getTokenMetadata` — L1 has no dedicated instance
-   * (design.md §0.1) — and always passes `networkId` through explicitly to
+   * instance, same as `getTokenMetadata` — L1 has no dedicated instance —
+   * and always passes `networkId` through explicitly to
    * `AggkitBridgeClient.getBridgeTracking`'s URL path, since the routed-
    * through L2 instance's own `networkId` is not 0.
    *
@@ -739,7 +739,7 @@ export class AggkitBridgeAggregator {
     return client.getBridgeTracking(txHash, networkId);
   }
 
-  /** Runs the four fan-out calls (§2.1 A-D) for a single configured network. */
+  /** Runs the four fan-out calls (A-D) for a single configured network. */
   private async fetchNetworkFanout(
     networkId: number,
     fromAddress: string,
@@ -818,21 +818,20 @@ export class AggkitBridgeAggregator {
   }
 
   /**
-   * Joins one bridge row into a UI `Transaction`, deriving `status` per the
-   * §3 state machine addendum (design.md §3.4): Tier 1 (claims-set
-   * membership, free/batch) first, then Tier 2a (`/l1-info-tree-index`
+   * Joins one bridge row into a UI `Transaction`, deriving `status`: Tier 1
+   * (claims-set membership, free/batch) first, then Tier 2a (`/l1-info-tree-index`
    * probe, bounded to unclaimed rows only), then — for an L2 destination
-   * only — Tier 2b (the destination-injected-GER gate, §3.1-§3.3).
+   * only — Tier 2b (the destination-injected-GER gate).
    *
    * The Tier-2a probe is keyed by `recordingNetworkId` — the network whose
    * local exit tree actually recorded this deposit (call A vs call B of
    * `fetchNetworkFanout`, see `FetchedBridgeRow`) — NOT `bridge.origin_network`.
    * These coincide for genuine L1-origin deposits and genuine L2-origin
-   * tokens, but diverge for withdrawals of an L2's native gas token (design.md
-   * §3, "third case"), where `origin_network` is always 0 but the deposit is
+   * tokens, but diverge for withdrawals of an L2's native gas token,
+   * where `origin_network` is always 0 but the deposit is
    * recorded on the L2's own tree.
    *
-   * Both Tier-2 probes are guarded (design.md §2.2 gap G1): a throw is
+   * Both Tier-2 probes are guarded: a throw is
    * reported to `onNetworkError` and the row derives a conservative,
    * non-actionable status (`BRIDGED` for a Tier-2a failure, `LEAF_INCLUDED`
    * for a Tier-2b failure) instead of rejecting the whole `getActivity` call.
@@ -862,7 +861,7 @@ export class AggkitBridgeAggregator {
         });
       } catch (error) {
         // Tier-2a throw: conservative non-actionable status, attribute the
-        // failure to the recording network (design.md §2.2 G1).
+        // failure to the recording network.
         onNetworkError(toFailedNetwork(recordingNetworkId, error));
         probe = null;
       }
@@ -881,8 +880,8 @@ export class AggkitBridgeAggregator {
           matchedClaim = confirmedClaim;
           status = 'CLAIMED';
         } else if (bridge.destination_network === 0) {
-          // L2->L1: no injection step, unchanged from before §3 (design.md
-          // §3.1 point 4, §3.4).
+          // L2->L1: no injection step (the destination-injected-GER gate
+          // applies only to L2 destinations).
           status = 'READY_TO_CLAIM';
           leafIndexForProof = probe;
         } else {
@@ -903,7 +902,7 @@ export class AggkitBridgeAggregator {
             }
           } catch (error) {
             // Tier-2b throw: conservative non-actionable status, attribute
-            // the failure to the destination network (design.md §2.2 G1).
+            // the failure to the destination network.
             onNetworkError(toFailedNetwork(bridge.destination_network, error));
             status = 'LEAF_INCLUDED';
           }
@@ -918,8 +917,8 @@ export class AggkitBridgeAggregator {
       txSender: bridge.txn_sender,
       fromAddress: bridge.from_address || bridge.txn_sender,
       receiverAddress: bridge.destination_address,
-      // Display counterpart of the S6b status-derivation fix (design.md
-      // §3.4a): use the RECORDING network, not `bridge.origin_network`. For
+      // Display counterpart of the recording-network status-derivation fix:
+      // use the RECORDING network, not `bridge.origin_network`. For
       // an L2-native-gas-token withdrawal `origin_network` is always 0 (the
       // asset origin, L1 ETH) even though the row is recorded on the L2's
       // own local exit tree — `recordingNetworkId` already captures this

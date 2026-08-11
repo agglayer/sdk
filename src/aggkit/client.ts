@@ -2,8 +2,8 @@
  * AggkitBridgeClient
  *
  * Single-network typed client for one aggkit `bridge/v1` REST instance.
- * One aggkit REST instance is bound to exactly one L2 network (design.md
- * §0.1); this client wraps the endpoints consumed by the bridge UI:
+ * One aggkit REST instance is bound to exactly one L2 network; this
+ * client wraps the endpoints consumed by the bridge UI:
  * bridges, claims, l1-info-tree-index, claim-proof, token-mappings,
  * sync-status (and the root health check).
  */
@@ -36,7 +36,7 @@ const MAX_NETWORK_IDS = 5;
 
 /**
  * Substrings of the aggkit `/l1-info-tree-index` 500 error message that mean
- * "not claimable yet" rather than a genuine failure (design.md §4.2, §3.2):
+ * "not claimable yet" rather than a genuine failure:
  * - "this bridge has not been included on the L1 Info Tree yet"
  * - "not found" (L2-origin deposits, pre-settlement)
  */
@@ -50,7 +50,7 @@ const L1_INFO_TREE_INDEX_NOT_READY_PATTERNS = [
  * not injected yet" rather than a routing/config failure. MUST be message-matched:
  * aggkit-proxy also answers 404 with `{"error":"bridge service url not found for
  * network: network N"}` (fixtures/error_404_unknown_network.json), and treating
- * that as "not ready" would strand rows in LEAF_INCLUDED forever (design.md §3.2).
+ * that as "not ready" would strand rows in LEAF_INCLUDED forever.
  */
 const INJECTED_L1_INFO_LEAF_NOT_READY_PATTERNS = ['not injected'];
 
@@ -223,7 +223,7 @@ export class AggkitBridgeClient {
   }
 
   /**
-   * Destination-side GER-injection probe (design.md §3.2).
+   * Destination-side GER-injection probe.
    * For an L2 `networkId`, aggkit returns the leaf of the FIRST injected global exit
    * root at or AFTER `leafIndex` (so `result.l1_info_tree_index >= leafIndex`).
    * For `networkId === 0` it returns the leaf AT `leafIndex`.
@@ -290,7 +290,7 @@ export class AggkitBridgeClient {
   }
 
   /**
-   * Sends `network_id` explicitly (design.md §2.3, gap G2): through
+   * Sends `network_id` explicitly: through
    * aggkit-proxy, an unqualified `/sync-status` request 400s ("missing
    * mandatory query parameter: network_id") because the proxy has no default
    * network to route to. Safe against a direct aggkit instance too —
@@ -307,9 +307,8 @@ export class AggkitBridgeClient {
 
   /**
    * Root health check (`GET {baseUrl}/`, not under `/bridge/v1`). Not part
-   * of the canonical `AggkitBridgeClient` surface in design.md §4.1, but
-   * requested as an S4 type/coverage item and provided here as a thin,
-   * low-risk extension over the same fetch/retry plumbing.
+   * of the aggregator's needs — provided as a thin, low-risk extension over
+   * the same fetch/retry plumbing.
    */
   async getHealth(): Promise<AggkitHealthResponse> {
     const url = `${this.rootUrl}/`;

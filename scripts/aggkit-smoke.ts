@@ -3,16 +3,15 @@
  *
  * Integration smoke test for the aggkit SDK code (`src/aggkit/*`) against a
  * LIVE aggkit-proxy (or haproxy `/aggkitapi`) REST endpoint fronting the
- * 2-L2 (L2-1/L2-2) devnet — NOT a fixture-driven unit test (design.md §8 S8
- * item 7). Exercises: per-network sync-status across {0,1,2}, a real
+ * 2-L2 (L2-1/L2-2) devnet — an integration script, NOT a fixture-driven unit
+ * test. Exercises: per-network sync-status across {0,1,2}, a real
  * address's multi-network activity fan-out (via the aggregator), a
  * known-ground-truth CLAIMED check, an L2->L2 row's derived status, the
  * destination-injected `getClaimInputs` roundtrip for both an L2->L2 and an
  * L2->L1 deposit, token-mappings, and (optionally) the proxy-502
  * partial-failure path.
  *
- * Run (see handoff-sdk.md for
- * the exact command + recorded output from the S8 run):
+ * Run:
  *
  *   AGGKIT_URL=http://127.0.0.1:<proxyPort> npx tsx scripts/aggkit-smoke.ts
  *
@@ -25,14 +24,14 @@
  *                             /bridge/v1) — either the direct proxy port, or
  *                             `<haproxy>/aggkitapi`.
  *   PROXY_MODE                optional, default "true". Skips check 1
- *                             (getHealth) when true (design.md §2.4 gap
- *                             G3 — aggkit-proxy has no root health route).
+ *                             (getHealth) when true — aggkit-proxy has no
+ *                             root health route.
  *                             Set to "false" to run against a single direct
  *                             aggkit instance instead (pre-S8 behaviour).
  *   L2_NETWORK_IDS            optional, default "1,2". Comma-separated L2
  *                             network ids configured on the aggregator, all
- *                             pointed at AGGKIT_URL (design.md §0.1: one
- *                             proxy fronts every network).
+ *                             pointed at AGGKIT_URL (one aggkit-proxy fronts
+ *                             every network, selected per-request by ?network_id=).
  *   FROM_ADDRESS               optional, default the L2-1 test EOA
  *                             (`0x9BEE1d978DF451350fA93C69c4A1f6fFca12d107`)
  *                             that sent one past round's L2-1->L2-2 and
@@ -49,8 +48,8 @@
  *                             the final section: stops `aggkit-002-bridge`
  *                             via `kurtosis service stop cdk
  *                             aggkit-002-bridge`, asserts `getActivity`
- *                             degrades instead of rejecting (design.md §2.2
- *                             gap G1), then restarts it. Off by default
+ *                             resolves with the dead network reported in
+ *                             failedNetworks instead of rejecting, then restarts it. Off by default
  *                             because it mutates the live enclave.
  */
 
@@ -122,10 +121,10 @@ async function main(): Promise<void> {
   console.log(`\n=== 1. Health (GET /) ===`);
   if (PROXY_MODE) {
     console.log(
-      'SKIPPED — design.md §2.4 gap G3: aggkit-proxy has no root health ' +
-        'route (haproxy strips the /aggkitapi prefix and aggkit-proxy only ' +
-        'registers ANY /bridge/v1/*any -> 404). getHealth() is unused by ' +
-        'the aggregator/app and remains a direct-instance-only convenience.'
+      'SKIPPED — aggkit-proxy has no root health route (haproxy strips the ' +
+        '/aggkitapi prefix and aggkit-proxy only registers ANY /bridge/v1/*any ' +
+        '-> 404). getHealth() is unused by the aggregator/app and remains a ' +
+        'direct-instance-only convenience.'
     );
   } else {
     const health = await mustGetClient(primaryNetworkId).getHealth();
@@ -262,7 +261,7 @@ async function main(): Promise<void> {
     );
   }
 
-  console.log(`\n=== 5. L2->L2 row's derived status (design.md §3.4) ===`);
+  console.log(`\n=== 5. L2->L2 row's derived status ===`);
   const l2l2Row = activity.data.find(
     (tx) =>
       L2_NETWORK_IDS.includes(tx.sourceNetwork) &&
@@ -279,8 +278,8 @@ async function main(): Promise<void> {
         `destinationNetwork=${l2l2Row.destinationNetwork} depositCount=${l2l2Row.depositCount} ` +
         `status=${l2l2Row.status} leafIndexForProof=${l2l2Row.leafIndexForProof}`
     );
-    // This round's known-autoclaimed L2-1->L2-2 deposit (enclave-notes.md /
-    // design.md §3.4's fixture-cited walk): tx 0xac862504..., deposit_count=2.
+    // This round's known-autoclaimed L2-1->L2-2 deposit (also captured in the
+    // unit-test lifecycle fixtures): tx 0xac862504..., deposit_count=2.
     // Autoclaim landed well before this smoke run, so the derived status
     // should be the terminal CLAIMED, not the transient LEAF_INCLUDED window.
     if (l2l2Row.depositCount === 2 && l2l2Row.sourceNetwork === 1) {
@@ -296,7 +295,7 @@ async function main(): Promise<void> {
   }
 
   console.log(
-    `\n=== 6. getClaimInputs — L2->L2 deposit (destination-injected index, design.md §3.5) ===`
+    `\n=== 6. getClaimInputs — L2->L2 deposit (destination-injected index) ===`
   );
   const originBridges = await primaryClient.getBridges({
     networkId: primaryNetworkId,
@@ -333,7 +332,7 @@ async function main(): Promise<void> {
     );
     assert(
       leafIndex >= sourceL1InfoTreeIndex,
-      'L2->L2 leafIndex (destination-injected) >= sourceL1InfoTreeIndex (design.md F2)'
+      'L2->L2 leafIndex (destination-injected) >= sourceL1InfoTreeIndex'
     );
     assert(
       proof.proof_local_exit_root.length === 32,
@@ -350,7 +349,7 @@ async function main(): Promise<void> {
   }
 
   console.log(
-    `\n=== 7. getClaimInputs — L2->L1 deposit (destination 0, no injection step, design.md §3.1 point 4) ===`
+    `\n=== 7. getClaimInputs — L2->L1 deposit (destination 0, no injection step) ===`
   );
   const l2l1Sample = originBridges.bridges.find(
     (b) => b.destination_network === 0
@@ -374,7 +373,7 @@ async function main(): Promise<void> {
     );
     assert(
       leafIndex === sourceL1InfoTreeIndex,
-      'L2->L1 (destination 0): leafIndex === sourceL1InfoTreeIndex (no injection step, design.md §3.1 point 4)'
+      'L2->L1 (destination 0): leafIndex === sourceL1InfoTreeIndex (no injection step)'
     );
     assert(
       proof.proof_local_exit_root.length === 32,
@@ -397,9 +396,7 @@ async function main(): Promise<void> {
     'count matches token_mappings.length'
   );
 
-  console.log(
-    `\n=== 9. Proxy-502 partial-failure path (design.md §2.2 gap G1) ===`
-  );
+  console.log(`\n=== 9. Proxy-502 partial-failure path ===`);
   if (!RUN_PARTIAL_FAILURE_TEST) {
     console.log(
       'SKIPPED — set RUN_PARTIAL_FAILURE_TEST=true to run this (mutates the ' +
@@ -408,12 +405,12 @@ async function main(): Promise<void> {
     );
   } else if (!L2_NETWORK_IDS.includes(2)) {
     console.log(
-      'SKIPPED — aggkit-002-bridge backs network 2 (design.md §0.1), which ' +
+      'SKIPPED — aggkit-002-bridge backs network 2, which ' +
         `is not in the configured L2_NETWORK_IDS (${JSON.stringify(L2_NETWORK_IDS)}).`
     );
   } else {
-    // aggkit-002-bridge backs network 2 specifically (design.md §0.1's static
-    // BridgeURLs map: 2 -> aggkit-002-bridge); this is NOT "any non-zero
+    // aggkit-002-bridge backs network 2 specifically (the proxy's static
+    // BridgeURLs map routes 2 -> aggkit-002-bridge); this is NOT "any non-zero
     // network" — hardcode it to match the exact service being stopped below.
     const downNetworkId = 2;
     console.log(

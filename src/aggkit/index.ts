@@ -2,15 +2,14 @@
  * aggkit Bridge Module
  *
  * Standalone module for talking to the aggkit `bridge/v1` REST service.
- * Kept separate from NATIVE/core so neither is touched by this integration
- * (design.md §4). S4 provides the single-network `AggkitBridgeClient`; S5
- * adds the multi-network `AggkitBridgeAggregator` (fan-out/join/
- * status-derivation/token-metadata, design.md §2-§5).
+ * Kept separate from NATIVE/core so neither is touched by this integration.
+ * Provides the single-network `AggkitBridgeClient` and the multi-network
+ * `AggkitBridgeAggregator` (fan-out/join/status-derivation/token-metadata).
  *
  * ## Multi-Network Proxy Configuration
  *
  * A single `AggkitBridgeAggregator` instance can proxy all networks through
- * one physical backend URL when an AggKit proxy is deployed (design.md §0.1).
+ * one physical backend URL when an AggKit proxy is deployed.
  * Create multiple clients with distinct `networkId` values pointed at the same
  * base URL:
  *

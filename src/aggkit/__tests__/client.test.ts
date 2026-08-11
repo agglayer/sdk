@@ -38,7 +38,8 @@ describe('AggkitBridgeClient', () => {
     it('appends /bridge/v1 to the base URL', async () => {
       mockFetchOnce(loadFixture('sync-status.json'), 200);
       await client.getSyncStatus();
-      // getSyncStatus sends network_id explicitly (design.md §2.3, gap G2).
+      // getSyncStatus sends network_id explicitly (aggkit-proxy 400s an
+      // unqualified /sync-status request).
       expect(lastFetchUrl()).toBe(
         `${BASE_URL}/bridge/v1/sync-status?network_id=1`
       );
@@ -171,7 +172,7 @@ describe('AggkitBridgeClient', () => {
       expect(lastFetchUrl()).toContain('page_size=2');
       expect(page2.bridges).toHaveLength(2);
       // count is the TOTAL matching count, identical across pages, NOT the
-      // current page's array length (design.md §0.5).
+      // current page's array length.
       expect(page2.count).toBe(7);
       expect(page2.bridges[0]?.deposit_count).toBe(4);
       expect(page2.bridges[1]?.deposit_count).toBe(3);
@@ -440,7 +441,7 @@ describe('AggkitBridgeClient', () => {
       expect(result).toBeNull();
     });
 
-    it('throws (does NOT return null) for the proxy "bridge service url not found" 404 (error_404_unknown_network.json) — §3.7 message-matching hazard', async () => {
+    it('throws (does NOT return null) for the proxy "bridge service url not found" 404 (error_404_unknown_network.json) — the two 404 shapes collide, so "not injected" must be matched by message', async () => {
       mockFetchOnce(loadFixture('error_404_unknown_network.json'), 404);
 
       await expect(
@@ -501,7 +502,7 @@ describe('AggkitBridgeClient', () => {
       });
     });
 
-    it('sends network_id — required for aggkit-proxy, which 400s "missing mandatory query parameter: network_id" on an unqualified request (design.md §2.3, gap G2; §3.7 regression)', async () => {
+    it('sends network_id — required for aggkit-proxy, which 400s "missing mandatory query parameter: network_id" on an unqualified request', async () => {
       const network2Client = new AggkitBridgeClient({
         baseUrl: BASE_URL,
         networkId: 2,

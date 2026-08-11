@@ -2,9 +2,7 @@
  * aggkit Bridge REST API — types
  *
  * Canonical TypeScript shapes for the aggkit `bridge/v1` REST surface, derived
- * from live fixtures + aggkit `types.go`. See
- * `design.md` §1.1 for the
- * fixture-backed derivation of every field.
+ * from live fixtures (`__fixtures__/`) + aggkit `types.go`.
  *
  * IMPORTANT: `global_index` is a bare JSON number on `/bridges` (exceeds
  * Number.MAX_SAFE_INTEGER) but a JSON string on `/claims`. Both are carried
@@ -170,9 +168,8 @@ export interface AggkitErrorBody {
 /**
  * ---- Aggregator (S5): multi-network fan-out + status derivation ----
  *
- * See `design.md` §2-§5 for the
- * fan-out/join/status-derivation/token-metadata algorithms these types
- * support, and `aggregator.ts` for the implementation.
+ * See `aggregator.ts` for the fan-out/join/status-derivation/
+ * token-metadata implementation these types support.
  */
 
 /** Config for the multi-network aggregator: one aggkit base URL per L2 networkId. */
@@ -187,7 +184,7 @@ export interface AggkitAggregatorConfig {
 /**
  * UI transaction status (`app/types/transaction.ts` `TransactionStatus`).
  *
- * State machine (design.md §3.2–§3.3):
+ * State machine:
  * - **BRIDGED**: Deposit emitted on source, not yet included in L1 info tree.
  * - **LEAF_INCLUDED**: Deposit included in L1 info tree on source; for L2 destinations
  *   only: the source leaf exists but the destination's GER injection lags (common in
@@ -204,7 +201,7 @@ export type AggkitTransactionStatus =
 
 /**
  * UI-shaped transaction row (mirrors `app/types/transaction.ts` `Transaction`
- * field-for-field per design.md §3.6). Produced by `AggkitBridgeAggregator`
+ * field-for-field). Produced by `AggkitBridgeAggregator`
  * from a joined + status-derived `AggkitBridge` row.
  */
 export interface AggkitTransaction {
@@ -231,20 +228,20 @@ export interface AggkitTransaction {
   originTokenAddress: string;
   originTokenNetwork: number;
   timestamp: number;
-  /** For `Bridge.isClaimed` — equals `deposit_count`, NOT the L1-info-tree index (design.md §7.1). */
+  /** For `Bridge.isClaimed` — equals `deposit_count`, NOT the L1-info-tree index. */
   leafIndex: number;
   /** The L1-info-tree index (for `/claim-proof`'s `leaf_index`); only set once probed (Tier 2). */
   leafIndexForProof?: number;
 }
 
-/** One configured network's fan-out failed; its rows are simply absent from the page (design.md §2.4). */
+/** One configured network's fan-out failed; its rows are simply absent from the page. */
 export interface AggkitFailedNetwork {
   networkId: number;
   error: string;
   httpStatus?: number;
 }
 
-/** Result of `AggkitBridgeAggregator.getActivity` (design.md §2.4). */
+/** Result of `AggkitBridgeAggregator.getActivity`. */
 export interface AggkitActivityPage {
   data: AggkitTransaction[];
   pagination: {
@@ -256,17 +253,16 @@ export interface AggkitActivityPage {
 }
 
 /**
- * Opaque composite cursor: one 1-based page counter per fan-out call
- * (design.md §2.3). A stored value of `0` is a sentinel meaning "this call
- * is exhausted — do not refetch it" (an S5 implementation detail resolving
- * an edge case the design doc leaves implicit; see aggregator.ts).
+ * Opaque composite cursor: one 1-based page counter per fan-out call.
+ * A stored value of `0` is a sentinel meaning "this call
+ * is exhausted — do not refetch it" (see aggregator.ts).
  */
 export type AggkitPageCursor = Record<string, number>;
 
 /**
  * Token metadata output shape = UI's existing `TokenMetadata`
  * (`app/services/tokenMetadata.ts`), unchanged so the UI consumer contract
- * does not need to change (design.md §5.2).
+ * does not need to change.
  */
 export interface AggkitTokenMetadata {
   name: string;

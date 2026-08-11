@@ -43,7 +43,7 @@ function loadFixture(name: string): string {
 // ---------------------------------------------------------------------------
 // URL-routed fetch mock. Each configured network gets its own base URL;
 // `installRouter` matches on `startsWith(base)` + required substrings so
-// concurrent fan-out calls (A/B/C/D, per design.md §2.1) to different
+// concurrent fan-out calls (A/B/C/D, see aggregator.ts fetchNetworkFanout) to different
 // networks/endpoints resolve independently regardless of Promise.all/
 // allSettled ordering.
 // ---------------------------------------------------------------------------
@@ -96,7 +96,7 @@ function errorBody(message: string): string {
   return JSON.stringify({ error: message });
 }
 
-/** Synthetic `/injected-l1-info-leaf` 200 body (design.md §3.2 shape). */
+/** Synthetic `/injected-l1-info-leaf` 200 body (shape = AggkitL1InfoTreeLeaf). */
 function injectedLeafBody(l1InfoTreeIndex: number): string {
   return JSON.stringify({
     block_num: 1,
@@ -137,7 +137,7 @@ function makeBridge(
   };
 }
 
-/** Generates the 4 fan-out rules (A/B/C/D, design.md §2.1) for one network. */
+/** Generates the 4 fan-out rules (A/B/C/D) for one network. */
 function networkRules(
   base: string,
   networkId: number,
@@ -395,7 +395,7 @@ describe('AggkitBridgeAggregator', () => {
           200,
           loadFixture('l1_info_tree_index_valid.json')
         ),
-        // destination_network=1 (L2) -> Tier-2b gate applies (design.md §3.4).
+        // destination_network=1 (L2) -> Tier-2b gate applies.
         // Injected exactly at the source index -> leafIndexForProof unchanged.
         rule(
           BASE_1,
@@ -450,7 +450,7 @@ describe('AggkitBridgeAggregator', () => {
       expect(row?.status).toBe('BRIDGED');
     });
 
-    it('READY_TO_CLAIM: not claimed AND probe succeeds (post-settlement — code-verified, not fixture-captured per design.md §9 risk #4)', async () => {
+    it('READY_TO_CLAIM: not claimed AND probe succeeds (post-settlement — code-verified against bridge.go, not fixture-captured: all enclave L2->L1 deposits were pre-settlement)', async () => {
       installRouter([
         ...networkRules(BASE_1, 1, {
           a: { status: 200, body: loadFixture('bridges_network1.json') },
@@ -518,7 +518,7 @@ describe('AggkitBridgeAggregator', () => {
   });
 
   describe('getActivity — status derivation: L2 -> L1 native-gas-token withdrawal (regression)', () => {
-    // Regression for the defect described in handoff-sdk.md §3.3: a
+    // Regression: a
     // withdrawal of the L2's native gas token (mirrors L1 ETH) always has
     // `origin_network: 0`, but is recorded on the L2's OWN local exit tree
     // (this row is fetched via call A, `network_id=1`) — NOT network 0's
@@ -577,8 +577,8 @@ describe('AggkitBridgeAggregator', () => {
   });
 
   describe('getActivity — display mapping: sourceNetwork uses the RECORDING network (regression, bug a)', () => {
-    // Regression for manual-validation.md check 3 / handoff-sdk.md's
-    // description of bug (a): toTransaction() used to map the displayed
+    // Regression (bug a, found during manual validation): toTransaction()
+    // used to map the displayed
     // `sourceNetwork` from `bridge.origin_network`, which is always 0 for a
     // withdrawal of the L2's native gas token even though the row is
     // recorded on the L2's OWN local exit tree (fetched via call A,
@@ -626,7 +626,7 @@ describe('AggkitBridgeAggregator', () => {
     });
   });
 
-  describe('getActivity — status derivation: L2 -> L2 (design-only, §3.5)', () => {
+  describe('getActivity — status derivation: L2 -> L2 (cross-instance join)', () => {
     it('CLAIMED via cross-instance join: destination network Y (6) claims-set contains the origin (5) bridge global_index', async () => {
       const row = makeBridge({
         bridge_hash: '0xl2l2claimed',
@@ -676,7 +676,7 @@ describe('AggkitBridgeAggregator', () => {
         ...networkRules(BASE_2, 6, {}),
         rule(BASE_1, ['/l1-info-tree-index'], 200, '1'),
         // destination_network=6 (L2) -> Tier-2b gate queries network 6's own
-        // instance (BASE_2). Injected exactly at the source index (design.md §3.4).
+        // instance (BASE_2). Injected exactly at the source index.
         rule(
           BASE_2,
           ['/injected-l1-info-leaf', 'network_id=6', 'leaf_index=1'],
@@ -698,12 +698,13 @@ describe('AggkitBridgeAggregator', () => {
     });
   });
 
-  describe('getActivity — L2 -> L2 injected-leaf gate (design.md §3.4, live S6 lifecycle fixtures)', () => {
+  describe('getActivity — L2 -> L2 injected-leaf gate (live-captured l2l2_* lifecycle fixtures)', () => {
     // Origin tx 0xac862504..., L2-1 deposit_count=2, global_index=2,
     // destination_network=2. l2l2_lifecycle_origin_bridges_row.json's Tier-2a
     // probe (l1-info-tree-index) is 200 with body 7 in both snapshots below;
     // only the destination's injected-leaf response differs (the premature
-    // 404 vs. the post-injection 200), matching design.md §3.4's table.
+    // 404 vs. the post-injection 200): the premature window must derive
+    // LEAF_INCLUDED, never an actionable READY_TO_CLAIM.
     const TARGET_GLOBAL_INDEX = '2';
 
     it('LEAF_INCLUDED (not READY_TO_CLAIM) during the premature window: source settled (N=7) but destination GER not yet injected (16:53:38.016Z snapshot)', async () => {
@@ -822,7 +823,7 @@ describe('AggkitBridgeAggregator', () => {
     });
   });
 
-  describe('getActivity — L2 -> L1 (destination 0) skips Tier-2b entirely (design.md §3.7, live S6 lifecycle fixtures)', () => {
+  describe('getActivity — L2 -> L1 (destination 0) skips Tier-2b entirely (live-captured l2l1_* lifecycle fixtures)', () => {
     it('derives READY_TO_CLAIM with no /injected-l1-info-leaf request', async () => {
       installRouter([
         // confirmClaimed's targeted global_index=3 query MUST be
@@ -878,7 +879,7 @@ describe('AggkitBridgeAggregator', () => {
     });
   });
 
-  describe('getActivity — proxy 502 on a per-row destination probe (design.md §2.2 gap G1, §3.7)', () => {
+  describe('getActivity — proxy 502 on a per-row destination probe', () => {
     it('resolves (does not reject) the whole getActivity call; the row degrades to LEAF_INCLUDED and failedNetworks names only the failing destination network', async () => {
       installRouter([
         rule(
@@ -912,7 +913,7 @@ describe('AggkitBridgeAggregator', () => {
           loadFixture('l1_info_tree_index_notfound_error.json')
         ),
         // Network 2's backend is "stopped" — the destination-injected-leaf
-        // probe 502s (design.md fixtures/error_502_stopped_backend.json).
+        // probe 502s (__fixtures__/error_502_stopped_backend.json).
         rule(
           BASE_2,
           ['/injected-l1-info-leaf'],
@@ -1033,8 +1034,8 @@ describe('AggkitBridgeAggregator', () => {
   });
 
   describe('claims-pagination correctness (regression, bug b)', () => {
-    // Regression for manual-validation.md check 4 / handoff-sdk.md's
-    // description of bug (b): fetchNetworkFanout()'s /claims call only ever
+    // Regression (bug b, found during manual validation):
+    // fetchNetworkFanout()'s /claims call only ever
     // reads page 1 (page_size 200), with no address filter. Once a
     // network's total claim count exceeds one page, an already-claimed
     // deposit whose claim landed beyond page 1 is invisible to the Tier-1
@@ -1083,8 +1084,7 @@ describe('AggkitBridgeAggregator', () => {
           b: { status: 200, body: bridgesBody([paginatedClaimRow], 1) },
           // Page 1 of /claims?network_id=1 does NOT include this deposit's
           // claim, but `count` (348) indicates more pages exist — exactly
-          // the shape that caused the false READY_TO_CLAIM in
-          // manual-validation.md check 4.
+          // the shape that caused the original false READY_TO_CLAIM.
           c: { status: 200, body: claimsBody([], 348) },
         }),
         // Leaf-included probe succeeds (recordingNetworkId=0, an L1-origin
@@ -1124,7 +1124,7 @@ describe('AggkitBridgeAggregator', () => {
   });
 
   describe('getClaimInputs', () => {
-    it('L1 -> L2: uses the DESTINATION network client with network_id=0 (origin) for both calls, and builds /claim-proof on the destination-injected index (design.md §3.5)', async () => {
+    it('L1 -> L2: uses the DESTINATION network client with network_id=0 (origin) for both calls, and builds /claim-proof on the destination-injected index', async () => {
       installRouter([
         rule(
           BASE_1,
@@ -1162,7 +1162,7 @@ describe('AggkitBridgeAggregator', () => {
       expect(result.proof.l1_info_tree_leaf.l1_info_tree_index).toBe(1);
     });
 
-    it('getClaimInputs uses the INJECTED index M > N for /claim-proof (synthetic M=3/N=2, the S2 shape — design.md §3.7)', async () => {
+    it('getClaimInputs uses the INJECTED index M > N for /claim-proof (synthetic M=3/N=2, mirroring a live enclave case)', async () => {
       installRouter([
         rule(
           BASE_1,
@@ -1171,7 +1171,8 @@ describe('AggkitBridgeAggregator', () => {
           '2'
         ),
         // Injection skipped ahead: first injected leaf at-or-after N=2 is M=3
-        // (mirrors S2's live 2->3 case, design.md §0.2 F2).
+        // (mirrors the live case where a claim built on the deposit's own index 2
+        // reverted GlobalExitRootInvalid and only succeeded on injected index 3).
         rule(
           BASE_1,
           ['/injected-l1-info-leaf', 'network_id=1', 'leaf_index=2'],
@@ -1199,7 +1200,7 @@ describe('AggkitBridgeAggregator', () => {
       expect(result.leafIndex).toBe(3);
     });
 
-    it('getClaimInputs throws 404 /injected-l1-info-leaf while the destination has not injected the GER yet (design.md §3.7)', async () => {
+    it('getClaimInputs throws 404 /injected-l1-info-leaf while the destination has not injected the GER yet', async () => {
       installRouter([
         rule(
           BASE_1,
@@ -1261,7 +1262,7 @@ describe('AggkitBridgeAggregator', () => {
       ).rejects.toBeInstanceOf(AggkitApiError);
     });
 
-    it('L2 -> L1 (destination 0) skips Tier-2b entirely: no /injected-l1-info-leaf request is made (design.md §3.7)', async () => {
+    it('L2 -> L1 (destination 0) skips Tier-2b entirely: no /injected-l1-info-leaf request is made', async () => {
       installRouter([
         rule(
           BASE_1,
@@ -1408,11 +1409,10 @@ describe('AggkitBridgeAggregator', () => {
     });
 
     it('L1-origin (networkId 0) lookup routes through a configured L2 instance instead of throwing (regression, bug c)', async () => {
-      // Regression for manual-validation.md check 5 / handoff-sdk.md's
-      // description of bug (c): getTokenMetadata() used to call
-      // `this.clientFor(networkId)` directly, which throws "no client
-      // configured for network 0" when only L2 instances are configured —
-      // L1 has no dedicated aggkit instance (design.md §0.1). This mirrors
+      // Regression (bug c, found during manual validation): getTokenMetadata()
+      // used to call `this.clientFor(networkId)` directly, which throws "no
+      // client configured for network 0" when only L2 instances are
+      // configured — L1 has no dedicated aggkit instance. This mirrors
       // the L1 routing `getClaimInputs` already implements: any configured
       // L2 instance's embedded L1 syncer serves `network_id=0` queries.
       const TOKEN_ADDRESS = '0x2222222222222222222222222222222222222222';
@@ -1447,8 +1447,8 @@ describe('AggkitBridgeAggregator', () => {
         ),
       ]);
 
-      // Only network 1 (an L2) is configured — no "network 0" client exists,
-      // matching the manual-validation devnet and design.md §0.1.
+      // Only network 1 (an L2) is configured — no "network 0" client exists;
+      // L1 data is always served via an L2 instance's embedded L1 syncer.
       const aggregator = new AggkitBridgeAggregator({
         networks: { 1: BASE_1 },
       });
@@ -1462,8 +1462,8 @@ describe('AggkitBridgeAggregator', () => {
       expect(metadata.network).toBe(0);
     });
 
-    it('networkId-0 collision (bridge-tracker-rc5 triage, "SDK networkId: 0 chain-registry collision"): a registered devnet L1 wins over the default Ethereum mainnet chain — no request is ever constructed toward eth.llamarpc.com', async () => {
-      // Reproduces the previously-dormant scenario from console-triage.md:
+    it('networkId-0 collision: a registered devnet L1 wins over the default Ethereum mainnet chain — no request is ever constructed toward eth.llamarpc.com', async () => {
+      // Reproduces a previously-dormant consumer scenario:
       // a consumer registers a devnet L1 at networkId 0 (as
       // `agglayer-dev-ui`'s aggLayerSdk.tsx does), then requests metadata
       // for an ERC20 token bridged from that L1 that isn't in the UI's

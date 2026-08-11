@@ -72,7 +72,7 @@ export class ERC20 extends BaseContract {
    *
    * Used by `AggkitBridgeAggregator.getTokenMetadata` to compose the ERC20
    * branch of token metadata (aggkit's `/token-mappings` has no
-   * name/symbol/decimals fields — design.md §5.1). `totalSupply` reads
+   * name/symbol/decimals fields). `totalSupply` reads
    * tolerate reverts (some tokens omit it) and are simply left undefined.
    */
   async getMetadata(): Promise<{
@@ -118,7 +118,7 @@ export class ERC20 extends BaseContract {
       });
       metadata.totalSupply = (totalSupply as bigint).toString();
     } catch {
-      // totalSupply is optional; tolerate reverts (design.md §5.1).
+      // totalSupply is optional; tolerate reverts.
     }
 
     return metadata;
