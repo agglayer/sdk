@@ -26,8 +26,8 @@ jobs:
   release:
     runs-on: ubuntu-latest
     permissions:
-      contents: write
-      packages: write
+      contents: write # create the GitHub release + tag
+      id-token: write # OIDC trusted publishing — npm exchanges a short-lived token, no secret needed
     steps:
       - name: Validate Inputs
         run: |
@@ -64,7 +64,23 @@ jobs:
           fetch-depth: 0
           ref: ${{ github.event.inputs.branch || 'main' }}
 
+      # Bun runs install, quality checks, build and tests.
       - uses: oven-sh/setup-bun@v1
+
+      # Node + the npm CLI are required for OIDC trusted publishing and staged
+      # releases — bun cannot perform npm's OIDC token exchange. registry-url is
+      # what wires npm up to the public registry; no auth token is configured.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Upgrade npm CLI
+        run: |
+          echo "⬆️ Upgrading npm to guarantee trusted-publishing + staging support..."
+          # Trusted publishing needs npm >= 11.5.1; staged publishing needs >= 11.15.0.
+          npm install -g npm@latest
+          echo "📦 npm version: $(npm --version)"
 
       - name: Install Dependencies
         run: |
@@ -120,9 +136,7 @@ jobs:
         run: |
           echo "🔍 Checking if version already exists on NPM..."
 
-          # Configure npm authentication
-          echo "//registry.npmjs.org/:_authToken=${{ secrets.NPM_TOKEN }}" > ~/.npmrc
-
+          # `npm view` is a public read — no authentication required.
           # Get current version from package.json
           CURRENT_VERSION=$(node -p "require('./package.json').version")
           echo "📦 Current version: $CURRENT_VERSION"
@@ -136,24 +150,33 @@ jobs:
 
           echo "✅ Version $CURRENT_VERSION is available for release"
 
-      - name: Release Package
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - name: Stage Publish to NPM
         run: |
-          echo "🚀 Starting release process..."
-
-          # Configure npm authentication
-          echo "//registry.npmjs.org/:_authToken=${NPM_TOKEN}" > ~/.npmrc
+          echo "🚀 Staging release via trusted publishing (OIDC)..."
 
           # Set release channel
           DIST_TAG="${{ github.event.inputs.channel }}"
-          echo "📦 Publishing to channel: $DIST_TAG"
+          echo "📦 Staging to channel: $DIST_TAG"
 
-
-          # Get current version and update if needed
           CURRENT_VERSION=$(node -p "require('./package.json').version")
           echo "📋 Current version: $CURRENT_VERSION"
+
+          # Staged publishing: the package is uploaded to a staging queue instead
+          # of going live. A maintainer must approve it with a 2FA challenge
+          # before it becomes publicly installable. Authentication is handled by
+          # OIDC — there is no NPM_TOKEN. Provenance is generated automatically
+          # when publishing from a trusted GitHub Actions workflow.
+          echo "📝 Staging package to NPM..."
+          npm stage publish --tag "$DIST_TAG"
+
+          echo "✅ Package staged successfully — pending maintainer approval"
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          DIST_TAG="${{ github.event.inputs.channel }}"
+          CURRENT_VERSION=$(node -p "require('./package.json').version")
 
           # Set release notes based on channel
           case "$DIST_TAG" in
@@ -171,39 +194,29 @@ jobs:
                   ;;
           esac
 
-          # Version and publish using npm
-          echo "📝 Publishing package to NPM..."
-          npm publish --tag $DIST_TAG
-
-          # Create GitHub release with changelog
           echo "📝 Creating GitHub release..."
-
           gh release create "v$CURRENT_VERSION" \
             --title "Release v$CURRENT_VERSION" \
             --notes "$RELEASE_NOTES"
 
-          echo "✅ Release completed successfully"
+          echo "✅ GitHub release created"
 
-      - name: Verify Release
+      - name: Staging Summary
         run: |
-          echo "🔍 Verifying release..."
+          CURRENT_VERSION=$(node -p "require('./package.json').version")
 
-          # Wait for NPM to process
-          echo "⏳ Waiting for NPM to process the release..."
-          sleep 30
-
-          # Get the published version
-          PUBLISHED_VERSION=$(npm view @agglayer/sdk@${{ github.event.inputs.channel }} version)
-          echo "📦 Published version: $PUBLISHED_VERSION"
-
-          # Verify package is accessible
-          if npm view @agglayer/sdk@${{ github.event.inputs.channel }} 2>/dev/null; then
-              echo "✅ Package successfully published to ${{ github.event.inputs.channel }} channel"
-              echo "🔗 Install with: npm install @agglayer/sdk@${{ github.event.inputs.channel }}"
-          else
-              echo "❌ Error: Package verification failed"
-              exit 1
-          fi
+          echo "⏳ Release v$CURRENT_VERSION is STAGED and pending approval"
+          echo "=================================================="
+          echo "The package has been uploaded to NPM's staging queue but is NOT"
+          echo "yet publicly installable. A maintainer must approve it with a 2FA"
+          echo "challenge to release it:"
+          echo ""
+          echo "  • Web:  https://www.npmjs.com/package/@agglayer/sdk"
+          echo "  • CLI:  run 'npm stage --help' for the approval commands"
+          echo ""
+          echo "Once approved, install with:"
+          echo "  npm install @agglayer/sdk@${{ github.event.inputs.channel }}"
+          echo "=================================================="
 
       - name: Create Release Summary
         if: always()
@@ -216,14 +229,16 @@ jobs:
           echo "=================="
 
           if [[ "${{ job.status }}" == "success" ]]; then
-              echo "🎉 Release completed successfully!"
+              echo "🎉 Release staged successfully — awaiting maintainer approval!"
           else
               echo "❌ Release failed. Check the logs above for details."
           fi
 
-      - name: Rollback on Failure
+      - name: Failure Notice
         if: failure()
         run: |
-          echo "🔄 Release failed - cleanup may be needed"
-          echo "⚠️  Manual intervention may be required to clean up partial releases"
-          echo "📝 Check NPM registry and GitHub releases for any partial artifacts"
+          echo "🔄 Release workflow failed"
+          echo "ℹ️  Staged publishing means nothing is public until a maintainer"
+          echo "    approves it, so a failed run does not expose a partial release."
+          echo "📝 If a GitHub release/tag was created before the failure, remove it"
+          echo "    manually if you do not intend to retry this version."
