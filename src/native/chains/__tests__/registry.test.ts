@@ -108,4 +108,57 @@ describe('ChainRegistry networkId collision precedence', () => {
   it('the exported singleton is unaffected by fresh test instances (sanity: singleton still resolves mainnet by default)', () => {
     expect(chainRegistry.getChainByNetworkId(0).chainId).toBe(1);
   });
+
+  /**
+   * Reused default chainId: unlike DEVNET_L1 above (a brand-new chainId,
+   * 1337, with no collision against any default), a consumer can also
+   * collide by *reusing* one of the SDK's own default chainIds outright.
+   * This is exactly agglayer-dev-ui's testnet mode: it doesn't invent a
+   * synthetic L1 chainId, it registers the real Sepolia chainId (11155111)
+   * -- one of the SDK's own `initializeDefaultChains()` entries, also at
+   * networkId 0. Precedence must hold here too: registering *any* chainId,
+   * new or reused, graduates it out of `defaultChainIds`.
+   */
+  const TESTNET_SEPOLIA_OVERRIDE = {
+    chainId: 11155111,
+    networkId: 0,
+    name: 'Ethereum Sepolia (dev-ui testnet)',
+    rpcUrl: 'https://ethereum-sepolia-rpc.publicnode.com',
+    nativeCurrency: { name: 'Sepolia Ether', symbol: 'ETH', decimals: 18 },
+  };
+
+  describe("reused default chainId (e.g. testnet mode reusing the SDK's own Sepolia chainId)", () => {
+    it("re-registering the SDK's own Sepolia chainId at networkId 0 wins over the pre-seeded Ethereum mainnet default", () => {
+      const registry = freshRegistry();
+
+      registry.registerChain(TESTNET_SEPOLIA_OVERRIDE);
+
+      const resolved = registry.getChainByNetworkId(0);
+
+      expect(resolved.chainId).toBe(11155111);
+      expect(resolved.rpcUrl).toBe(TESTNET_SEPOLIA_OVERRIDE.rpcUrl);
+      expect(resolved.rpcUrl).not.toBe('https://eth.llamarpc.com');
+    });
+
+    it("is order-independent: mainnet resolves by default before the override, then flips once Sepolia's chainId is re-registered", () => {
+      const registry = freshRegistry();
+
+      expect(registry.getChainByNetworkId(0).chainId).toBe(1);
+      registry.registerChain(TESTNET_SEPOLIA_OVERRIDE);
+      expect(registry.getChainByNetworkId(0).chainId).toBe(11155111);
+    });
+
+    it("getChain(chainId) for the reused chainId reflects the consumer's override config, not the original default", () => {
+      const registry = freshRegistry();
+
+      registry.registerChain(TESTNET_SEPOLIA_OVERRIDE);
+
+      expect(registry.getChain(11155111).rpcUrl).toBe(
+        TESTNET_SEPOLIA_OVERRIDE.rpcUrl
+      );
+      expect(registry.getChain(11155111).name).toBe(
+        'Ethereum Sepolia (dev-ui testnet)'
+      );
+    });
+  });
 });
