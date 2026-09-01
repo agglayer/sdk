@@ -39,30 +39,27 @@ const MAX_NETWORK_IDS = 5;
 /**
  * `/l1-info-tree-index` not-ready detection (comment 3862896539).
  *
- * aggkit's wire format for this endpoint changed mid-rc-series:
+ * **Minimum supported aggkit: v0.11.0-rc6.** rc4/rc5 support was dropped by
+ * explicit product decision (see the S19 step note in
+ * `plans/sdk-pr28-scratch.md`) — this SDK does not attempt to classify
+ * rc4/rc5's wire shapes, and a deployment on rc4/rc5 will see a genuine
+ * failure on any not-ready state this endpoint reports.
  *
- * - **rc4/rc5** (verified: `v0.11.0-rc4`/`v0.11.0-rc5`,
- *   `bridgeservice/bridge.go:783-840` — identical on both tags): every
- *   failure, not-ready included, is reported as **500** with body
- *   `"failed to get l1 info tree index for network id %d and deposit count
- *   %d, error: %s"`, `%s` being the raw underlying error — either
- *   `ErrNotOnL1Info`'s `"this bridge has not been included on the L1 Info
- *   Tree yet"` (`bridge.go:87`), or, for some pre-settlement L2-origin
- *   deposits, a bare `"not found"` (`db.ErrNotFound`, `db/sqlite.go:17`).
- * - **rc6+** (verified: `v0.11.0-rc6`, aggkit #1794 — `httpStatusForSyncerError`,
- *   `bridge.go:1764-1786`, wired in via `respondSyncerError`,
- *   `bridge.go:1789-1811`, called from `L1InfoTreeIndexForBridgeHandler`,
- *   `bridge.go:825-838`): not-yet-indexed errors (`db.ErrNotFound`,
- *   `l1infotreesync.ErrNotFound`, `ErrNotOnL1Info`, ...) now report **404**
- *   with the FIXED body prefix `"l1 info tree index for network id %d and
- *   deposit count %d is not available yet, retry later: %s"`
- *   (`bridge.go:834`) — present on every not-ready 404 regardless of which
- *   underlying not-found error triggered it, and genuine faults stay 500
- *   with the SAME body format as rc4/rc5 above (`bridge.go:836-837`, byte-
- *   for-byte unchanged).
+ * On the supported floor (verified: `v0.11.0-rc6`, aggkit #1794 —
+ * `httpStatusForSyncerError`, `bridge.go:1764-1786`, wired in via
+ * `respondSyncerError`, `bridge.go:1789-1811`, called from
+ * `L1InfoTreeIndexForBridgeHandler`, `bridge.go:825-838`): not-yet-indexed
+ * errors (`db.ErrNotFound`, `l1infotreesync.ErrNotFound`, `ErrNotOnL1Info`,
+ * ...) report **404** with the FIXED body prefix `"l1 info tree index for
+ * network id %d and deposit count %d is not available yet, retry later: %s"`
+ * (`bridge.go:834`) — present on every not-ready 404 regardless of which
+ * underlying not-found error triggered it. **500 is unconditionally a
+ * genuine fault on rc6+** — `respondSyncerError`'s `default` case
+ * (`bridge.go:836-837`) is the only 500 source in this handler, and it is
+ * never a not-ready state.
  *
- * So both statuses must be inspected (404 rc6, 500 rc4/rc5-and-genuine-rc6),
- * and only EXACT, ground-truth-verified phrasings are matched — never a bare
+ * So only **404** is inspected for a not-ready classification, and only
+ * EXACT, ground-truth-verified phrasings are matched — never a bare
  * `"not found"` SUBSTRING (comment 3862896539's trap: "not found" is one of
  * the most common substrings in error prose anywhere in aggkit's stack — it
  * interpolates raw error chains into its 500 bodies, e.g. "LER not found for
@@ -72,80 +69,22 @@ const MAX_NETWORK_IDS = 5;
  * silently swallowing a genuine failure as "not ready", stranding a row at
  * BRIDGED forever with no `failedNetworks` entry and no visible error.
  *
- * The rc4/rc5 bare-`db.ErrNotFound` not-ready carrier is a REAL and live wire
- * state, and is matched separately by
- * `L1_INFO_TREE_INDEX_LEGACY_BARE_NOT_FOUND` below — a FULLY ANCHORED regex
- * over the entire body rather than a substring, so the trap above stays shut.
- *
- * DELETION CONDITION for the rc4/rc5 500-pattern-matching branch: once the
- * SDK's supported aggkit floor is >= v0.11.0-rc6 (i.e. rc4/rc5 are no longer
- * a deployable target), the 500 body can no longer carry a not-ready
- * classification (rc6+ 500 is unconditionally a genuine fault) — the 500
- * check in `getL1InfoTreeIndex` becomes dead and can be deleted, along with
- * the "not been included on the L1 Info Tree" pattern (if no other 500 source
- * needs it) and `L1_INFO_TREE_INDEX_LEGACY_BARE_NOT_FOUND` in full.
+ * HISTORY: a rc4/rc5 500-body branch (`L1_INFO_TREE_INDEX_LEGACY_BARE_NOT_FOUND`)
+ * previously matched a bare `db.ErrNotFound` 500 body as not-ready (audit
+ * finding C1) to keep rc4/rc5 working. That branch, and the rc4/rc5 support it
+ * existed for, were removed once the product decision fixed the floor at
+ * rc6+ — see the S19 scratch-note entry. `L1_INFO_TREE_INDEX_NOT_READY_PATTERNS`
+ * below is now gated to status 404 only; a 500 with either phrase (which can
+ * happen only if a nested error chain happens to contain it) is a genuine
+ * fault and throws, same as any other 500.
  */
 const L1_INFO_TREE_INDEX_NOT_READY_PATTERNS = [
-  // rc4/rc5 (500) and rc6+ (404, via ErrNotOnL1Info) — bridge.go:87.
+  // rc6+ only (404, via ErrNotOnL1Info) — bridge.go:87.
   'not been included on the l1 info tree',
   // rc6+ only (404) — the FIXED prefix respondSyncerError's notFoundMsg uses
   // for EVERY not-indexed-yet cause, bridge.go:834.
   'is not available yet, retry later',
 ];
-
-/**
- * `/l1-info-tree-index`, **rc4/rc5 ONLY, status 500 ONLY**: this endpoint's own
- * fixed 500 body wrapping a BARE `db.ErrNotFound`.
- *
- * This is a genuine rc4/rc5 not-ready carrier, not a fault. Ground truth
- * (`v0.11.0-rc5:bridgeservice/bridge.go`, byte-identical to `v0.11.0-rc4` —
- * verified by md5 of the whole file):
- *
- * - `getFirstL1InfoTreeIndexForL2Bridge` returns `db.ErrNotFound` **raw** from
- *   `GetLastVerifiedBatches` (`bridge.go:1498-1501`),
- *   `GetFirstVerifiedBatches` (`:1522-1525`) and
- *   `GetFirstL1InfoWithRollupExitRoot` (`:1545-1548`) — i.e. whenever the L2
- *   has no verified-batches row covering this deposit yet (pre-settlement).
- * - `getFirstL1InfoTreeIndexForL1Bridge` does the same from `GetLastInfo`
- *   (`:1429-1432`), `GetFirstInfo` (`:1454-1457`) and `GetFirstInfoAfterBlock`
- *   (`:1467-1470`).
- * - The handler wraps whatever it gets into **500** with
- *   `"failed to get l1 info tree index for network id %d and deposit count %d,
- *   error: %s"` (`bridge.go:832-835`).
- * - `db.ErrNotFound` is `errors.New("not found")` (`db/sqlite.go:17`), so `%s`
- *   is the bare word pair and the body has no other distinguishing prose.
- *
- * rc6 independently CONFIRMS the classification: `httpStatusForSyncerError`
- * maps that same `db.ErrNotFound` sentinel to **404 not-ready**
- * (`v0.11.0-rc6:bridgeservice/bridge.go:1778`). Only rc4/rc5's status code
- * lied about it. The repo ships a live-captured fixture of exactly this body:
- * `__fixtures__/l1_info_tree_index_network1_error.json`.
- *
- * REGRESSION HISTORY: commit `54c10b9` removed the bare `'not found'` pattern
- * to close comment 3862896539's substring trap and, in doing so, deleted this
- * carrier — so on rc4/rc5 (the version actually deployed on the devnet) every
- * pre-settlement L2-origin deposit threw `AggkitApiError` and flooded
- * `failedNetworks` on every poll. Restored here as an ANCHORED regex, which
- * closes the trap AND keeps rc4/rc5 working (audit finding C1).
- *
- * Why anchoring is sufficient: `^...$` over the whole body means it cannot
- * match a nested error chain (`"... error: failed to get last root for L2: LER
- * not found for verified batch 7"`), cannot match aggkit-proxy's
- * `"bridge service url not found for network..."`, and cannot match any other
- * endpoint's prose. `\d+` (not `.*`) pins both interpolated numbers.
- *
- * The optional `l1infotreesync: ` prefix covers `l1infotreesync.ErrNotFound`
- * (`v0.11.0-rc5:l1infotreesync/l1infotreesync.go:38` =
- * `errors.New("l1infotreesync: not found")`), which rc6 lists alongside
- * `db.ErrNotFound` in the same 404 not-ready case
- * (`v0.11.0-rc6:bridgeservice/bridge.go:1778-1779`). Defense in depth only: on
- * rc4/rc5 no call path in THIS handler reaches it, because `translateError`
- * (`l1infotreesync.go:273-278`) is applied by only three `L1InfoTreeSync`
- * methods (`:290`, `:302`, `:314`) and this handler's helpers call none of
- * them — every read it does surfaces `db.ErrNotFound` raw.
- */
-const L1_INFO_TREE_INDEX_LEGACY_BARE_NOT_FOUND =
-  /^failed to get l1 info tree index for network id \d+ and deposit count \d+, error: (l1infotreesync: )?not found$/;
 
 /**
  * aggkit-proxy's OWN routing-failure body — `ErrURLNotFound`,
@@ -224,14 +163,17 @@ const SYNCER_INCONSISTENT_PATTERN = 'a syncer is temporarily inconsistent';
  * early-returns for destination 0 — but it is matched anyway so a future
  * caller cannot reintroduce the throw.
  *
- * DELETION CONDITION: none of these can be dropped while rc4/rc5 or rc6+ is a
- * deployable target; `not injected` is common to both, the other two are rc6+.
+ * Minimum supported aggkit: v0.11.0-rc6 (rc4/rc5 support dropped by explicit
+ * product decision — see the S19 scratch-note entry). None of these three
+ * patterns can be dropped while rc6+ is the deployable target: `not injected`
+ * is the unchanged primary case, the other two are the rc6+ `respondSyncerError`
+ * additions.
  */
 const INJECTED_L1_INFO_LEAF_NOT_READY_PATTERNS: ReadonlyArray<{
   pattern: string;
   reason: AggkitNotReadyReason;
 }> = [
-  // rc4/rc5 AND rc6+ — bridge.go:900-902 (rc6) / :894-896 (rc5).
+  // bridge.go:900-902 — unchanged in spirit back to rc5, still current on rc6+.
   { pattern: 'not injected', reason: 'DESTINATION_GER_NOT_INJECTED' },
   // rc6+ only — the fixed prefix shared by bridge.go:916-917 and :931.
   {
@@ -267,13 +209,13 @@ const INJECTED_L1_INFO_LEAF_NOT_READY_PATTERNS: ReadonlyArray<{
  * arm design §2.2/§2.6 reserved for it; no aggregator change is needed because
  * the union already flows through `getClaimInputs`.
  *
- * Scoped to 404 ONLY: a 500 on this endpoint is a genuine fault in rc6+
- * (`respondSyncerError`'s `internalMsg`) and in rc4/rc5 (every one of the five
- * paths above), so it must keep throwing.
+ * Scoped to 404 ONLY: a 500 on this endpoint is unconditionally a genuine
+ * fault (`respondSyncerError`'s `internalMsg`), so it must keep throwing.
  *
- * DELETION CONDITION: once the supported aggkit floor is >= v0.11.0-rc6 this
- * stays (it is the rc6+ shape); it can be deleted only if aggkit stops
- * classifying these as 404.
+ * Minimum supported aggkit: v0.11.0-rc6 (rc4/rc5 support dropped by explicit
+ * product decision — see the S19 scratch-note entry). This pattern is the
+ * rc6+ shape and stays as long as rc6+ is the deployable target; it can be
+ * deleted only if aggkit stops classifying these as 404.
  */
 const CLAIM_PROOF_NOT_READY_PATTERN = 'has not indexed';
 
@@ -381,16 +323,17 @@ export class AggkitBridgeClient {
    * documented "the request succeeded, the deposit just isn't ready" shapes
    * — DATA, not an error (comment 3847523270):
    * - `'SOURCE_NOT_ON_L1_INFO_TREE'` — not yet included on the L1 info tree.
-   *   Carried as a 500 on aggkit rc4/rc5, or a 404 on rc6+ (aggkit #1794
-   *   remapped this endpoint's statuses — comment 3862896539). See
-   *   `L1_INFO_TREE_INDEX_NOT_READY_PATTERNS`.
-   * - `'SYNCER_INCONSISTENT'` — rc6+ only: the syncer is halted resolving a
-   *   reorg (503). See `SYNCER_INCONSISTENT_PATTERN` and
-   *   the DECISION note on this reason in `types.ts`.
+   *   Carried as a **404** (aggkit #1794 remapped this endpoint's statuses —
+   *   comment 3862896539). See `L1_INFO_TREE_INDEX_NOT_READY_PATTERNS`.
+   * - `'SYNCER_INCONSISTENT'` — the syncer is halted resolving a reorg (503).
+   *   See `SYNCER_INCONSISTENT_PATTERN` and the DECISION note on this reason
+   *   in `types.ts`.
    *
-   * Any genuine failure — a non-numeric 2xx body, an unmatched 404/500/503,
-   * the aggkit-proxy's own routing-failure prose, or any other status — still
-   * throws `AggkitApiError` (comment 3847600104).
+   * Any genuine failure — a non-numeric 2xx body, an unmatched 404/503, ANY
+   * 500 (unconditionally a genuine fault on this endpoint's minimum
+   * supported aggkit, v0.11.0-rc6+), the aggkit-proxy's own routing-failure
+   * prose, or any other status — still throws `AggkitApiError`
+   * (comment 3847600104).
    */
   async getL1InfoTreeIndex(params: {
     networkId: 0 | number;
@@ -426,29 +369,17 @@ export class AggkitBridgeClient {
     );
 
     if (!isProxyRoutingFailure) {
+      // 404 ONLY. On this SDK's minimum supported aggkit (v0.11.0-rc6+), a
+      // 500 on this endpoint is UNCONDITIONALLY a genuine fault
+      // (`respondSyncerError`'s `default` case, `bridge.go:836-837`) — never
+      // a not-ready state. rc4/rc5 (which answered this same not-ready
+      // condition as a 500) are no longer a supported deployment target; see
+      // this file's module-doc-level note above `L1_INFO_TREE_INDEX_NOT_READY_PATTERNS`.
       if (
-        (status === 404 || status === 500) &&
+        status === 404 &&
         L1_INFO_TREE_INDEX_NOT_READY_PATTERNS.some((pattern) =>
           lowerMessage.includes(pattern)
         )
-      ) {
-        return {
-          ready: false,
-          reason: 'SOURCE_NOT_ON_L1_INFO_TREE',
-          detail: message,
-        };
-      }
-
-      // rc4/rc5's bare-`db.ErrNotFound` not-ready carrier (audit finding C1).
-      // 500 ONLY, and matched as a FULLY ANCHORED whole-body regex rather than
-      // a substring, so it cannot swallow a nested error chain, the proxy's
-      // routing prose, or any other endpoint's 500 — see
-      // `L1_INFO_TREE_INDEX_LEGACY_BARE_NOT_FOUND`. rc6+ reclassifies the same
-      // sentinel as a 404 handled by the branch above, so this branch is
-      // rc4/rc5-only by construction.
-      if (
-        status === 500 &&
-        L1_INFO_TREE_INDEX_LEGACY_BARE_NOT_FOUND.test(lowerMessage.trim())
       ) {
         return {
           ready: false,
@@ -497,16 +428,15 @@ export class AggkitBridgeClient {
    * - `'SYNCER_INCONSISTENT'` — rc6+ only: **503** whose body carries the fixed
    *   `errSyncerInconsistent` prose. See `SYNCER_INCONSISTENT_PATTERN`.
    *
-   * Everything else still throws `AggkitApiError`: any 500 (a genuine fault on
-   * rc4/rc5 *and* rc6+, e.g. `"failed to get l1 info tree leaf for index N:
+   * Everything else still throws `AggkitApiError`: any 500 (unconditionally a
+   * genuine fault, e.g. `"failed to get l1 info tree leaf for index N:
    * sql: no rows in result set"`), any 400, the proxy's own routing-failure
    * prose, and — critically — this handler's TWO OTHER 503s,
    * `"L1 bridge syncer is not available"` and `"L2 bridge syncer is not
    * available"`, which are configuration faults, not waiting states. That is
    * why the 503 branch is prose-gated rather than status-gated.
    *
-   * On rc4/rc5 every one of those five paths answered 500, so this method
-   * behaves exactly as before against those versions.
+   * Minimum supported aggkit: v0.11.0-rc6.
    */
   async getClaimProof(params: {
     networkId: 0 | number;
@@ -570,14 +500,14 @@ export class AggkitBridgeClient {
    * branches — a successful "not yet" answer, not an error
    * (comment 3847523270):
    *
-   * - **404** `'DESTINATION_GER_NOT_INJECTED'` (rc4/rc5 and rc6+) — the
-   *   destination has not injected a GER at or after this index yet.
-   * - **404** `'L1_INFO_LEAF_NOT_INDEXED'` (rc6+ only, audit finding C2) —
+   * - **404** `'DESTINATION_GER_NOT_INJECTED'` — the destination has not
+   *   injected a GER at or after this index yet.
+   * - **404** `'L1_INFO_LEAF_NOT_INDEXED'` (audit finding C2) —
    *   `l1infotreesync` has not indexed the L1-info-tree leaf yet; on the first
    *   of its two bodies the GER *is* already injected on L2. See
    *   `INJECTED_L1_INFO_LEAF_NOT_READY_PATTERNS` for both bodies and sites.
-   * - **503** `'SYNCER_INCONSISTENT'` (rc6+ only, audit finding C2) — a syncer
-   *   is halted resolving a reorg. See `SYNCER_INCONSISTENT_PATTERN`.
+   * - **503** `'SYNCER_INCONSISTENT'` (audit finding C2) — a syncer is halted
+   *   resolving a reorg. See `SYNCER_INCONSISTENT_PATTERN`.
    *
    * Every other non-2xx throws `AggkitApiError` — including any other 404 (the
    * proxy's `"bridge service url not found"` is excluded explicitly and up
@@ -585,6 +515,8 @@ export class AggkitBridgeClient {
    * leaf index=%d, error: %s"` (`v0.11.0-rc6:bridgeservice/bridge.go:906-910`),
    * and any 503 without the fixed syncer-inconsistent prose. Treating those as
    * not-ready would strand rows in LEAF_INCLUDED forever.
+   *
+   * Minimum supported aggkit: v0.11.0-rc6.
    */
   async getInjectedL1InfoLeaf(params: {
     networkId: 0 | number;

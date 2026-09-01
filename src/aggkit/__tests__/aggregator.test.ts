@@ -476,7 +476,7 @@ describe('AggkitBridgeAggregator', () => {
         rule(
           BASE_1,
           ['/l1-info-tree-index'],
-          500,
+          404,
           loadFixture('l1_info_tree_index_notfound_error.json')
         ),
       ]);
@@ -494,7 +494,7 @@ describe('AggkitBridgeAggregator', () => {
       expect(row?.claimTransactionHash).toBeDefined();
     });
 
-    it('BRIDGED: not claimed AND l1-info-tree-index probe 500s (l1_info_tree_index_notfound_error.json)', async () => {
+    it("BRIDGED: not claimed AND l1-info-tree-index probe 404s (l1_info_tree_index_notfound_error.json — this SDK's minimum supported aggkit is v0.11.0-rc6, which carries this not-ready state as a 404)", async () => {
       installRouter([
         ...networkRules(BASE_1, 1, {
           b: { status: 200, body: loadFixture('bridges_network0.json') },
@@ -502,7 +502,7 @@ describe('AggkitBridgeAggregator', () => {
         rule(
           BASE_1,
           ['/l1-info-tree-index'],
-          500,
+          404,
           loadFixture('l1_info_tree_index_notfound_error.json')
         ),
       ]);
@@ -560,7 +560,7 @@ describe('AggkitBridgeAggregator', () => {
     // deposit_count=0 <-> global_index "0".
     const TARGET_GLOBAL_INDEX = '0';
 
-    it('BRIDGED: claims_network0.json is empty (no autoclaim) AND probe 500s (l1_info_tree_index_network1_error.json)', async () => {
+    it('BRIDGED: claims_network0.json is empty (no autoclaim) AND probe 500s — rc4/rc5\'s bare "not found" body is NOT a supported wire shape, so it degrades to BRIDGED WITH a failedNetworks entry (l1_info_tree_index_network1_error.json, live-captured; supersedes audit finding C1 / commit 60d7407)', async () => {
       installRouter([
         ...networkRules(BASE_1, 1, {
           a: { status: 200, body: loadFixture('bridges_network1.json') },
@@ -584,15 +584,21 @@ describe('AggkitBridgeAggregator', () => {
       );
       expect(row).toBeDefined();
       expect(row?.status).toBe('BRIDGED');
-      // C1 REGRESSION GUARD. This assertion is the reason the C1 regression was
-      // invisible to CI: `status === 'BRIDGED'` is produced BOTH by the correct
-      // not-ready classification and by the throw-then-degrade path, so only
-      // `failedNetworks` distinguishes them. rc4/rc5's bare "not found" 500 is a
-      // genuine not-ready carrier (see client.ts's
-      // L1_INFO_TREE_INDEX_LEGACY_BARE_NOT_FOUND), so it must NOT produce a
-      // failedNetworks entry — otherwise every in-flight pre-settlement deposit
-      // floods it on every poll. Do not delete this assertion.
-      expect(page.failedNetworks).toEqual([]);
+      // FLOOR DECISION. This SDK's minimum supported aggkit is v0.11.0-rc6;
+      // rc4/rc5 are not supported. On the supported floor a 500 on this
+      // endpoint is UNCONDITIONALLY a genuine fault, so this rc4/rc5-shaped
+      // body now correctly throws and populates `failedNetworks` — the
+      // opposite of what commit `54c10b9`'s C1 fix (`60d7407`) asserted. Do
+      // not flip this back to an empty array without first restoring rc4/rc5
+      // as a supported target.
+      expect(page.failedNetworks).toEqual([
+        {
+          networkId: 1,
+          error:
+            'failed to get l1 info tree index for network id 1 and deposit count 0, error: not found',
+          httpStatus: 500,
+        },
+      ]);
     });
 
     it('READY_TO_CLAIM: not claimed AND probe succeeds (post-settlement — code-verified against bridge.go, not fixture-captured: all enclave L2->L1 deposits were pre-settlement)', async () => {
@@ -887,7 +893,7 @@ describe('AggkitBridgeAggregator', () => {
         rule(
           BASE_1,
           ['/l1-info-tree-index'],
-          500,
+          404,
           loadFixture('l1_info_tree_index_notfound_error.json')
         ),
         rule(
@@ -960,7 +966,7 @@ describe('AggkitBridgeAggregator', () => {
           rule(
             BASE_1,
             ['/l1-info-tree-index'],
-            500,
+            404,
             loadFixture('l1_info_tree_index_notfound_error.json')
           ),
           rule(
@@ -1017,7 +1023,7 @@ describe('AggkitBridgeAggregator', () => {
         rule(
           BASE_1,
           ['/l1-info-tree-index'],
-          500,
+          404,
           loadFixture('l1_info_tree_index_notfound_error.json')
         ),
         rule(
@@ -1075,7 +1081,7 @@ describe('AggkitBridgeAggregator', () => {
         rule(
           BASE_1,
           ['/l1-info-tree-index'],
-          500,
+          404,
           loadFixture('l1_info_tree_index_notfound_error.json')
         ),
       ]);
@@ -1128,7 +1134,7 @@ describe('AggkitBridgeAggregator', () => {
         rule(
           BASE_1,
           ['/l1-info-tree-index'],
-          500,
+          404,
           loadFixture('l1_info_tree_index_notfound_error.json')
         ),
         // Network 2's backend is "stopped" — the destination-injected-leaf
@@ -1532,7 +1538,7 @@ describe('AggkitBridgeAggregator', () => {
         rule(
           BASE_1,
           ['/l1-info-tree-index', 'network_id=1', 'deposit_count=0'],
-          500,
+          404,
           loadFixture('l1_info_tree_index_notfound_error.json')
         ),
       ]);
@@ -1650,7 +1656,7 @@ describe('AggkitBridgeAggregator', () => {
       });
     });
 
-    it("L2 -> L1: rc4/rc5's bare \"not found\" 500 carrier returns { claimable: false, reason: 'SOURCE_NOT_ON_L1_INFO_TREE' } — NOT a throw — end-to-end (l1_info_tree_index_network1_error.json, live-captured; audit finding C1)", async () => {
+    it('L2 -> L1: rc4/rc5\'s bare "not found" 500 carrier THROWS AggkitApiError end-to-end — rc4/rc5 are NOT a supported aggkit target, so this rc4/rc5-shaped body is a genuine fault on the supported v0.11.0-rc6+ floor (l1_info_tree_index_network1_error.json, live-captured; supersedes audit finding C1 / commit 60d7407)', async () => {
       installRouter([
         rule(
           BASE_1,
@@ -1664,16 +1670,15 @@ describe('AggkitBridgeAggregator', () => {
         networks: { 1: BASE_1 },
       });
 
-      const result = await aggregator.getClaimInputs({
-        recordingNetworkId: 1,
-        destinationNetworkId: 0,
-        depositCount: 0,
-      });
-
-      expect(result).toEqual({
-        claimable: false,
-        reason: 'SOURCE_NOT_ON_L1_INFO_TREE',
-        detail: expect.stringContaining('error: not found'),
+      await expect(
+        aggregator.getClaimInputs({
+          recordingNetworkId: 1,
+          destinationNetworkId: 0,
+          depositCount: 0,
+        })
+      ).rejects.toMatchObject({
+        httpStatus: 500,
+        message: expect.stringContaining('error: not found'),
       });
     });
 

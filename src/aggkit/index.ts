@@ -79,15 +79,19 @@
  * parameter -- it was removed, not deprecated, so a stale call site is a
  * compile error rather than a silently wrong proof.
  *
- * ## aggkit rc4-rc6 Compatibility
+ * ## Minimum Supported aggkit Version
  *
- * The client absorbs aggkit's changing not-ready wire shapes across
- * versions so callers never see the difference: rc4/rc5 report a
- * not-yet-on-the-L1-info-tree deposit as an HTTP 500 with prose; rc6+
- * remaps the same condition to 404 and adds a distinct 503 for a syncer
- * mid-reorg (`SYNCER_INCONSISTENT`). Both map to the same stable
- * `AggkitNotReadyReason` members; genuine faults keep throwing
- * `AggkitApiError` on every version.
+ * **v0.11.0-rc6.** Earlier releases (rc4/rc5) are not supported — this SDK
+ * does not attempt to classify their wire shapes, so a deployment on rc4/rc5
+ * will see a genuine failure (`AggkitApiError`) for any not-ready state these
+ * endpoints report, rather than the `{ claimable: false, reason, detail }`
+ * union described above. On the supported floor, the client absorbs
+ * aggkit's not-ready wire shapes across `/l1-info-tree-index`,
+ * `/injected-l1-info-leaf`, and `/claim-proof` into the same stable
+ * `AggkitNotReadyReason` members — a 404 with a fixed not-ready prose, or a
+ * 503 while a syncer resolves a reorg (`SYNCER_INCONSISTENT`) — while any
+ * 500 on any of the three is unconditionally a genuine fault and keeps
+ * throwing `AggkitApiError`.
  */
 
 export { AggkitBridgeClient } from './client';

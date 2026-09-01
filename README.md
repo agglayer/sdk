@@ -356,13 +356,16 @@ unrelated deposit, with no error raised anywhere. There is no
 deprecated, so a stale call site fails to compile instead of mis-routing at
 runtime.
 
-**Version compatibility (aggkit rc4 → rc6+).** aggkit's wire shape for "not
-yet on the L1 info tree" has changed twice across releases — rc4/rc5 report
-it as an HTTP 500 with prose; rc6+ remaps the same condition to a 404 and
-adds a distinct 503 (`SYNCER_INCONSISTENT`) for a syncer mid-reorg — and the
-client absorbs all of it into the same stable `AggkitNotReadyReason` values,
-so code written against one aggkit version keeps working unchanged against
-the others.
+**Minimum supported aggkit: v0.11.0-rc6.** Earlier releases (rc4/rc5) are not
+supported — this SDK does not attempt to classify their wire shapes, and a
+deployment on rc4/rc5 will see a genuine failure (`AggkitApiError`) for any
+not-ready state these endpoints report. On the supported floor, the client
+absorbs aggkit's not-ready wire shapes across `/l1-info-tree-index`,
+`/injected-l1-info-leaf`, and `/claim-proof` into the same stable
+`AggkitNotReadyReason` values — a 404 with a fixed not-ready prose, or a 503
+while a syncer resolves a reorg (`SYNCER_INCONSISTENT`) — while any 500 on
+any of the three is unconditionally a genuine fault and throws
+`AggkitApiError`.
 
 ## ⚙️ Configuration
 

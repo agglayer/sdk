@@ -308,8 +308,8 @@ describe('AggkitBridgeClient', () => {
       expect(result).toEqual({ ready: true, value: 1 });
     });
 
-    it("returns { ready: false, reason: 'SOURCE_NOT_ON_L1_INFO_TREE' } — NOT a throw — when the deposit has not been included yet (l1_info_tree_index_notfound_error.json, 500) (comment 3847523270)", async () => {
-      mockFetchOnce(loadFixture('l1_info_tree_index_notfound_error.json'), 500);
+    it("returns { ready: false, reason: 'SOURCE_NOT_ON_L1_INFO_TREE' } — NOT a throw — when the deposit has not been included yet (l1_info_tree_index_notfound_error.json, 404 — this SDK's minimum supported aggkit is v0.11.0-rc6, which carries this state as a 404, not a 500) (comment 3847523270)", async () => {
+      mockFetchOnce(loadFixture('l1_info_tree_index_notfound_error.json'), 404);
 
       const result = await client.getL1InfoTreeIndex({
         networkId: 0,
@@ -328,34 +328,35 @@ describe('AggkitBridgeClient', () => {
       }
     });
 
-    // C1 REGRESSION GUARD. This fixture is LIVE-CAPTURED from a devnet running
-    // rc4/rc5 and is a genuine not-ready carrier there: `db.ErrNotFound`
-    // ("not found", db/sqlite.go:17) returned raw by
-    // getFirstL1InfoTreeIndexForL2Bridge's GetLastVerifiedBatches
-    // (v0.11.0-rc5:bridgeservice/bridge.go:1498-1501) and wrapped into the
-    // handler's 500 body (:832-835). rc6 confirms the classification by mapping
-    // the same sentinel to a 404 not-ready (v0.11.0-rc6:bridge.go:1778).
-    // Commit 54c10b9 deleted the pattern that matched it and committed a test
-    // asserting the inverse; this is that test flipped back. Do NOT re-invert it
-    // without also deleting the rc4/rc5 500 branch per client.ts's own
-    // DELETION CONDITION.
-    it("returns { ready: false, reason: 'SOURCE_NOT_ON_L1_INFO_TREE' } — NOT a throw — for rc4/rc5's bare \"not found\" 500 carrier (l1_info_tree_index_network1_error.json, live-captured): matched by the fully ANCHORED L1_INFO_TREE_INDEX_LEGACY_BARE_NOT_FOUND regex, not by a bare substring, so the trap in comment 3862896539 stays closed (audit finding C1)", async () => {
+    // FLOOR DECISION (supersedes audit finding C1's fix in commit 60d7407).
+    // rc4/rc5 support was dropped by explicit product decision — this SDK's
+    // minimum supported aggkit is now v0.11.0-rc6. This fixture is
+    // LIVE-CAPTURED from a devnet that was running rc4/rc5, where this exact
+    // 500 body (aggkit's `db.ErrNotFound`, "not found", db/sqlite.go:17,
+    // wrapped by getFirstL1InfoTreeIndexForL2Bridge's GetLastVerifiedBatches,
+    // v0.11.0-rc5:bridgeservice/bridge.go:1498-1501/:832-835) was a genuine
+    // not-ready carrier on THAT version. On the supported v0.11.0-rc6+ floor,
+    // a 500 on this endpoint is UNCONDITIONALLY a genuine fault — rc6 answers
+    // this exact state as a 404 instead (v0.11.0-rc6:bridge.go:1778, exercised
+    // by the "rc6 wire shape" 404 test above). So this rc4/rc5-shaped body
+    // now correctly throws. Kept as a live-captured fixture rather than
+    // deleted, precisely so this decision is codified and visible rather than
+    // silently dropped. Do NOT flip this back to not-ready without first
+    // restoring rc4/rc5 as a supported target.
+    it('throws AggkitApiError — rc4/rc5 are NOT a supported aggkit target — for the bare "not found" 500 body (l1_info_tree_index_network1_error.json, live-captured from an rc4/rc5 devnet): a 500 on this endpoint is unconditionally a genuine fault on the supported v0.11.0-rc6+ floor (supersedes audit finding C1 / commit 60d7407)', async () => {
       mockFetchOnce(loadFixture('l1_info_tree_index_network1_error.json'), 500);
 
-      const result = await client.getL1InfoTreeIndex({
-        networkId: 1,
-        depositCount: 0,
-      });
-
-      expect(result).toEqual({
-        ready: false,
-        reason: 'SOURCE_NOT_ON_L1_INFO_TREE',
-        detail:
+      await expect(
+        client.getL1InfoTreeIndex({ networkId: 1, depositCount: 0 })
+      ).rejects.toMatchObject({
+        httpStatus: 500,
+        endpoint: '/l1-info-tree-index',
+        message:
           'failed to get l1 info tree index for network id 1 and deposit count 0, error: not found',
       });
     });
 
-    it("returns not-ready for the same rc4/rc5 carrier with the `l1infotreesync: ` error prefix (l1infotreesync.ErrNotFound, v0.11.0-rc5:l1infotreesync/l1infotreesync.go:38) — the regex's optional prefix group", async () => {
+    it('throws AggkitApiError for the `l1infotreesync: ` -prefixed variant of the same unsupported-rc4/rc5 bare "not found" 500 body (l1infotreesync.ErrNotFound, v0.11.0-rc5:l1infotreesync/l1infotreesync.go:38): still a 500, still unconditionally a genuine fault', async () => {
       mockFetchOnce(
         JSON.stringify({
           error:
@@ -364,14 +365,11 @@ describe('AggkitBridgeClient', () => {
         500
       );
 
-      const result = await client.getL1InfoTreeIndex({
-        networkId: 1,
-        depositCount: 12,
-      });
-
-      expect(result).toMatchObject({
-        ready: false,
-        reason: 'SOURCE_NOT_ON_L1_INFO_TREE',
+      await expect(
+        client.getL1InfoTreeIndex({ networkId: 1, depositCount: 12 })
+      ).rejects.toMatchObject({
+        httpStatus: 500,
+        endpoint: '/l1-info-tree-index',
       });
     });
 
