@@ -1347,6 +1347,12 @@ describe('AggkitBridgeAggregator', () => {
         destinationNetworkId: 1,
         depositCount: 1,
       });
+      expect(result.claimable).toBe(true);
+      if (!result.claimable) {
+        throw new Error(
+          `expected claimable: true, got ${result.reason}: ${result.detail}`
+        );
+      }
 
       expect(result.leafIndex).toBe(1);
       expect(result.sourceL1InfoTreeIndex).toBe(1);
@@ -1386,12 +1392,18 @@ describe('AggkitBridgeAggregator', () => {
         destinationNetworkId: 1,
         depositCount: 2,
       });
+      expect(result.claimable).toBe(true);
+      if (!result.claimable) {
+        throw new Error(
+          `expected claimable: true, got ${result.reason}: ${result.detail}`
+        );
+      }
 
       expect(result.sourceL1InfoTreeIndex).toBe(2);
       expect(result.leafIndex).toBe(3);
     });
 
-    it('getClaimInputs throws 404 /injected-l1-info-leaf while the destination has not injected the GER yet', async () => {
+    it("returns { claimable: false, reason: 'DESTINATION_GER_NOT_INJECTED' } — NOT a throw — while the destination has not injected the GER yet (comments 3847523270 / 3847600104)", async () => {
       installRouter([
         rule(
           BASE_1,
@@ -1411,26 +1423,28 @@ describe('AggkitBridgeAggregator', () => {
         networks: { 1: BASE_1, 2: BASE_2 },
       });
 
-      let caught: unknown;
-      try {
-        await aggregator.getClaimInputs({
-          recordingNetworkId: 1,
-          destinationNetworkId: 2,
-          depositCount: 2,
-        });
-      } catch (error) {
-        caught = error;
-      }
+      const result = await aggregator.getClaimInputs({
+        recordingNetworkId: 1,
+        destinationNetworkId: 2,
+        depositCount: 2,
+      });
 
-      expect(caught).toBeInstanceOf(AggkitApiError);
-      expect((caught as AggkitApiError).httpStatus).toBe(404);
-      expect((caught as AggkitApiError).endpoint).toBe(
-        '/injected-l1-info-leaf'
-      );
-      expect((caught as AggkitApiError).message).toMatch(/not injected/);
+      // The old fabricated `AggkitApiError(httpStatus: 404)` claimed a server
+      // error for a request that succeeded; the answer was simply "not yet".
+      expect(result).toEqual({
+        claimable: false,
+        reason: 'DESTINATION_GER_NOT_INJECTED',
+        detail: expect.any(String),
+        sourceL1InfoTreeIndex: 7,
+      });
+      // aggkit's own wording is propagated, not re-fabricated.
+      expect(result.claimable).toBe(false);
+      if (!result.claimable) {
+        expect(result.detail).toMatch(/not injected/);
+      }
     });
 
-    it('L2 -> L1: routes /l1-info-tree-index to the RECORDING network client with network_id=<recording>', async () => {
+    it("L2 -> L1: a not-yet-settled source returns { claimable: false, reason: 'SOURCE_NOT_ON_L1_INFO_TREE' } from the RECORDING network's client, without throwing (comment 3847523270)", async () => {
       installRouter([
         rule(
           BASE_1,
@@ -1444,13 +1458,31 @@ describe('AggkitBridgeAggregator', () => {
         networks: { 1: BASE_1 },
       });
 
-      await expect(
-        aggregator.getClaimInputs({
-          recordingNetworkId: 1,
-          destinationNetworkId: 0,
-          depositCount: 0,
-        })
-      ).rejects.toBeInstanceOf(AggkitApiError);
+      const result = await aggregator.getClaimInputs({
+        recordingNetworkId: 1,
+        destinationNetworkId: 0,
+        depositCount: 0,
+      });
+
+      expect(result).toEqual({
+        claimable: false,
+        reason: 'SOURCE_NOT_ON_L1_INFO_TREE',
+        detail: expect.stringContaining('not found'),
+      });
+      // No `/claim-proof` request is made once the source is known not-ready.
+      const calls = (global.fetch as Mock).mock.calls as [string][];
+      expect(
+        calls.filter(([url]) => url.includes('/claim-proof'))
+      ).toHaveLength(0);
+      // The probe went to the recording network (1), keyed by network_id=1.
+      expect(
+        calls.filter(
+          ([url]) =>
+            url.startsWith(BASE_1) &&
+            url.includes('/l1-info-tree-index') &&
+            url.includes('network_id=1')
+        )
+      ).toHaveLength(1);
     });
 
     it('L2 -> L1 (destination 0) skips Tier-2b entirely: no /injected-l1-info-leaf request is made', async () => {
@@ -1481,6 +1513,12 @@ describe('AggkitBridgeAggregator', () => {
         destinationNetworkId: 0,
         depositCount: 3,
       });
+      expect(result.claimable).toBe(true);
+      if (!result.claimable) {
+        throw new Error(
+          `expected claimable: true, got ${result.reason}: ${result.detail}`
+        );
+      }
 
       expect(result.sourceL1InfoTreeIndex).toBe(7);
       expect(result.leafIndex).toBe(7);
@@ -1539,6 +1577,12 @@ describe('AggkitBridgeAggregator', () => {
         destinationNetworkId: 2,
         depositCount: 4,
       });
+      expect(result.claimable).toBe(true);
+      if (!result.claimable) {
+        throw new Error(
+          `expected claimable: true, got ${result.reason}: ${result.detail}`
+        );
+      }
 
       expect(result.sourceL1InfoTreeIndex).toBe(9);
       expect(result.leafIndex).toBe(9);
@@ -1591,6 +1635,12 @@ describe('AggkitBridgeAggregator', () => {
         destinationNetworkId: 0,
         depositCount: 6,
       });
+      expect(result.claimable).toBe(true);
+      if (!result.claimable) {
+        throw new Error(
+          `expected claimable: true, got ${result.reason}: ${result.detail}`
+        );
+      }
 
       expect(result.sourceL1InfoTreeIndex).toBe(11);
       expect(result.leafIndex).toBe(11);
@@ -1632,6 +1682,12 @@ describe('AggkitBridgeAggregator', () => {
         destinationNetworkId: 2,
         depositCount: 8,
       });
+      expect(result.claimable).toBe(true);
+      if (!result.claimable) {
+        throw new Error(
+          `expected claimable: true, got ${result.reason}: ${result.detail}`
+        );
+      }
 
       expect(result.leafIndex).toBe(5);
       const calls = (global.fetch as Mock).mock.calls as [string][];
@@ -1665,6 +1721,12 @@ describe('AggkitBridgeAggregator', () => {
         destinationNetworkId: 7,
         depositCount: 1,
       });
+      expect(result.claimable).toBe(true);
+      if (!result.claimable) {
+        throw new Error(
+          `expected claimable: true, got ${result.reason}: ${result.detail}`
+        );
+      }
 
       expect(result.leafIndex).toBe(2);
       expect(result.sourceL1InfoTreeIndex).toBe(2);
@@ -1685,6 +1747,65 @@ describe('AggkitBridgeAggregator', () => {
           depositCount: 0,
         } as unknown as Parameters<AggkitBridgeAggregator['getClaimInputs']>[0])
       ).rejects.toThrow(/'originNetworkId' was removed/);
+    });
+
+    it('still throws AggkitApiError for a GENUINE /l1-info-tree-index 500 whose body does not match the not-ready patterns (comment 3847600104)', async () => {
+      installRouter([
+        rule(
+          BASE_1,
+          ['/l1-info-tree-index', 'network_id=1', 'deposit_count=0'],
+          500,
+          errorBody('unexpected internal database failure')
+        ),
+      ]);
+
+      const aggregator = new AggkitBridgeAggregator({
+        networks: { 1: BASE_1 },
+      });
+
+      let caught: unknown;
+      try {
+        await aggregator.getClaimInputs({
+          recordingNetworkId: 1,
+          destinationNetworkId: 0,
+          depositCount: 0,
+        });
+      } catch (error) {
+        caught = error;
+      }
+
+      expect(caught).toBeInstanceOf(AggkitApiError);
+      expect((caught as AggkitApiError).httpStatus).toBe(500);
+      expect((caught as AggkitApiError).endpoint).toBe('/l1-info-tree-index');
+    });
+
+    it('still throws AggkitApiError for a genuine /claim-proof 500 (claim_proof_error_badindex.json) — the union has no reachable not-ready arm there yet', async () => {
+      installRouter([
+        rule(
+          BASE_1,
+          ['/l1-info-tree-index', 'network_id=1', 'deposit_count=1'],
+          200,
+          '4'
+        ),
+        rule(
+          BASE_1,
+          ['/claim-proof', 'network_id=1', 'leaf_index=4', 'deposit_count=1'],
+          500,
+          loadFixture('claim_proof_error_badindex.json')
+        ),
+      ]);
+
+      const aggregator = new AggkitBridgeAggregator({
+        networks: { 1: BASE_1 },
+      });
+
+      await expect(
+        aggregator.getClaimInputs({
+          recordingNetworkId: 1,
+          destinationNetworkId: 0,
+          depositCount: 1,
+        })
+      ).rejects.toBeInstanceOf(AggkitApiError);
     });
 
     it("throws an informative error naming BOTH indices when aggkit returns an injected leaf LOWER than the deposit's own source index (comment 3862897612)", async () => {
@@ -1723,8 +1844,10 @@ describe('AggkitBridgeAggregator', () => {
 
       expect(caught).toBeInstanceOf(Error);
       // A genuine backend-contract violation is a real error, not a
-      // not-ready state -- distinct from the AggkitApiError not-ready
-      // throws elsewhere in getClaimInputs.
+      // not-ready state: it must stay a plain `Error` throw and must NOT be
+      // downgraded to a `claimable: false` reason, which would turn a
+      // funds-relevant backend bug into "keep polling forever".
+      // `AggkitApiError` is reserved for real non-2xx/transport failures.
       expect(caught).not.toBeInstanceOf(AggkitApiError);
       expect((caught as Error).message).toContain('10');
       expect((caught as Error).message).toContain('3');

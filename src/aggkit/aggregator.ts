@@ -18,7 +18,7 @@ import type {
   AggkitBridge,
   AggkitClaim,
   AggkitClaimInputsParams,
-  AggkitClaimProof,
+  AggkitClaimInputsResult,
   AggkitFailedNetwork,
   AggkitPageCursor,
   AggkitTokenMetadata,
@@ -227,7 +227,9 @@ function toFailedNetwork(
  */
 type InjectedLeafResolution =
   | { kind: 'resolved'; leafIndex: number } // injected (or destination is L1)
-  | { kind: 'not-injected' } // 404 "not injected"
+  // aggkit's own 404 "not injected" wording, propagated verbatim rather than
+  // re-fabricated by the caller.
+  | { kind: 'not-injected'; detail: string }
   | { kind: 'unknown'; reason: string }; // no client for destination
 
 export class AggkitBridgeAggregator {
@@ -548,7 +550,9 @@ export class AggkitBridgeAggregator {
             depositCount: row.bridge.deposit_count,
           });
 
-          if (probe === null) {
+          // Narrow on `ready`, never on the numeric value: L1-info-tree
+          // leaf index 0 is valid and falsy.
+          if (!probe.ready) {
             return false;
           }
 
@@ -639,7 +643,7 @@ export class AggkitBridgeAggregator {
    * deposit landing on `destinationNetworkId`.
    *  - destinationNetworkId === 0  -> { resolved, sourceL1InfoTreeIndex } (no injection step)
    *  - destination client missing  -> { unknown } (caller keeps legacy behaviour)
-   *  - 404 "not injected"          -> { not-injected }
+   *  - 404 "not injected"          -> { not-injected, detail }
    *  - 200                         -> { resolved, leaf.l1_info_tree_index }  // >= source index
    * Probe errors are NOT swallowed here; they propagate so callers can attribute them
    * to `failedNetworks`.
@@ -668,14 +672,15 @@ export class AggkitBridgeAggregator {
       };
     }
 
-    const leaf = await client.getInjectedL1InfoLeaf({
+    const probe = await client.getInjectedL1InfoLeaf({
       networkId: destinationNetworkId,
       leafIndex: sourceL1InfoTreeIndex,
     });
 
-    if (leaf === null) {
-      return { kind: 'not-injected' };
+    if (!probe.ready) {
+      return { kind: 'not-injected', detail: probe.detail };
     }
+    const leaf = probe.value;
 
     // Contract check (comment 3862897612): `getInjectedL1InfoLeaf`'s own
     // doc promises `result.l1_info_tree_index >= leafIndex` for an L2
@@ -706,8 +711,18 @@ export class AggkitBridgeAggregator {
    * network (the network whose local exit tree holds the leaf — see
    * `recordingNetworkId`), then — for an L2 destination only — that
    * destination's INJECTED leaf index at-or-after it, then the claim proof
-   * against the injected index. Throws `AggkitApiError` if not yet claimable
-   * (source not settled, or destination GER not injected).
+   * against the injected index.
+   *
+   * "Not yet claimable" is DATA, NOT AN ERROR: this method returns
+   * `{ claimable: false, reason, detail }` for a valid request whose deposit
+   * simply is not claimable yet (source not settled to the L1 info tree, or
+   * the destination has not injected the GER). It throws only for genuine
+   * failures — `AggkitApiError` for a real non-2xx/transport failure, a plain
+   * `Error` for a backend-contract violation or a configuration problem
+   * (comments 3847523270 / 3847600104).
+   *
+   * `reason` is an OPEN union (`AggkitNotReadyReason`): branch with a
+   * `default` that keeps polling, never with an exhaustive `assertNever`.
    *
    * ROUTING (comment 3847422009): every tree-relative argument is keyed by
    * `recordingNetworkId`, never by the asset's `origin_network`. Passing the
@@ -716,16 +731,9 @@ export class AggkitBridgeAggregator {
    * no error raised anywhere. `destinationNetworkId` is used ONLY for the
    * injected-GER gate.
    */
-  async getClaimInputs(params: AggkitClaimInputsParams): Promise<{
-    /** L1-info-tree index passed to /claim-proof: the DESTINATION-INJECTED index when
-     *  destinationNetworkId !== 0, else the source index. */
-    leafIndex: number;
-    proof: AggkitClaimProof;
-    /** NEW (additive): the deposit's own index from /l1-info-tree-index. Equals
-     *  `leafIndex` when the destination is L1 or when injection was exact. Diagnostics
-     *  for S8 smoke / S10 evidence. */
-    sourceL1InfoTreeIndex: number;
-  }> {
+  async getClaimInputs(
+    params: AggkitClaimInputsParams
+  ): Promise<AggkitClaimInputsResult> {
     // `originNetworkId?: never` only protects TypeScript callers; a JS caller
     // passing the removed parameter would otherwise silently get a proof from
     // the wrong tree (comment 3847422009).
@@ -750,20 +758,24 @@ export class AggkitBridgeAggregator {
       destinationNetworkId
     );
 
-    const sourceL1InfoTreeIndex = await client.getL1InfoTreeIndex({
+    const sourceProbe = await client.getL1InfoTreeIndex({
       networkId: recordingNetworkId,
       depositCount,
     });
 
-    if (sourceL1InfoTreeIndex === null) {
-      throw new AggkitApiError({
-        message:
-          `Deposit (recordingNetworkId=${recordingNetworkId}, depositCount=${depositCount}) ` +
-          `is not yet claimable: not included on the L1 info tree`,
-        httpStatus: 500,
-        endpoint: '/l1-info-tree-index',
-      });
+    if (!sourceProbe.ready) {
+      // The source side simply is not settled yet. A valid request with a
+      // "not yet" answer is data, not an error — the fabricated
+      // `AggkitApiError(httpStatus: 500)` this used to throw claimed an
+      // internal server error for a successful response
+      // (comment 3847523270).
+      return {
+        claimable: false,
+        reason: sourceProbe.reason,
+        detail: sourceProbe.detail,
+      };
     }
+    const sourceL1InfoTreeIndex = sourceProbe.value;
 
     const resolution = await this.resolveInjectedLeafIndex({
       destinationNetworkId,
@@ -772,28 +784,49 @@ export class AggkitBridgeAggregator {
 
     let leafIndex: number;
     if (resolution.kind === 'not-injected') {
-      throw new AggkitApiError({
-        message:
-          `Deposit (recordingNetworkId=${recordingNetworkId}, depositCount=${depositCount}) ` +
-          `is not yet claimable: destination network ${destinationNetworkId} has not ` +
-          `injected the global exit root for L1-info-tree leaf ${sourceL1InfoTreeIndex}`,
-        httpStatus: 404,
-        endpoint: '/injected-l1-info-leaf',
-      });
+      // Source is settled, destination has not injected yet — again data,
+      // not the fabricated `AggkitApiError(httpStatus: 404)` this used to
+      // throw. `sourceL1InfoTreeIndex` carries the diagnostic that used to be
+      // embedded in that error's prose.
+      return {
+        claimable: false,
+        reason: 'DESTINATION_GER_NOT_INJECTED',
+        detail: resolution.detail,
+        sourceL1InfoTreeIndex,
+      };
     } else if (resolution.kind === 'unknown') {
-      // Legacy behaviour: the on-chain revert is the backstop.
+      // Legacy behaviour, unchanged: an unconfigured destination cannot be
+      // gated, so proceed on the source index with the on-chain revert as the
+      // backstop. Deliberately `claimable: true` — folding it into a
+      // not-ready reason would make unconfigured-destination claims
+      // permanently non-actionable. `toTransaction` derives READY_TO_CLAIM
+      // for the same case; the two must stay consistent.
       leafIndex = sourceL1InfoTreeIndex;
     } else {
       leafIndex = resolution.leafIndex;
     }
 
-    const proof = await client.getClaimProof({
+    const proofResult = await client.getClaimProof({
       networkId: recordingNetworkId,
       leafIndex,
       depositCount,
     });
 
-    return { leafIndex, proof, sourceL1InfoTreeIndex };
+    if (!proofResult.ready) {
+      return {
+        claimable: false,
+        reason: proofResult.reason,
+        detail: proofResult.detail,
+        sourceL1InfoTreeIndex,
+      };
+    }
+
+    return {
+      claimable: true,
+      leafIndex,
+      proof: proofResult.value,
+      sourceL1InfoTreeIndex,
+    };
   }
 
   /**
@@ -1003,20 +1036,29 @@ export class AggkitBridgeAggregator {
       status = 'CLAIMED';
     } else {
       const client = this.clientFor(sourceInstanceNetworkId);
-      let probe: number | null;
+      // `undefined` covers BOTH "aggkit says not yet" and "the probe threw",
+      // as the previous `number | null` did — both derive BRIDGED. Only the
+      // throw path reports a `failedNetworks` entry: a not-ready answer is a
+      // healthy network saying "not yet", and attributing it as a failure
+      // would make every in-flight deposit look like a network error.
+      let sourceIndex: number | undefined;
       try {
-        probe = await client.getL1InfoTreeIndex({
+        const probe = await client.getL1InfoTreeIndex({
           networkId: recordingNetworkId,
           depositCount: bridge.deposit_count,
         });
+        if (probe.ready) {
+          sourceIndex = probe.value;
+        }
       } catch (error) {
         // Tier-2a throw: conservative non-actionable status, attribute the
         // failure to the recording network.
         onNetworkError(toFailedNetwork(recordingNetworkId, error));
-        probe = null;
       }
 
-      if (probe !== null) {
+      // Narrow on `undefined`, never on truthiness: L1-info-tree index 0 is
+      // a valid settled index.
+      if (sourceIndex !== undefined) {
         // Tier-1 membership only covers page 1 of /claims (bounded, cheap
         // fast path) and can miss this deposit's claim once a network's
         // total claims exceed one page — mis-deriving READY_TO_CLAIM for an
@@ -1033,19 +1075,19 @@ export class AggkitBridgeAggregator {
           // L2->L1: no injection step (the destination-injected-GER gate
           // applies only to L2 destinations).
           status = 'READY_TO_CLAIM';
-          leafIndexForProof = probe;
+          leafIndexForProof = sourceIndex;
         } else {
           try {
             const resolution = await this.resolveInjectedLeafIndex({
               destinationNetworkId: bridge.destination_network,
-              sourceL1InfoTreeIndex: probe,
+              sourceL1InfoTreeIndex: sourceIndex,
             });
 
             if (resolution.kind === 'not-injected') {
               status = 'LEAF_INCLUDED';
             } else if (resolution.kind === 'unknown') {
               status = 'READY_TO_CLAIM';
-              leafIndexForProof = probe;
+              leafIndexForProof = sourceIndex;
             } else {
               status = 'READY_TO_CLAIM';
               leafIndexForProof = resolution.leafIndex;

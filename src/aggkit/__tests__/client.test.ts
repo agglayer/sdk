@@ -297,7 +297,7 @@ describe('AggkitBridgeClient', () => {
   });
 
   describe('getL1InfoTreeIndex', () => {
-    it('returns the parsed bare number on success (l1_info_tree_index_valid.json)', async () => {
+    it('returns { ready: true, value } with the parsed bare number on success (l1_info_tree_index_valid.json)', async () => {
       mockFetchOnce(loadFixture('l1_info_tree_index_valid.json'), 200);
 
       const result = await client.getL1InfoTreeIndex({
@@ -305,10 +305,10 @@ describe('AggkitBridgeClient', () => {
         depositCount: 1,
       });
 
-      expect(result).toBe(1);
+      expect(result).toEqual({ ready: true, value: 1 });
     });
 
-    it('returns null when the deposit has not been included yet (l1_info_tree_index_notfound_error.json, 500)', async () => {
+    it("returns { ready: false, reason: 'SOURCE_NOT_ON_L1_INFO_TREE' } — NOT a throw — when the deposit has not been included yet (l1_info_tree_index_notfound_error.json, 500) (comment 3847523270)", async () => {
       mockFetchOnce(loadFixture('l1_info_tree_index_notfound_error.json'), 500);
 
       const result = await client.getL1InfoTreeIndex({
@@ -316,10 +316,19 @@ describe('AggkitBridgeClient', () => {
         depositCount: 9999,
       });
 
-      expect(result).toBeNull();
+      expect(result).toEqual({
+        ready: false,
+        reason: 'SOURCE_NOT_ON_L1_INFO_TREE',
+        detail: expect.any(String),
+      });
+      // aggkit's own wording is propagated verbatim for logging/display.
+      expect(result.ready).toBe(false);
+      if (!result.ready) {
+        expect(result.detail.length).toBeGreaterThan(0);
+      }
     });
 
-    it('returns null for the L2-origin "not found" 500 variant (l1_info_tree_index_network1_error.json)', async () => {
+    it('returns the not-ready union for the "not found" 500 variant (l1_info_tree_index_network1_error.json)', async () => {
       mockFetchOnce(loadFixture('l1_info_tree_index_network1_error.json'), 500);
 
       const result = await client.getL1InfoTreeIndex({
@@ -327,7 +336,33 @@ describe('AggkitBridgeClient', () => {
         depositCount: 0,
       });
 
-      expect(result).toBeNull();
+      expect(result.ready).toBe(false);
+      if (!result.ready) {
+        expect(result.reason).toBe('SOURCE_NOT_ON_L1_INFO_TREE');
+      }
+    });
+
+    it('throws AggkitApiError for a 500 whose body does NOT match the not-ready patterns (a genuine server error stays an error)', async () => {
+      mockFetchOnce(
+        JSON.stringify({ error: 'unexpected internal database failure' }),
+        500
+      );
+
+      await expect(
+        client.getL1InfoTreeIndex({ networkId: 1, depositCount: 1 })
+      ).rejects.toMatchObject({
+        httpStatus: 500,
+        endpoint: '/l1-info-tree-index',
+        message: 'unexpected internal database failure',
+      });
+    });
+
+    it('throws AggkitApiError for a non-numeric 2xx body (protocol failure, not a waiting state)', async () => {
+      mockFetchOnce('not-a-number', 200);
+
+      await expect(
+        client.getL1InfoTreeIndex({ networkId: 1, depositCount: 1 })
+      ).rejects.toBeInstanceOf(AggkitApiError);
     });
 
     it('throws AggkitApiError for a 400 on this endpoint (does not swallow non-500 errors)', async () => {
@@ -352,13 +387,17 @@ describe('AggkitBridgeClient', () => {
         depositCount: 1,
       });
 
-      expect(result.proof_local_exit_root).toHaveLength(32);
-      expect(result.proof_rollup_exit_root).toHaveLength(32);
-      expect(result.proof_local_exit_root[0]).toBe(
+      expect(result.ready).toBe(true);
+      if (!result.ready) {
+        throw new Error('expected a ready claim-proof result');
+      }
+      expect(result.value.proof_local_exit_root).toHaveLength(32);
+      expect(result.value.proof_rollup_exit_root).toHaveLength(32);
+      expect(result.value.proof_local_exit_root[0]).toBe(
         '0x341d79031c866046fa536c0e63cd5e7e1246cb76f043f1a4b1ea0986b88c422e'
       );
-      expect(result.l1_info_tree_leaf.l1_info_tree_index).toBe(1);
-      expect(result.l1_info_tree_leaf.mainnet_exit_root).toBe(
+      expect(result.value.l1_info_tree_leaf.l1_info_tree_index).toBe(1);
+      expect(result.value.l1_info_tree_leaf.mainnet_exit_root).toBe(
         '0x2d60988d34d8dea9686f4ba38ba813457e424cf6cf98836727662bd2b83c6939'
       );
 
@@ -417,9 +456,12 @@ describe('AggkitBridgeClient', () => {
         leafIndex: 7,
       });
 
-      expect(result).not.toBeNull();
-      expect(result?.l1_info_tree_index).toBe(7);
-      expect(result?.mainnet_exit_root).toBe(
+      expect(result.ready).toBe(true);
+      if (!result.ready) {
+        throw new Error('expected a ready injected-leaf result');
+      }
+      expect(result.value.l1_info_tree_index).toBe(7);
+      expect(result.value.mainnet_exit_root).toBe(
         '0xb95baa2123d348ef6e6bcce08109f2232881723940ae41612bc4a7801f0ecba2'
       );
       const url = lastFetchUrl();
@@ -427,7 +469,7 @@ describe('AggkitBridgeClient', () => {
       expect(url).toContain('leaf_index=7');
     });
 
-    it('returns null for the documented 404 "not injected" branch (l2l2_165338016Z_injected_l1_info_leaf_7.json) — premature window', async () => {
+    it('returns { ready: false, reason: \'DESTINATION_GER_NOT_INJECTED\' } — NOT a throw — for the documented 404 "not injected" branch (l2l2_165338016Z_injected_l1_info_leaf_7.json) — premature window', async () => {
       mockFetchOnce(
         loadFixture('l2l2_165338016Z_injected_l1_info_leaf_7.json'),
         404
@@ -438,10 +480,14 @@ describe('AggkitBridgeClient', () => {
         leafIndex: 7,
       });
 
-      expect(result).toBeNull();
+      expect(result).toEqual({
+        ready: false,
+        reason: 'DESTINATION_GER_NOT_INJECTED',
+        detail: expect.stringMatching(/not injected/),
+      });
     });
 
-    it('throws (does NOT return null) for the proxy "bridge service url not found" 404 (error_404_unknown_network.json) — the two 404 shapes collide, so "not injected" must be matched by message', async () => {
+    it('throws (does NOT return the not-ready union) for the proxy "bridge service url not found" 404 (error_404_unknown_network.json) — the two 404 shapes collide, so "not injected" must be matched by message', async () => {
       mockFetchOnce(loadFixture('error_404_unknown_network.json'), 404);
 
       await expect(

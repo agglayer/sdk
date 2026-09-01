@@ -56,6 +56,7 @@
 import { execSync } from 'node:child_process';
 import { AggkitBridgeClient } from '../src/aggkit/client';
 import { AggkitBridgeAggregator } from '../src/aggkit/aggregator';
+import type { AggkitClaimInputsResult } from '../src/aggkit/types';
 
 const AGGKIT_URL = process.env['AGGKIT_URL'];
 if (!AGGKIT_URL) {
@@ -297,6 +298,12 @@ async function main(): Promise<void> {
   console.log(
     `\n=== 6. getClaimInputs — L2->L2 deposit (destination-injected index) ===`
   );
+  // `getClaimInputs` returns a union: `claimable: false` (with a
+  // machine-readable `reason`) is a valid non-throwing answer for a deposit
+  // that simply has not settled yet. Hoisted so the proof assertions can run
+  // in a narrowed block without aborting the rest of the smoke run.
+  let result6: AggkitClaimInputsResult | undefined;
+  let result7: AggkitClaimInputsResult | undefined;
   const originBridges = await primaryClient.getBridges({
     networkId: primaryNetworkId,
     fromAddress: FROM_ADDRESS,
@@ -317,12 +324,25 @@ async function main(): Promise<void> {
     // above -- `getBridges({ networkId: primaryNetworkId })` -- so it is
     // recorded on that network's own local exit tree by construction,
     // regardless of the asset's `origin_network`.
-    const { leafIndex, proof, sourceL1InfoTreeIndex } =
-      await aggregator.getClaimInputs({
-        recordingNetworkId: primaryNetworkId,
-        destinationNetworkId: l2l2Sample.destination_network,
-        depositCount: l2l2Sample.deposit_count,
-      });
+    result6 = await aggregator.getClaimInputs({
+      recordingNetworkId: primaryNetworkId,
+      destinationNetworkId: l2l2Sample.destination_network,
+      depositCount: l2l2Sample.deposit_count,
+    });
+    // `claimable: false` is a valid, non-throwing answer ("not settled yet").
+    // This section samples an already-settled deposit, so assert readiness
+    // before narrowing to the proof.
+    assert(
+      result6.claimable,
+      `L2->L2 getClaimInputs returned claimable${
+        result6.claimable
+          ? ''
+          : `; got false: ${result6.reason} — ${result6.detail}`
+      }`
+    );
+  }
+  if (l2l2Sample && result6?.claimable) {
+    const { leafIndex, proof, sourceL1InfoTreeIndex } = result6;
     console.log(
       `L2->L2 depositCount=${l2l2Sample.deposit_count} destinationNetwork=${l2l2Sample.destination_network} -> ` +
         `sourceL1InfoTreeIndex=${sourceL1InfoTreeIndex}, leafIndex=${leafIndex}, ` +
@@ -368,12 +388,22 @@ async function main(): Promise<void> {
     // sampled deposit was a native-gas-token withdrawal (`origin_network=0`
     // recorded on the L2's own tree). `recordingNetworkId` removes the asset
     // origin from the routing decision entirely.
-    const { leafIndex, proof, sourceL1InfoTreeIndex } =
-      await aggregator.getClaimInputs({
-        recordingNetworkId: primaryNetworkId,
-        destinationNetworkId: 0,
-        depositCount: l2l1Sample.deposit_count,
-      });
+    result7 = await aggregator.getClaimInputs({
+      recordingNetworkId: primaryNetworkId,
+      destinationNetworkId: 0,
+      depositCount: l2l1Sample.deposit_count,
+    });
+    assert(
+      result7.claimable,
+      `L2->L1 getClaimInputs returned claimable${
+        result7.claimable
+          ? ''
+          : `; got false: ${result7.reason} — ${result7.detail}`
+      }`
+    );
+  }
+  if (l2l1Sample && result7?.claimable) {
+    const { leafIndex, proof, sourceL1InfoTreeIndex } = result7;
     console.log(
       `L2->L1 depositCount=${l2l1Sample.deposit_count} -> ` +
         `sourceL1InfoTreeIndex=${sourceL1InfoTreeIndex}, leafIndex=${leafIndex}, ` +

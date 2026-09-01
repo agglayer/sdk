@@ -17,6 +17,7 @@ import type {
   AggkitClaimsResult,
   AggkitClaimProof,
   AggkitL1InfoTreeLeaf,
+  AggkitProbeResult,
   AggkitTokenMappingsResult,
   AggkitSyncStatus,
   AggkitErrorBody,
@@ -148,15 +149,24 @@ export class AggkitBridgeClient {
   }
 
   /**
-   * Returns the L1-info-tree index for `(networkId, depositCount)`, or
-   * `null` when aggkit reports the deposit is not yet included on the L1
-   * info tree (its documented 500 branches) — see
-   * `L1_INFO_TREE_INDEX_NOT_READY_PATTERNS`. Any other error still throws.
+   * Returns the L1-info-tree index for `(networkId, depositCount)`.
+   *
+   * `networkId` is the RECORDING network — the one whose local exit tree holds
+   * the leaf at `depositCount` — never the asset's `origin_network`
+   * (comment 3847422009).
+   *
+   * Answers `{ ready: false, reason: 'SOURCE_NOT_ON_L1_INFO_TREE', detail }`
+   * when aggkit reports the deposit is not yet included on the L1 info tree
+   * (its documented 500 branches — see
+   * `L1_INFO_TREE_INDEX_NOT_READY_PATTERNS`). That is DATA, not an error: the
+   * request succeeded and the answer is "not yet" (comment 3847523270). Any
+   * genuine failure — a non-numeric 2xx body, an unmatched 500, any other
+   * status — still throws `AggkitApiError` (comment 3847600104).
    */
   async getL1InfoTreeIndex(params: {
     networkId: 0 | number;
     depositCount: number;
-  }): Promise<number | null> {
+  }): Promise<AggkitProbeResult<number>> {
     const query = this.buildQuery({
       network_id: params.networkId,
       deposit_count: params.depositCount,
@@ -177,7 +187,7 @@ export class AggkitBridgeClient {
           body: text,
         });
       }
-      return value;
+      return { ready: true, value };
     }
 
     if (status === 500) {
@@ -187,7 +197,11 @@ export class AggkitBridgeClient {
         lowerMessage.includes(pattern)
       );
       if (notReady) {
-        return null;
+        return {
+          ready: false,
+          reason: 'SOURCE_NOT_ON_L1_INFO_TREE',
+          detail: message,
+        };
       }
       throw new AggkitApiError({
         message,
@@ -205,11 +219,28 @@ export class AggkitBridgeClient {
     });
   }
 
+  /**
+   * Builds the local-exit-tree branch for leaf `depositCount` of `networkId`'s
+   * tree, against L1-info-tree leaf `leafIndex`.
+   *
+   * `networkId` is the RECORDING network, never the asset's `origin_network`
+   * (comment 3847422009): `deposit_count` is a per-tree counter, so naming the
+   * wrong tree yields a well-formed proof for an unrelated deposit.
+   *
+   * Returns `AggkitProbeResult` for symmetry with the other two claim-path
+   * probes. **The `ready: false` arm is currently UNREACHABLE and that is
+   * deliberate — do not delete it.** This endpoint has no known not-ready
+   * branch today: its 500 (`sql: no rows in result set`) and 400 are genuine
+   * errors and keep throwing via `assertOk`. The arm exists so aggkit
+   * v0.11.0-rc6's not-ready classification can be added to this endpoint
+   * without another breaking signature change, and so callers are already
+   * forced to narrow.
+   */
   async getClaimProof(params: {
     networkId: 0 | number;
     leafIndex: number;
     depositCount: number;
-  }): Promise<AggkitClaimProof> {
+  }): Promise<AggkitProbeResult<AggkitClaimProof>> {
     const query = this.buildQuery({
       network_id: params.networkId,
       leaf_index: params.leafIndex,
@@ -219,7 +250,7 @@ export class AggkitBridgeClient {
     const { status, text } = await this.requestRaw('/claim-proof', query);
     this.assertOk('/claim-proof', status, text);
 
-    return JSON.parse(text) as AggkitClaimProof;
+    return { ready: true, value: JSON.parse(text) as AggkitClaimProof };
   }
 
   /**
@@ -227,14 +258,17 @@ export class AggkitBridgeClient {
    * For an L2 `networkId`, aggkit returns the leaf of the FIRST injected global exit
    * root at or AFTER `leafIndex` (so `result.l1_info_tree_index >= leafIndex`).
    * For `networkId === 0` it returns the leaf AT `leafIndex`.
-   * Returns `null` ONLY for the documented 404 "not injected" branch; every other
-   * non-2xx (incl. any other 404, e.g. the proxy's "bridge service url not found")
-   * throws `AggkitApiError`.
+   *
+   * Answers `{ ready: false, reason: 'DESTINATION_GER_NOT_INJECTED', detail }`
+   * ONLY for the documented 404 "not injected" branch — a successful "not yet"
+   * answer, not an error (comment 3847523270). Every other non-2xx (incl. any
+   * other 404, e.g. the proxy's "bridge service url not found") throws
+   * `AggkitApiError`; treating those as not-ready would strand rows forever.
    */
   async getInjectedL1InfoLeaf(params: {
     networkId: 0 | number;
     leafIndex: number;
-  }): Promise<AggkitL1InfoTreeLeaf | null> {
+  }): Promise<AggkitProbeResult<AggkitL1InfoTreeLeaf>> {
     const query = this.buildQuery({
       network_id: params.networkId,
       leaf_index: params.leafIndex,
@@ -246,7 +280,10 @@ export class AggkitBridgeClient {
     );
 
     if (status >= 200 && status < 300) {
-      return JSON.parse(text) as AggkitL1InfoTreeLeaf;
+      return {
+        ready: true,
+        value: JSON.parse(text) as AggkitL1InfoTreeLeaf,
+      };
     }
 
     if (status === 404) {
@@ -256,7 +293,11 @@ export class AggkitBridgeClient {
         (pattern) => lowerMessage.includes(pattern)
       );
       if (notReady) {
-        return null;
+        return {
+          ready: false,
+          reason: 'DESTINATION_GER_NOT_INJECTED',
+          detail: message,
+        };
       }
     }
 

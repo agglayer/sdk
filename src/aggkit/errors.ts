@@ -6,6 +6,11 @@
  * core `ApiError` (`../core/utils/apiError.ts`) — aggkit's error bodies are a
  * uniform bare `{"error": "<message>"}` shape (no `code`/`name`/`details`),
  * so this class carries `httpStatus` + `endpoint` + the raw `body` instead.
+ *
+ * Never used for "the request succeeded, the deposit is simply not claimable
+ * yet" — that is modelled as data (`AggkitProbeResult` /
+ * `AggkitClaimInputsResult`), not as an exception (comments 3847523270 /
+ * 3847600104).
  */
 
 export interface AggkitApiErrorArgs {

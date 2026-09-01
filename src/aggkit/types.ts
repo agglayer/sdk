@@ -120,6 +120,57 @@ export interface AggkitClaimProof {
 }
 
 /**
+ * Machine-readable reason a claim-path aggkit probe answered "your request was
+ * valid, the deposit simply is not ready yet".
+ *
+ * NOT an error condition: aggkit answering "this bridge has not been included
+ * on the L1 Info Tree yet" is a successful answer to a well-formed question
+ * (comment 3847523270 — the HTTP 500 that rc4/rc5 wraps it in is aggkit's bug,
+ * not a signal). Genuine failures throw `AggkitApiError` instead
+ * (comment 3847600104).
+ *
+ * ## OPEN UNION — forward-compatibility contract
+ *
+ * This union is EXTENSIBLE BY DESIGN and WILL gain members as aggkit's error
+ * taxonomy evolves (aggkit v0.11.0-rc6 reworks the status codes). Consumers
+ * MUST branch with a `default` / `else` fallback that treats an unrecognised
+ * reason as "not ready yet, keep polling", and MUST NOT write an exhaustive
+ * `switch` with an `assertNever` default — that would turn a non-breaking SDK
+ * minor into a compile break. `detail` always carries a human-readable string
+ * safe to log or display for an unrecognised reason.
+ */
+export type AggkitNotReadyReason =
+  /**
+   * `/l1-info-tree-index`: the recording network's exit-tree root covering
+   * this deposit has not been settled to the L1 info tree yet. The source side
+   * is not done. Retry.
+   */
+  | 'SOURCE_NOT_ON_L1_INFO_TREE'
+  /**
+   * `/injected-l1-info-leaf`: the destination network has not yet injected a
+   * global exit root at or after the deposit's own L1-info-tree index. The
+   * source side IS done; the destination side is not. Retry.
+   */
+  | 'DESTINATION_GER_NOT_INJECTED';
+
+/**
+ * Result of a claim-path aggkit probe: either the value, or a machine-readable
+ * not-ready state. Genuine failures still throw `AggkitApiError` — this union
+ * never represents one.
+ */
+export type AggkitProbeResult<T> =
+  | { ready: true; value: T }
+  | {
+      ready: false;
+      reason: AggkitNotReadyReason;
+      /**
+       * Human-readable detail — aggkit's own error message verbatim where
+       * there is one. For logging and display only; never branch on its text.
+       */
+      detail: string;
+    };
+
+/**
  * Parameters for `AggkitBridgeAggregator.getClaimInputs`.
  *
  * ROUTING CONTRACT (comment 3847422009): every tree-relative argument the
@@ -158,6 +209,45 @@ export interface AggkitClaimInputsParams {
    */
   originNetworkId?: never;
 }
+
+/** `AggkitBridgeAggregator.getClaimInputs` — the deposit is claimable now. */
+export interface AggkitClaimInputsReady {
+  claimable: true;
+  /**
+   * The `leaf_index` the proof was built against: the DESTINATION-INJECTED
+   * index when `destinationNetworkId !== 0`, else the source index.
+   */
+  leafIndex: number;
+  proof: AggkitClaimProof;
+  /**
+   * The deposit's own index from `/l1-info-tree-index` on the recording
+   * network. Equals `leafIndex` when the destination is L1 or when injection
+   * was exact; otherwise `leafIndex >= sourceL1InfoTreeIndex`.
+   */
+  sourceL1InfoTreeIndex: number;
+}
+
+/**
+ * `AggkitBridgeAggregator.getClaimInputs` — the request was valid and the
+ * deposit is simply not claimable yet. This is a SUCCESSFUL return, not an
+ * error (comments 3847523270 / 3847600104).
+ */
+export interface AggkitClaimInputsNotReady {
+  claimable: false;
+  /** See `AggkitNotReadyReason` — an OPEN union; always keep a `default` branch. */
+  reason: AggkitNotReadyReason;
+  /** Human-readable detail (aggkit's own message where there is one). Log/display only. */
+  detail: string;
+  /**
+   * Present only when the source index had already been resolved before the
+   * blocking step — i.e. for `DESTINATION_GER_NOT_INJECTED`. Diagnostics only;
+   * this is the index the destination has not injected up to yet.
+   */
+  sourceL1InfoTreeIndex?: number;
+}
+
+export type AggkitClaimInputsResult =
+  AggkitClaimInputsReady | AggkitClaimInputsNotReady;
 
 // ---- token mapping ----
 
