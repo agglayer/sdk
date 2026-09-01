@@ -10,6 +10,12 @@
  *
  * This is idempotent for `/claims`, where `global_index` is already a JSON
  * string — the regex only matches an unquoted run of digits.
+ *
+ * Upstream bug: `BridgeResponse.GlobalIndex` is declared `*big.Int` instead
+ * of aggkit's own `BigIntString` wrapper, so it serializes as a bare number
+ * even though aggkit's swagger declares it a string. Tracked at
+ * https://github.com/agglayer/aggkit/issues/1820 — delete this workaround
+ * once the minimum supported aggkit emits `global_index` as a string.
  */
 export function quoteGlobalIndex(raw: string): string {
   return raw.replace(/"global_index":\s*(-?\d+)/g, '"global_index":"$1"');
