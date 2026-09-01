@@ -37,16 +37,58 @@ function clampPageSize(pageSize: number | undefined): number {
   return Math.min(size, MAX_PAGE_SIZE);
 }
 
-function decodeCursor(cursor: string | undefined): AggkitPageCursor {
+/**
+ * Accepts ONLY a value that is unambiguously a non-negative integer:
+ * either a `number` that is itself `Number.isInteger` and `>= 0`, or a
+ * non-empty digits-only `string` (`/^\d+$/` -- no sign, no decimal point,
+ * no exponent, no surrounding whitespace, no radix prefix) whose numeric
+ * value is a safe non-negative integer. A blanket `Number(value)` coercion
+ * is deliberately NOT used here: `Number(null)`, `Number("")`,
+ * `Number([])`, and `Number(false)` all evaluate to `0`, and `Number(true)`
+ * evaluates to `1` -- silently accepting those as legitimate cursor state
+ * (0 = EXHAUSTED, 1 = page 1) instead of rejecting them as junk.
+ */
+function isValidCursorPageNumber(value: unknown): boolean {
+  if (typeof value === 'number') {
+    return Number.isInteger(value) && value >= 0;
+  }
+  if (typeof value === 'string' && /^\d+$/.test(value)) {
+    const num = Number(value);
+    return Number.isSafeInteger(num) && num >= 0;
+  }
+  return false;
+}
+
+/**
+ * Decodes a `nextStartAfterCursor` string into per-call page-number state.
+ * Coerces every entry and drops anything that isn't a non-negative integer
+ * (0 is `EXHAUSTED`, a legitimate sentinel -- not junk, but a junk value
+ * that merely COERCES to 0, e.g. `null`/`""`/`[]`/`false`, must NOT be
+ * accepted as that sentinel -- see `isValidCursorPageNumber`) -- e.g.
+ * `{"1:bridgesOrigin": "abc"}` would otherwise survive the
+ * `typeof === 'object'` check (so would an array) and `stored ?? 1` would
+ * pass "abc" straight through to `runPaginatedCall`, reaching aggkit as
+ * `page_number=abc`, which 400s and fails the whole network's fan-out
+ * (comment 3862897288).
+ */
+export function decodeCursor(cursor: string | undefined): AggkitPageCursor {
   if (!cursor) {
     return {};
   }
   try {
     const parsed = JSON.parse(cursor) as unknown;
-    if (parsed && typeof parsed === 'object') {
-      return parsed as AggkitPageCursor;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return {};
     }
-    return {};
+    const result: AggkitPageCursor = {};
+    for (const [key, value] of Object.entries(
+      parsed as Record<string, unknown>
+    )) {
+      if (isValidCursorPageNumber(value)) {
+        result[key] = typeof value === 'number' ? value : Number(value);
+      }
+    }
+    return result;
   } catch {
     return {};
   }
@@ -54,6 +96,26 @@ function decodeCursor(cursor: string | undefined): AggkitPageCursor {
 
 function isNativeTokenAddress(address: string): boolean {
   return address.toLowerCase() === ZERO_ADDRESS.toLowerCase();
+}
+
+/**
+ * Compares two `global_index` values for equality, normalizing first via
+ * `BigInt` so a differing bigint/string/number representation (e.g. a
+ * leading-zero string, or a future numeric-typed value) doesn't produce a
+ * false negative -- see `parsing.ts`'s `quoteGlobalIndex` for why
+ * `global_index` needs BigInt-safe handling at all (it exceeds
+ * `Number.MAX_SAFE_INTEGER` for L1-origin deposits). Falls back to a strict
+ * string comparison if either side isn't BigInt-parseable.
+ */
+function globalIndexesMatch(
+  a: string | number | bigint,
+  b: string | number | bigint
+): boolean {
+  try {
+    return BigInt(a) === BigInt(b);
+  } catch {
+    return String(a) === String(b);
+  }
 }
 
 /** One page of a single paginated fan-out call. */
@@ -244,6 +306,17 @@ export class AggkitBridgeAggregator {
     const order = params.order ?? 'desc';
     const cursorState = decodeCursor(params.cursor);
     const networkIds = this.listNetworkIds();
+
+    // Doc/behavior parity (comment 3862897421): the JSDoc above promises a
+    // rejection when no networks are configured -- previously the
+    // `!anySucceeded && networkIds.length > 0` guard below was false in
+    // this case (networkIds.length === 0), so `getActivity({ networks: {} })`
+    // silently returned an empty page instead of rejecting.
+    if (networkIds.length === 0) {
+      throw new Error(
+        'AggkitBridgeAggregator.getActivity: no networks configured'
+      );
+    }
 
     const settled = await Promise.allSettled(
       networkIds.map((networkId) =>
@@ -515,7 +588,20 @@ export class AggkitBridgeAggregator {
         networkId: destinationNetworkId,
         globalIndex: bridge.global_index,
       });
-      return result.claims[0] ?? null;
+      const claim = result.claims[0];
+      // Verify the returned claim actually matches the requested
+      // global_index (comment 3847451952): if a proxy ever drops the
+      // `global_index` filter param, aggkit could return an unrelated
+      // claim, which would otherwise be reported as this bridge's claim --
+      // showing a stranger's claim tx as the user's and undercounting the
+      // ready-to-claim badge.
+      if (
+        !claim ||
+        !globalIndexesMatch(claim.global_index, bridge.global_index)
+      ) {
+        return null;
+      }
+      return claim;
     } catch {
       // The confirmation query is a correctness backstop, not a hard
       // dependency — if it fails, fall back to the Tier-2 probe result
@@ -565,6 +651,25 @@ export class AggkitBridgeAggregator {
 
     if (leaf === null) {
       return { kind: 'not-injected' };
+    }
+
+    // Contract check (comment 3862897612): `getInjectedL1InfoLeaf`'s own
+    // doc promises `result.l1_info_tree_index >= leafIndex` for an L2
+    // destination -- nothing previously asserted it here. If aggkit ever
+    // returns a LOWER leaf, a proof built against it doesn't cover this
+    // deposit and reverts `GlobalExitRootInvalid` on-chain with zero
+    // diagnostic. Fail fast with both indices named instead.
+    if (leaf.l1_info_tree_index < sourceL1InfoTreeIndex) {
+      throw new Error(
+        `AggkitBridgeAggregator.resolveInjectedLeafIndex: destination network ` +
+          `${destinationNetworkId} returned injected L1-info-tree leaf index ` +
+          `${leaf.l1_info_tree_index}, which is LOWER than the deposit's own ` +
+          `source L1-info-tree index ${sourceL1InfoTreeIndex}. This violates ` +
+          `aggkit's documented contract (result.l1_info_tree_index >= leafIndex ` +
+          `for an L2 destination) -- a proof built against leaf ` +
+          `${leaf.l1_info_tree_index} would not cover this deposit and would ` +
+          `revert GlobalExitRootInvalid on-chain.`
+      );
     }
 
     return { kind: 'resolved', leafIndex: leaf.l1_info_tree_index };

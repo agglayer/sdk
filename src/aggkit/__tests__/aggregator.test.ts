@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { http } from 'viem';
 import { describe, it, expect, beforeEach, vi, type Mock } from 'vitest';
-import { AggkitBridgeAggregator } from '../aggregator';
+import { AggkitBridgeAggregator, decodeCursor } from '../aggregator';
 import { AggkitApiError } from '../errors';
 import { chainRegistry } from '../../native/chains/registry';
 
@@ -319,6 +319,142 @@ describe('AggkitBridgeAggregator', () => {
       await expect(
         aggregator.getActivity({ fromAddress: ADDRESS })
       ).rejects.toThrow(/all configured networks failed/);
+    });
+  });
+
+  describe('decodeCursor — junk-value coercion (comment 3862897288)', () => {
+    it('accepts ONLY a non-negative-integer number or a digits-only string, dropping every other value entirely (key absent from the result, not merely non-junk)', () => {
+      // Each entry is decoded independently (decodeCursor has no
+      // cross-key dependency), so a single object can exercise the full
+      // accept/reject matrix in one call.
+      const cursor = JSON.stringify({
+        'junk:null': null,
+        'junk:emptyString': '',
+        'junk:emptyArray': [],
+        'junk:false': false,
+        'junk:true': true,
+        'junk:trailingLetters': '3abc',
+        'junk:exponent': '1e3',
+        'junk:negativeNumber': -1,
+        'junk:negativeString': '-1',
+        'junk:fraction': 1.5,
+        'junk:hexPrefix': '0x3',
+        'junk:whitespacePadded': ' 3 ',
+        'junk:object': { nested: 1 },
+        'valid:zero': 0,
+        'valid:zeroString': '0',
+        'valid:three': '3',
+        'valid:threeNumber': 3,
+      });
+
+      const decoded = decodeCursor(cursor);
+
+      // Every junk key must be ABSENT -- not present-with-some-fallback.
+      for (const junkKey of [
+        'junk:null',
+        'junk:emptyString',
+        'junk:emptyArray',
+        'junk:false',
+        'junk:true',
+        'junk:trailingLetters',
+        'junk:exponent',
+        'junk:negativeNumber',
+        'junk:negativeString',
+        'junk:fraction',
+        'junk:hexPrefix',
+        'junk:whitespacePadded',
+        'junk:object',
+      ]) {
+        expect(Object.prototype.hasOwnProperty.call(decoded, junkKey)).toBe(
+          false
+        );
+      }
+
+      // Legitimate non-negative integers (including the 0 EXHAUSTED
+      // sentinel, both as a number and as a digits-only string) survive.
+      expect(decoded['valid:zero']).toBe(0);
+      expect(decoded['valid:zeroString']).toBe(0);
+      expect(decoded['valid:three']).toBe(3);
+      expect(decoded['valid:threeNumber']).toBe(3);
+
+      expect(Object.keys(decoded).sort()).toEqual(
+        [
+          'valid:zero',
+          'valid:zeroString',
+          'valid:three',
+          'valid:threeNumber',
+        ].sort()
+      );
+    });
+
+    it('drops a value that is unsafe as an integer even though it is digits-only (beyond Number.isSafeInteger)', () => {
+      const decoded = decodeCursor(
+        JSON.stringify({ 'huge:unsafe': '90071992547409910000' })
+      );
+      expect(Object.prototype.hasOwnProperty.call(decoded, 'huge:unsafe')).toBe(
+        false
+      );
+    });
+  });
+
+  describe('getActivity — decodeCursor junk-value coercion, end-to-end (comment 3862897288)', () => {
+    it('drops a non-integer cursor entry (e.g. "abc") as junk, but preserves a legitimate EXHAUSTED (0) entry as a sentinel, not junk', async () => {
+      installRouter([
+        // Simulates aggkit 400ing on a junk page_number -- if the old code
+        // let the cursor's "abc" pass straight through as-is, this rule
+        // would be hit instead of the well-formed page_number=1 fallback.
+        rule(
+          BASE_1,
+          ['/bridges', 'network_id=1', 'page_number=abc'],
+          400,
+          errorBody('page_number must be a number')
+        ),
+        // If EXHAUSTED (0) were wrongly coerced away as "not a positive
+        // integer", this call would be wrongly re-requested at page 1 and
+        // 400 here.
+        rule(
+          BASE_1,
+          ['/claims', 'network_id=1', 'page_number=1'],
+          400,
+          errorBody('should not be re-requested: call is EXHAUSTED')
+        ),
+        ...networkRules(BASE_1, 1, {}),
+      ]);
+
+      const aggregator = new AggkitBridgeAggregator({
+        networks: { 1: BASE_1 },
+      });
+
+      const cursor = JSON.stringify({
+        '1:bridgesOrigin': 'abc', // junk -> dropped -> defaults to page 1
+        '1:claimsHere': 0, // EXHAUSTED sentinel -> preserved -> call skipped
+      });
+      const page = await aggregator.getActivity({
+        fromAddress: ADDRESS,
+        cursor,
+      });
+
+      expect(page.failedNetworks).toEqual([]);
+      expect(page.data).toEqual([]);
+
+      // The EXHAUSTED claimsHere call was skipped entirely -- no request to
+      // /claims?network_id=1 was made at all.
+      const calls = (global.fetch as Mock).mock.calls as [string][];
+      const claimsHereCalls = calls.filter(
+        ([url]) => url.includes('/claims') && url.includes('network_id=1')
+      );
+      expect(claimsHereCalls).toHaveLength(0);
+    });
+  });
+
+  describe('getActivity — empty networks guard (comment 3862897421)', () => {
+    it('rejects instead of silently returning an empty page when no networks are configured', async () => {
+      const aggregator = new AggkitBridgeAggregator({ networks: {} });
+
+      await expect(
+        aggregator.getActivity({ fromAddress: ADDRESS })
+      ).rejects.toThrow(/no networks configured/);
+      expect(global.fetch).not.toHaveBeenCalled();
     });
   });
 
@@ -1123,6 +1259,61 @@ describe('AggkitBridgeAggregator', () => {
     });
   });
 
+  describe('confirmClaimed — global_index mismatch guard (comment 3847451952)', () => {
+    it('does not treat a claim with a DIFFERENT global_index as a match: derives READY_TO_CLAIM, not CLAIMED', async () => {
+      // Simulates a proxy that drops the `global_index` filter param: the
+      // targeted confirmClaimed query for global_index=42 comes back with
+      // an unrelated claim (global_index "999") instead of an empty or
+      // matching result.
+      const mismatchedRow = makeBridge({
+        bridge_hash: '0xmismatchedclaim',
+        origin_network: 1,
+        destination_network: 0,
+        deposit_count: 42,
+        global_index: 42,
+        block_timestamp: 900,
+      });
+
+      installRouter([
+        // Must be matched before the generic `d` rule below (network_id=0
+        // claims, no global_index requirement), which would otherwise
+        // return the default empty response instead of this deliberately
+        // mismatched claim.
+        rule(
+          BASE_1,
+          ['/claims', 'network_id=0', 'global_index=42'],
+          200,
+          claimsBody(
+            [
+              {
+                global_index: '999',
+                tx_hash: '0xstrangertx',
+                block_timestamp: 111,
+                block_num: 1,
+              },
+            ],
+            1
+          )
+        ),
+        ...networkRules(BASE_1, 1, {
+          a: { status: 200, body: bridgesBody([mismatchedRow], 1) },
+        }),
+        rule(BASE_1, ['/l1-info-tree-index', 'deposit_count=42'], 200, '42'),
+      ]);
+
+      const aggregator = new AggkitBridgeAggregator({
+        networks: { 1: BASE_1 },
+      });
+      const page = await aggregator.getActivity({ fromAddress: ADDRESS });
+
+      const tx = page.data.find((t) => t.bridgeHash === '0xmismatchedclaim');
+      expect(tx).toBeDefined();
+      expect(tx?.status).toBe('READY_TO_CLAIM');
+      expect(tx?.leafIndexForProof).toBe(42);
+      expect(tx?.claimTransactionHash).toBeUndefined();
+    });
+  });
+
   describe('getClaimInputs', () => {
     it('L1 -> L2: uses the DESTINATION network client with network_id=0 (origin) for both calls, and builds /claim-proof on the destination-injected index', async () => {
       installRouter([
@@ -1298,6 +1489,49 @@ describe('AggkitBridgeAggregator', () => {
         url.includes('/injected-l1-info-leaf')
       );
       expect(injectedLeafCalls).toHaveLength(0);
+    });
+
+    it("throws an informative error naming BOTH indices when aggkit returns an injected leaf LOWER than the deposit's own source index (comment 3862897612)", async () => {
+      // Contract violation: `getInjectedL1InfoLeaf` is documented to return
+      // result.l1_info_tree_index >= leafIndex for an L2 destination -- here
+      // it returns 3, lower than the source index (10) that was requested.
+      installRouter([
+        rule(
+          BASE_1,
+          ['/l1-info-tree-index', 'network_id=1', 'deposit_count=5'],
+          200,
+          '10'
+        ),
+        rule(
+          BASE_2,
+          ['/injected-l1-info-leaf', 'network_id=2', 'leaf_index=10'],
+          200,
+          injectedLeafBody(3)
+        ),
+      ]);
+
+      const aggregator = new AggkitBridgeAggregator({
+        networks: { 1: BASE_1, 2: BASE_2 },
+      });
+
+      let caught: unknown;
+      try {
+        await aggregator.getClaimInputs({
+          originNetworkId: 1,
+          destinationNetworkId: 2,
+          depositCount: 5,
+        });
+      } catch (error) {
+        caught = error;
+      }
+
+      expect(caught).toBeInstanceOf(Error);
+      // A genuine backend-contract violation is a real error, not a
+      // not-ready state -- distinct from the AggkitApiError not-ready
+      // throws elsewhere in getClaimInputs.
+      expect(caught).not.toBeInstanceOf(AggkitApiError);
+      expect((caught as Error).message).toContain('10');
+      expect((caught as Error).message).toContain('3');
     });
   });
 
