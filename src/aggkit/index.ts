@@ -16,8 +16,8 @@
  * ```typescript
  * const aggregator = new AggkitBridgeAggregator({
  *   networks: {
- *     1: { baseUrl: "http://proxy.local:8080", networkId: 1 },
- *     2: { baseUrl: "http://proxy.local:8080", networkId: 2 }, // Same URL, different networkId
+ *     1: "http://proxy.local:8080",
+ *     2: "http://proxy.local:8080", // Same URL, different networkId
  *   },
  * });
  * ```

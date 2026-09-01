@@ -77,6 +77,7 @@ export async function fetchRawText(
   }
 
   throw new Error(
-    `Request failed after ${config.retries} retries: ${lastError?.message ?? 'Unknown error'}`
+    `Request failed after ${config.retries} retries: ${lastError?.message ?? 'Unknown error'}`,
+    { cause: lastError }
   );
 }
