@@ -119,6 +119,46 @@ export interface AggkitClaimProof {
   l1_info_tree_leaf: AggkitL1InfoTreeLeaf;
 }
 
+/**
+ * Parameters for `AggkitBridgeAggregator.getClaimInputs`.
+ *
+ * ROUTING CONTRACT (comment 3847422009): every tree-relative argument the
+ * method derives is keyed by `recordingNetworkId`. The asset's
+ * `bridge.origin_network` has NO role here.
+ */
+export interface AggkitClaimInputsParams {
+  /**
+   * The network whose LOCAL EXIT TREE recorded this deposit — i.e. the network
+   * the bridging transaction was executed on. NOT `bridge.origin_network` (the
+   * asset's origin), which diverges for native-gas-token withdrawals
+   * (`origin_network === 0`, recorded on the L2's own tree) and for L1->L2
+   * transfers of an L2-origin token (`origin_network === <that L2>`, recorded
+   * on L1's tree).
+   *
+   * From `getActivity`/`getReadyToClaimCount` rows this is
+   * `AggkitTransaction.sourceNetwork`. Raw from aggkit it is the `network_id`
+   * the `/bridges` call that produced the row was made with.
+   *
+   * Keys ALL THREE of: which aggkit instance answers, `/l1-info-tree-index`'s
+   * `network_id`, and `/claim-proof`'s `network_id`.
+   */
+  recordingNetworkId: number;
+  /**
+   * Where the deposit lands. Used ONLY for the destination-injected-GER gate
+   * (skipped entirely when 0 — L1 has no injection step). Never used to pick
+   * the tree a proof is built from.
+   */
+  destinationNetworkId: number;
+  /** The deposit's local leaf index in `recordingNetworkId`'s exit tree. */
+  depositCount: number;
+  /**
+   * @deprecated Removed in favour of `recordingNetworkId`. Declared as `never`
+   * so a stale call site is a COMPILE ERROR rather than a silently wrong proof
+   * (comment 3847422009). See the migration note on `recordingNetworkId`.
+   */
+  originNetworkId?: never;
+}
+
 // ---- token mapping ----
 
 export interface AggkitTokenMapping {
@@ -209,6 +249,12 @@ export interface AggkitTransaction {
   txSender: string;
   fromAddress: string;
   receiverAddress: string;
+  /**
+   * The RECORDING network — whose local exit tree holds this deposit's leaf.
+   * Pass this as `getClaimInputs`'s `recordingNetworkId`. NOT the asset's
+   * origin (`originTokenNetwork`), which diverges for native-gas-token
+   * withdrawals and for L1->L2 transfers of an L2-origin token.
+   */
   sourceNetwork: number;
   destinationNetwork: number;
   amount: string;

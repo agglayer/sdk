@@ -54,6 +54,7 @@ export type {
   AggkitBridge,
   AggkitClaim,
   AggkitClaimProof,
+  AggkitClaimInputsParams,
   AggkitL1InfoTreeLeaf,
   AggkitTokenMapping,
   AggkitSyncStatus,

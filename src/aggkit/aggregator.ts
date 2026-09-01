@@ -17,6 +17,7 @@ import type {
   AggkitActivityPage,
   AggkitBridge,
   AggkitClaim,
+  AggkitClaimInputsParams,
   AggkitClaimProof,
   AggkitFailedNetwork,
   AggkitPageCursor,
@@ -267,10 +268,11 @@ export class AggkitBridgeAggregator {
    * Like `clientFor`, but routes L1 (`networkId === 0`) through a configured
    * L2 instance — L1 has no dedicated aggkit instance; every configured L2
    * instance's embedded L1 syncer serves `network_id=0` queries identically.
-   * Mirrors the routing `getClaimInputs` already applies
-   * for the L1-origin case, generalized for callers (like `getTokenMetadata`)
-   * that only have a bare `networkId`, not an explicit origin/destination
-   * pair to pick a specific instance from.
+   * Mirrors the recording-network routing `getClaimInputs` applies via
+   * `clientForRecordingNetwork` (which prefers the destination L2's instance
+   * when the recording network is L1), generalized for callers (like
+   * `getTokenMetadata`) that only have a bare `networkId` and no destination
+   * to prefer.
    */
   private clientForNetworkOrL1(networkId: number): AggkitBridgeClient {
     if (networkId !== 0) {
@@ -285,6 +287,28 @@ export class AggkitBridgeAggregator {
       );
     }
     return this.clientFor(firstConfigured);
+  }
+
+  /**
+   * Picks the aggkit instance that can answer for `recordingNetworkId` — the
+   * network whose local exit tree recorded the deposit (comment 3847422009).
+   *
+   * L1 (0) has no dedicated instance: every configured L2 instance's embedded
+   * L1 syncer serves `network_id=0` identically, so prefer the destination
+   * L2's instance (it is the one that must also answer the injected-GER probe)
+   * and fall back to any configured instance — same rationale as
+   * `clientForNetworkOrL1`.
+   */
+  private clientForRecordingNetwork(
+    recordingNetworkId: number,
+    destinationNetworkId: number
+  ): AggkitBridgeClient {
+    if (recordingNetworkId !== 0) {
+      return this.clientFor(recordingNetworkId);
+    }
+    return (
+      this.clients.get(destinationNetworkId) ?? this.clientForNetworkOrL1(0)
+    );
   }
 
   listNetworkIds(): number[] {
@@ -676,17 +700,23 @@ export class AggkitBridgeAggregator {
   }
 
   /**
-   * Single-tx claim inputs: resolves the deposit's own
-   * L1-info-tree index on the SOURCE (recording) network, then — for an L2
-   * destination — the destination's INJECTED leaf index for that value, then
-   * the claim proof against the injected index. Throws `AggkitApiError` if
-   * not yet claimable (source not settled, or destination GER not injected).
+   * Single-tx claim inputs.
+   *
+   * Resolves, in order: the deposit's own L1-info-tree index on the RECORDING
+   * network (the network whose local exit tree holds the leaf — see
+   * `recordingNetworkId`), then — for an L2 destination only — that
+   * destination's INJECTED leaf index at-or-after it, then the claim proof
+   * against the injected index. Throws `AggkitApiError` if not yet claimable
+   * (source not settled, or destination GER not injected).
+   *
+   * ROUTING (comment 3847422009): every tree-relative argument is keyed by
+   * `recordingNetworkId`, never by the asset's `origin_network`. Passing the
+   * origin network builds a proof from a DIFFERENT network's exit tree at the
+   * same `deposit_count` — a well-formed proof for an unrelated deposit, with
+   * no error raised anywhere. `destinationNetworkId` is used ONLY for the
+   * injected-GER gate.
    */
-  async getClaimInputs(params: {
-    originNetworkId: number;
-    destinationNetworkId: number;
-    depositCount: number;
-  }): Promise<{
+  async getClaimInputs(params: AggkitClaimInputsParams): Promise<{
     /** L1-info-tree index passed to /claim-proof: the DESTINATION-INJECTED index when
      *  destinationNetworkId !== 0, else the source index. */
     leafIndex: number;
@@ -696,25 +726,39 @@ export class AggkitBridgeAggregator {
      *  for S8 smoke / S10 evidence. */
     sourceL1InfoTreeIndex: number;
   }> {
-    const { originNetworkId, destinationNetworkId, depositCount } = params;
+    // `originNetworkId?: never` only protects TypeScript callers; a JS caller
+    // passing the removed parameter would otherwise silently get a proof from
+    // the wrong tree (comment 3847422009).
+    if (
+      'originNetworkId' in params &&
+      (params as unknown as Record<string, unknown>)['originNetworkId'] !==
+        undefined
+    ) {
+      throw new Error(
+        `AggkitBridgeAggregator.getClaimInputs: 'originNetworkId' was removed and ` +
+          `replaced by 'recordingNetworkId' — the network whose local exit tree ` +
+          `RECORDED the deposit, not the asset's origin network. Passing the origin ` +
+          `network builds a proof from the wrong tree (comment 3847422009). Use ` +
+          `AggkitTransaction.sourceNetwork.`
+      );
+    }
 
-    // L1-origin (network 0) has no dedicated instance; its L1 info tree is
-    // read via the destination L2's instance. L2-origin
-    // deposits are read via their own origin instance.
-    const client =
-      originNetworkId === 0
-        ? this.clientFor(destinationNetworkId)
-        : this.clientFor(originNetworkId);
+    const { recordingNetworkId, destinationNetworkId, depositCount } = params;
+
+    const client = this.clientForRecordingNetwork(
+      recordingNetworkId,
+      destinationNetworkId
+    );
 
     const sourceL1InfoTreeIndex = await client.getL1InfoTreeIndex({
-      networkId: originNetworkId,
+      networkId: recordingNetworkId,
       depositCount,
     });
 
     if (sourceL1InfoTreeIndex === null) {
       throw new AggkitApiError({
         message:
-          `Deposit (originNetworkId=${originNetworkId}, depositCount=${depositCount}) ` +
+          `Deposit (recordingNetworkId=${recordingNetworkId}, depositCount=${depositCount}) ` +
           `is not yet claimable: not included on the L1 info tree`,
         httpStatus: 500,
         endpoint: '/l1-info-tree-index',
@@ -730,7 +774,7 @@ export class AggkitBridgeAggregator {
     if (resolution.kind === 'not-injected') {
       throw new AggkitApiError({
         message:
-          `Deposit (originNetworkId=${originNetworkId}, depositCount=${depositCount}) ` +
+          `Deposit (recordingNetworkId=${recordingNetworkId}, depositCount=${depositCount}) ` +
           `is not yet claimable: destination network ${destinationNetworkId} has not ` +
           `injected the global exit root for L1-info-tree leaf ${sourceL1InfoTreeIndex}`,
         httpStatus: 404,
@@ -744,7 +788,7 @@ export class AggkitBridgeAggregator {
     }
 
     const proof = await client.getClaimProof({
-      networkId: originNetworkId,
+      networkId: recordingNetworkId,
       leafIndex,
       depositCount,
     });

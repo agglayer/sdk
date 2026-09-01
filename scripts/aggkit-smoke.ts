@@ -313,9 +313,13 @@ async function main(): Promise<void> {
     'found a real L2->L2 deposit to probe getClaimInputs against'
   );
   if (l2l2Sample) {
+    // `recordingNetworkId` (comment 3847422009): the sample comes from call A
+    // above -- `getBridges({ networkId: primaryNetworkId })` -- so it is
+    // recorded on that network's own local exit tree by construction,
+    // regardless of the asset's `origin_network`.
     const { leafIndex, proof, sourceL1InfoTreeIndex } =
       await aggregator.getClaimInputs({
-        originNetworkId: primaryNetworkId,
+        recordingNetworkId: primaryNetworkId,
         destinationNetworkId: l2l2Sample.destination_network,
         depositCount: l2l2Sample.deposit_count,
       });
@@ -359,9 +363,14 @@ async function main(): Promise<void> {
     'found a real L2->L1 deposit to probe getClaimInputs against'
   );
   if (l2l1Sample) {
+    // Before the recording-network routing fix (comment 3847422009) this call
+    // hard-failed with `no client configured for network 0` whenever the
+    // sampled deposit was a native-gas-token withdrawal (`origin_network=0`
+    // recorded on the L2's own tree). `recordingNetworkId` removes the asset
+    // origin from the routing decision entirely.
     const { leafIndex, proof, sourceL1InfoTreeIndex } =
       await aggregator.getClaimInputs({
-        originNetworkId: primaryNetworkId,
+        recordingNetworkId: primaryNetworkId,
         destinationNetworkId: 0,
         depositCount: l2l1Sample.deposit_count,
       });

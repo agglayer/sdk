@@ -1315,7 +1315,7 @@ describe('AggkitBridgeAggregator', () => {
   });
 
   describe('getClaimInputs', () => {
-    it('L1 -> L2: uses the DESTINATION network client with network_id=0 (origin) for both calls, and builds /claim-proof on the destination-injected index', async () => {
+    it('L1 -> L2: uses the DESTINATION network client with network_id=0 (recording network = L1) for both calls, and builds /claim-proof on the destination-injected index', async () => {
       installRouter([
         rule(
           BASE_1,
@@ -1343,7 +1343,7 @@ describe('AggkitBridgeAggregator', () => {
         networks: { 1: BASE_1 },
       });
       const result = await aggregator.getClaimInputs({
-        originNetworkId: 0,
+        recordingNetworkId: 0,
         destinationNetworkId: 1,
         depositCount: 1,
       });
@@ -1382,7 +1382,7 @@ describe('AggkitBridgeAggregator', () => {
         networks: { 1: BASE_1 },
       });
       const result = await aggregator.getClaimInputs({
-        originNetworkId: 0,
+        recordingNetworkId: 0,
         destinationNetworkId: 1,
         depositCount: 2,
       });
@@ -1414,7 +1414,7 @@ describe('AggkitBridgeAggregator', () => {
       let caught: unknown;
       try {
         await aggregator.getClaimInputs({
-          originNetworkId: 1,
+          recordingNetworkId: 1,
           destinationNetworkId: 2,
           depositCount: 2,
         });
@@ -1430,7 +1430,7 @@ describe('AggkitBridgeAggregator', () => {
       expect((caught as AggkitApiError).message).toMatch(/not injected/);
     });
 
-    it('L2 -> L1: uses the ORIGIN network client with network_id=<origin>', async () => {
+    it('L2 -> L1: routes /l1-info-tree-index to the RECORDING network client with network_id=<recording>', async () => {
       installRouter([
         rule(
           BASE_1,
@@ -1446,7 +1446,7 @@ describe('AggkitBridgeAggregator', () => {
 
       await expect(
         aggregator.getClaimInputs({
-          originNetworkId: 1,
+          recordingNetworkId: 1,
           destinationNetworkId: 0,
           depositCount: 0,
         })
@@ -1477,7 +1477,7 @@ describe('AggkitBridgeAggregator', () => {
       });
 
       const result = await aggregator.getClaimInputs({
-        originNetworkId: 1,
+        recordingNetworkId: 1,
         destinationNetworkId: 0,
         depositCount: 3,
       });
@@ -1489,6 +1489,202 @@ describe('AggkitBridgeAggregator', () => {
         url.includes('/injected-l1-info-leaf')
       );
       expect(injectedLeafCalls).toHaveLength(0);
+    });
+
+    // -----------------------------------------------------------------------
+    // Recording-network routing regressions (comment 3847422009).
+    // These deliberately route ONLY the recording-network URLs: the router
+    // throws `no rule matched URL` for anything else, so the pre-fix code
+    // (which keyed both endpoints off `bridge.origin_network`) fails loudly
+    // here instead of silently building a proof from the wrong tree.
+    // -----------------------------------------------------------------------
+
+    it('L2-1 -> L2-2 NATIVE GAS TOKEN (origin_network=0, recorded on L2-1): builds the proof from the RECORDING network (1), never from network 0 (comment 3847422009)', async () => {
+      installRouter([
+        // ONLY network_id=1 is routed. A request for network_id=0 (what the
+        // old origin-keyed routing would issue for origin_network=0) hits the
+        // router's no-rule-matched throw.
+        rule(
+          BASE_1,
+          ['/l1-info-tree-index', 'network_id=1', 'deposit_count=4'],
+          200,
+          '9'
+        ),
+        rule(
+          BASE_2,
+          ['/injected-l1-info-leaf', 'network_id=2', 'leaf_index=9'],
+          200,
+          injectedLeafBody(9)
+        ),
+        rule(
+          BASE_1,
+          ['/claim-proof', 'network_id=1', 'leaf_index=9', 'deposit_count=4'],
+          200,
+          loadFixture('claim_proof_valid.json')
+        ),
+      ]);
+
+      const aggregator = new AggkitBridgeAggregator({
+        // retries: 0 so a routing regression surfaces as the router's
+        // `no rule matched URL: ...network_id=0...` message immediately,
+        // rather than as a 5s vitest timeout (fetchRawText's retry heuristic
+        // treats any error message containing "network" as retryable, and the
+        // unrouted URL contains `network_id`).
+        networks: { 1: BASE_1, 2: BASE_2 },
+        retries: 0,
+      });
+
+      const result = await aggregator.getClaimInputs({
+        recordingNetworkId: 1,
+        destinationNetworkId: 2,
+        depositCount: 4,
+      });
+
+      expect(result.sourceL1InfoTreeIndex).toBe(9);
+      expect(result.leafIndex).toBe(9);
+
+      const calls = (global.fetch as Mock).mock.calls as [string][];
+      // Neither tree-relative endpoint may ever be asked about network 0.
+      const networkZeroTreeCalls = calls.filter(
+        ([url]) =>
+          url.includes('network_id=0') &&
+          (url.includes('/l1-info-tree-index') || url.includes('/claim-proof'))
+      );
+      expect(networkZeroTreeCalls).toHaveLength(0);
+      // Both tree-relative endpoints used the SAME recording network.
+      expect(
+        calls.filter(
+          ([url]) =>
+            url.includes('/l1-info-tree-index') && url.includes('network_id=1')
+        )
+      ).toHaveLength(1);
+      expect(
+        calls.filter(
+          ([url]) =>
+            url.includes('/claim-proof') && url.includes('network_id=1')
+        )
+      ).toHaveLength(1);
+    });
+
+    it('L2-1 -> L1 NATIVE GAS TOKEN (origin_network=0, destination 0): no "no client configured for network 0" — routes to the recording network 1 (comment 3847422009)', async () => {
+      installRouter([
+        rule(
+          BASE_1,
+          ['/l1-info-tree-index', 'network_id=1', 'deposit_count=6'],
+          200,
+          '11'
+        ),
+        rule(
+          BASE_1,
+          ['/claim-proof', 'network_id=1', 'leaf_index=11', 'deposit_count=6'],
+          200,
+          loadFixture('claim_proof_valid.json')
+        ),
+      ]);
+
+      const aggregator = new AggkitBridgeAggregator({
+        networks: { 1: BASE_1 },
+      });
+
+      const result = await aggregator.getClaimInputs({
+        recordingNetworkId: 1,
+        destinationNetworkId: 0,
+        depositCount: 6,
+      });
+
+      expect(result.sourceL1InfoTreeIndex).toBe(11);
+      expect(result.leafIndex).toBe(11);
+    });
+
+    it('L1 -> L2-2 of an L2-1-ORIGIN token (origin_network=1, recorded on L1): probes network_id=0 and never touches L2-1 (comment 3847422009)', async () => {
+      installRouter([
+        // Only network_id=0 is routed for the tree endpoints. The old
+        // origin-keyed routing would have used clientFor(1) with
+        // network_id=1 -> a well-formed proof from L2-1's tree.
+        rule(
+          BASE_2,
+          ['/l1-info-tree-index', 'network_id=0', 'deposit_count=8'],
+          200,
+          '5'
+        ),
+        rule(
+          BASE_2,
+          ['/injected-l1-info-leaf', 'network_id=2', 'leaf_index=5'],
+          200,
+          injectedLeafBody(5)
+        ),
+        rule(
+          BASE_2,
+          ['/claim-proof', 'network_id=0', 'leaf_index=5', 'deposit_count=8'],
+          200,
+          loadFixture('claim_proof_valid.json')
+        ),
+      ]);
+
+      const aggregator = new AggkitBridgeAggregator({
+        // retries: 0 — see the case-D test above.
+        networks: { 1: BASE_1, 2: BASE_2 },
+        retries: 0,
+      });
+
+      const result = await aggregator.getClaimInputs({
+        recordingNetworkId: 0,
+        destinationNetworkId: 2,
+        depositCount: 8,
+      });
+
+      expect(result.leafIndex).toBe(5);
+      const calls = (global.fetch as Mock).mock.calls as [string][];
+      expect(calls.every(([url]) => url.startsWith(BASE_2))).toBe(true);
+    });
+
+    it('recordingNetworkId=0 with an UNCONFIGURED destination falls back to any configured instance instead of throwing', async () => {
+      installRouter([
+        rule(
+          BASE_1,
+          ['/l1-info-tree-index', 'network_id=0', 'deposit_count=1'],
+          200,
+          '2'
+        ),
+        rule(
+          BASE_1,
+          ['/claim-proof', 'network_id=0', 'leaf_index=2', 'deposit_count=1'],
+          200,
+          loadFixture('claim_proof_valid.json')
+        ),
+      ]);
+
+      const aggregator = new AggkitBridgeAggregator({
+        networks: { 1: BASE_1 },
+      });
+
+      // destination 7 is unconfigured -> resolveInjectedLeafIndex returns
+      // { kind: 'unknown' } and the proof is built on the source index.
+      const result = await aggregator.getClaimInputs({
+        recordingNetworkId: 0,
+        destinationNetworkId: 7,
+        depositCount: 1,
+      });
+
+      expect(result.leafIndex).toBe(2);
+      expect(result.sourceL1InfoTreeIndex).toBe(2);
+    });
+
+    it("throws a migration Error when a JS caller passes the removed 'originNetworkId' (comment 3847422009)", async () => {
+      installRouter([]);
+      const aggregator = new AggkitBridgeAggregator({
+        networks: { 1: BASE_1 },
+      });
+
+      await expect(
+        aggregator.getClaimInputs({
+          // Simulating an un-typechecked JavaScript caller that was not
+          // migrated: `originNetworkId?: never` gives it no protection.
+          originNetworkId: 1,
+          destinationNetworkId: 0,
+          depositCount: 0,
+        } as unknown as Parameters<AggkitBridgeAggregator['getClaimInputs']>[0])
+      ).rejects.toThrow(/'originNetworkId' was removed/);
     });
 
     it("throws an informative error naming BOTH indices when aggkit returns an injected leaf LOWER than the deposit's own source index (comment 3862897612)", async () => {
@@ -1517,7 +1713,7 @@ describe('AggkitBridgeAggregator', () => {
       let caught: unknown;
       try {
         await aggregator.getClaimInputs({
-          originNetworkId: 1,
+          recordingNetworkId: 1,
           destinationNetworkId: 2,
           depositCount: 5,
         });
