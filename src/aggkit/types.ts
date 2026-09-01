@@ -155,8 +155,42 @@ export type AggkitNotReadyReason =
    */
   | 'DESTINATION_GER_NOT_INJECTED'
   /**
-   * `/l1-info-tree-index` (aggkit v0.11.0-rc6+ only — see `client.ts`'s
-   * `L1_INFO_TREE_INDEX_SYNCER_INCONSISTENT_PATTERN`): the syncer serving
+   * `/injected-l1-info-leaf` (aggkit v0.11.0-rc6+ only — see `client.ts`'s
+   * `INJECTED_L1_INFO_LEAF_NOT_READY_PATTERNS`): `l1infotreesync` has not
+   * indexed the L1-info-tree leaf itself yet.
+   *
+   * DISTINCT from `DESTINATION_GER_NOT_INJECTED`, which is why it is a separate
+   * member rather than folded into it: on rc6's primary body for this state the
+   * destination HAS already injected the GER (`"... yet (already injected on L2
+   * per l2gersync), retry later"`, `bridgeservice/bridge.go:916-917`) — only the
+   * L1-side index lags. Reporting "not injected" for it would tell a consumer
+   * the opposite of what the wire said.
+   *
+   * On rc4/rc5 the same condition arrived as a 500 and threw; rc6+ reclassifies
+   * it as 404 not-ready via `respondSyncerError` (audit finding C2). Transient,
+   * self-resolving, seconds to minutes. Retry.
+   */
+  | 'L1_INFO_LEAF_NOT_INDEXED'
+  /**
+   * `/claim-proof` (aggkit v0.11.0-rc6+ only — see `client.ts`'s
+   * `CLAIM_PROOF_NOT_READY_PATTERN`): the source is settled and the destination
+   * has injected, but a syncer has not indexed the specific leaf, deposit
+   * count, local exit root or rollup exit tree the proof needs yet.
+   *
+   * Covers all FIVE of `ClaimProofHandler`'s rc6+ 404 `notFoundMsg` bodies
+   * (`bridgeservice/bridge.go:1067`, `:1084`, `:1093-1094`, `:1107`,
+   * `:1123-1124`) — a single wire state as far as a consumer is concerned; the
+   * exact prose travels in `detail`. On rc4/rc5 all five answered 500 and threw.
+   *
+   * This is the member design §2.2/§2.6 reserved when `getClaimProof` was given
+   * a union return with a deliberately unreachable not-ready arm; the arm is now
+   * reachable (audit finding C3). Retry.
+   */
+  | 'CLAIM_PROOF_NOT_AVAILABLE'
+  /**
+   * All three claim-path endpoints — `/l1-info-tree-index`,
+   * `/injected-l1-info-leaf` and `/claim-proof` (aggkit v0.11.0-rc6+ only; see
+   * `client.ts`'s `SYNCER_INCONSISTENT_PATTERN`): the syncer serving
    * this network answered 503 because it is halted resolving a chain reorg
    * (`aggkitsync.ErrInconsistentState`, `sync/evmdriver.go:18`; mapped to 503
    * by `httpStatusForSyncerError`, `bridgeservice/bridge.go:1774-1786`).
@@ -172,6 +206,14 @@ export type AggkitNotReadyReason =
    * would flood `failedNetworks` for every in-flight deposit on that network
    * for the duration of any ordinary reorg, which is a worse consumer
    * experience than a `default`-branch "not ready yet" while it clears.
+   *
+   * EXTENDED (S16, audit findings C2/C3) from `/l1-info-tree-index` to all
+   * three claim-path endpoints, since `respondSyncerError` writes the same
+   * fixed 503 body from all three handlers. The prose gate is load-bearing on
+   * `/claim-proof`: that handler has two OTHER 503s
+   * (`"L1 bridge syncer is not available"`, `bridge.go:1076-1078`, and
+   * `"L2 bridge syncer is not available"`, `:1099-1101`) which are genuine
+   * configuration faults and must keep throwing `AggkitApiError`.
    * Retry.
    */
   | 'SYNCER_INCONSISTENT';

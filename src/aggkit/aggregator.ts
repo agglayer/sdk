@@ -20,6 +20,7 @@ import type {
   AggkitClaimInputsParams,
   AggkitClaimInputsResult,
   AggkitFailedNetwork,
+  AggkitNotReadyReason,
   AggkitPageCursor,
   AggkitTokenMetadata,
   AggkitTrackingData,
@@ -227,9 +228,19 @@ function toFailedNetwork(
  */
 type InjectedLeafResolution =
   | { kind: 'resolved'; leafIndex: number } // injected (or destination is L1)
-  // aggkit's own 404 "not injected" wording, propagated verbatim rather than
-  // re-fabricated by the caller.
-  | { kind: 'not-injected'; detail: string }
+  // The destination-side probe answered "valid request, not ready yet".
+  // `reason` is the CLIENT's machine-readable reason, carried through
+  // unmodified, and `detail` is aggkit's own wording propagated verbatim
+  // rather than re-fabricated by the caller.
+  //
+  // Was `kind: 'not-injected'` with the reason hard-coded to
+  // `'DESTINATION_GER_NOT_INJECTED'` at the `getClaimInputs` call site. That
+  // silently rewrote every other not-ready reason this endpoint can now answer
+  // with (`L1_INFO_LEAF_NOT_INDEXED`, `SYNCER_INCONSISTENT` — audit finding
+  // C2), telling consumers the destination had not injected the GER when the
+  // wire said the opposite. `reason` must stay pass-through: this endpoint's
+  // reason taxonomy lives in `client.ts`, not here.
+  | { kind: 'not-ready'; reason: AggkitNotReadyReason; detail: string }
   | { kind: 'unknown'; reason: string }; // no client for destination
 
 export class AggkitBridgeAggregator {
@@ -678,7 +689,11 @@ export class AggkitBridgeAggregator {
     });
 
     if (!probe.ready) {
-      return { kind: 'not-injected', detail: probe.detail };
+      return {
+        kind: 'not-ready',
+        reason: probe.reason,
+        detail: probe.detail,
+      };
     }
     const leaf = probe.value;
 
@@ -783,14 +798,19 @@ export class AggkitBridgeAggregator {
     });
 
     let leafIndex: number;
-    if (resolution.kind === 'not-injected') {
-      // Source is settled, destination has not injected yet — again data,
+    if (resolution.kind === 'not-ready') {
+      // Source is settled, the destination side is not ready yet — again data,
       // not the fabricated `AggkitApiError(httpStatus: 404)` this used to
       // throw. `sourceL1InfoTreeIndex` carries the diagnostic that used to be
       // embedded in that error's prose.
+      //
+      // `resolution.reason` is passed through, NOT hard-coded: rc6+ answers
+      // this endpoint with `L1_INFO_LEAF_NOT_INDEXED` and `SYNCER_INCONSISTENT`
+      // as well as `DESTINATION_GER_NOT_INJECTED`, and on the first of those
+      // the GER *is* already injected (audit finding C2).
       return {
         claimable: false,
-        reason: 'DESTINATION_GER_NOT_INJECTED',
+        reason: resolution.reason,
         detail: resolution.detail,
         sourceL1InfoTreeIndex,
       };
@@ -1083,7 +1103,11 @@ export class AggkitBridgeAggregator {
               sourceL1InfoTreeIndex: sourceIndex,
             });
 
-            if (resolution.kind === 'not-injected') {
+            if (resolution.kind === 'not-ready') {
+              // Every destination-side not-ready reason derives the same
+              // status: the source is settled but the destination gate has not
+              // passed, so the row is not actionable yet. Unchanged behaviour —
+              // only the arm's name and payload widened (audit finding C2).
               status = 'LEAF_INCLUDED';
             } else if (resolution.kind === 'unknown') {
               status = 'READY_TO_CLAIM';

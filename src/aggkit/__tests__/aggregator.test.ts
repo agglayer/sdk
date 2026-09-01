@@ -584,6 +584,15 @@ describe('AggkitBridgeAggregator', () => {
       );
       expect(row).toBeDefined();
       expect(row?.status).toBe('BRIDGED');
+      // C1 REGRESSION GUARD. This assertion is the reason the C1 regression was
+      // invisible to CI: `status === 'BRIDGED'` is produced BOTH by the correct
+      // not-ready classification and by the throw-then-degrade path, so only
+      // `failedNetworks` distinguishes them. rc4/rc5's bare "not found" 500 is a
+      // genuine not-ready carrier (see client.ts's
+      // L1_INFO_TREE_INDEX_LEGACY_BARE_NOT_FOUND), so it must NOT produce a
+      // failedNetworks entry — otherwise every in-flight pre-settlement deposit
+      // floods it on every poll. Do not delete this assertion.
+      expect(page.failedNetworks).toEqual([]);
     });
 
     it('READY_TO_CLAIM: not claimed AND probe succeeds (post-settlement — code-verified against bridge.go, not fixture-captured: all enclave L2->L1 deposits were pre-settlement)', async () => {
@@ -902,6 +911,80 @@ describe('AggkitBridgeAggregator', () => {
       expect(row?.leafIndexForProof).toBeUndefined();
       expect(page.failedNetworks).toEqual([]);
     });
+
+    // C2 end-to-end through getActivity: before this, the two rc6 404s and the
+    // 503 on /injected-l1-info-leaf all threw, so the row degraded to
+    // LEAF_INCLUDED *plus* a failedNetworks entry naming the destination network,
+    // on every poll for the whole (normal, transient) window. The status is the
+    // same either way, so `failedNetworks` is the only thing that distinguishes
+    // correct classification from throw-then-degrade.
+    it.each([
+      [
+        'rc6 404 "l1infotreesync has not indexed l1 info tree leaf index N yet (already injected on L2 per l2gersync)"',
+        404,
+        'injected_l1_info_leaf_rc6_leaf_not_indexed_404.json',
+      ],
+      [
+        'rc6 503 syncer-inconsistent (an ordinary destination-side reorg)',
+        503,
+        'injected_l1_info_leaf_rc6_syncer_inconsistent_503.json',
+      ],
+    ])(
+      'LEAF_INCLUDED with an EMPTY failedNetworks for the destination-side %s — a transient wait must never be reported as a network failure (audit finding C2)',
+      async (_label, status, fixture) => {
+        installRouter([
+          rule(
+            BASE_2,
+            ['/claims', 'network_id=2', 'global_index=2'],
+            200,
+            claimsBody([], 0)
+          ),
+          ...networkRules(BASE_1, 1, {
+            a: {
+              status: 200,
+              body: loadFixture('l2l2_lifecycle_origin_bridges_row.json'),
+            },
+          }),
+          ...networkRules(BASE_2, 2, {
+            c: {
+              status: 200,
+              body: loadFixture('l2l2_165338016Z_dest_claims.json'),
+            },
+          }),
+          rule(
+            BASE_1,
+            ['/l1-info-tree-index', 'deposit_count=2'],
+            200,
+            loadFixture('l2l2_165338016Z_l1_info_tree_index.json')
+          ),
+          rule(
+            BASE_1,
+            ['/l1-info-tree-index'],
+            500,
+            loadFixture('l1_info_tree_index_notfound_error.json')
+          ),
+          rule(
+            BASE_2,
+            ['/injected-l1-info-leaf', 'network_id=2', 'leaf_index=7'],
+            status,
+            loadFixture(fixture)
+          ),
+        ]);
+
+        const aggregator = new AggkitBridgeAggregator({
+          networks: { 1: BASE_1, 2: BASE_2 },
+        });
+        const page = await aggregator.getActivity({ fromAddress: ADDRESS });
+
+        const row = page.data.find(
+          (tx) => tx.globalIndex === TARGET_GLOBAL_INDEX
+        );
+        expect(row).toBeDefined();
+        expect(row?.status).toBe('LEAF_INCLUDED');
+        expect(row?.leafIndexForProof).toBeUndefined();
+        expect(page.failedNetworks).toEqual([]);
+      }
+    );
 
     it('READY_TO_CLAIM with leafIndexForProof = 7 once the destination GER is injected (16:53:46.035Z snapshot, counterfactual pre-autoclaim)', async () => {
       installRouter([
@@ -1564,6 +1647,285 @@ describe('AggkitBridgeAggregator', () => {
         claimable: false,
         reason: 'SYNCER_INCONSISTENT',
         detail: expect.stringContaining('a syncer is temporarily inconsistent'),
+      });
+    });
+
+    it("L2 -> L1: rc4/rc5's bare \"not found\" 500 carrier returns { claimable: false, reason: 'SOURCE_NOT_ON_L1_INFO_TREE' } — NOT a throw — end-to-end (l1_info_tree_index_network1_error.json, live-captured; audit finding C1)", async () => {
+      installRouter([
+        rule(
+          BASE_1,
+          ['/l1-info-tree-index', 'network_id=1', 'deposit_count=0'],
+          500,
+          loadFixture('l1_info_tree_index_network1_error.json')
+        ),
+      ]);
+
+      const aggregator = new AggkitBridgeAggregator({
+        networks: { 1: BASE_1 },
+      });
+
+      const result = await aggregator.getClaimInputs({
+        recordingNetworkId: 1,
+        destinationNetworkId: 0,
+        depositCount: 0,
+      });
+
+      expect(result).toEqual({
+        claimable: false,
+        reason: 'SOURCE_NOT_ON_L1_INFO_TREE',
+        detail: expect.stringContaining('error: not found'),
+      });
+    });
+
+    it("L2 -> L2: rc6's /injected-l1-info-leaf 404 \"l1infotreesync has not indexed l1 info tree leaf index N yet (already injected on L2 per l2gersync)\" returns { claimable: false, reason: 'L1_INFO_LEAF_NOT_INDEXED' } — NOT a throw (audit finding C2)", async () => {
+      installRouter([
+        rule(
+          BASE_1,
+          ['/l1-info-tree-index', 'network_id=1', 'deposit_count=2'],
+          200,
+          loadFixture('l2l2_165338016Z_l1_info_tree_index.json')
+        ),
+        rule(
+          BASE_2,
+          ['/injected-l1-info-leaf', 'network_id=2', 'leaf_index=7'],
+          404,
+          loadFixture('injected_l1_info_leaf_rc6_leaf_not_indexed_404.json')
+        ),
+      ]);
+
+      const aggregator = new AggkitBridgeAggregator({
+        networks: { 1: BASE_1, 2: BASE_2 },
+      });
+
+      const result = await aggregator.getClaimInputs({
+        recordingNetworkId: 1,
+        destinationNetworkId: 2,
+        depositCount: 2,
+      });
+
+      // The union member is DISTINCT from DESTINATION_GER_NOT_INJECTED: the wire
+      // says the GER IS already injected on L2; only the L1-side index lags.
+      expect(result).toEqual({
+        claimable: false,
+        reason: 'L1_INFO_LEAF_NOT_INDEXED',
+        detail: expect.stringContaining(
+          'has not indexed l1 info tree leaf index'
+        ),
+        sourceL1InfoTreeIndex: 7,
+      });
+    });
+
+    it("L2 -> L2: rc6's /injected-l1-info-leaf 503 returns { claimable: false, reason: 'SYNCER_INCONSISTENT' } — NOT a throw — so an ordinary destination-side reorg does not flood failedNetworks (audit finding C2)", async () => {
+      installRouter([
+        rule(
+          BASE_1,
+          ['/l1-info-tree-index', 'network_id=1', 'deposit_count=2'],
+          200,
+          loadFixture('l2l2_165338016Z_l1_info_tree_index.json')
+        ),
+        rule(
+          BASE_2,
+          ['/injected-l1-info-leaf', 'network_id=2', 'leaf_index=7'],
+          503,
+          loadFixture('injected_l1_info_leaf_rc6_syncer_inconsistent_503.json')
+        ),
+      ]);
+
+      const aggregator = new AggkitBridgeAggregator({
+        networks: { 1: BASE_1, 2: BASE_2 },
+      });
+
+      const result = await aggregator.getClaimInputs({
+        recordingNetworkId: 1,
+        destinationNetworkId: 2,
+        depositCount: 2,
+      });
+
+      expect(result).toEqual({
+        claimable: false,
+        reason: 'SYNCER_INCONSISTENT',
+        detail: expect.stringContaining('a syncer is temporarily inconsistent'),
+        sourceL1InfoTreeIndex: 7,
+      });
+    });
+
+    it('L2 -> L2: a GENUINE 500 on /injected-l1-info-leaf still throws AggkitApiError (the C2 widening is 404/prose-gated 503 only)', async () => {
+      installRouter([
+        rule(
+          BASE_1,
+          ['/l1-info-tree-index', 'network_id=1', 'deposit_count=2'],
+          200,
+          loadFixture('l2l2_165338016Z_l1_info_tree_index.json')
+        ),
+        rule(
+          BASE_2,
+          ['/injected-l1-info-leaf', 'network_id=2', 'leaf_index=7'],
+          500,
+          errorBody(
+            'failed to get injected global exit root for leaf index=7, error: database is locked'
+          )
+        ),
+      ]);
+
+      const aggregator = new AggkitBridgeAggregator({
+        networks: { 1: BASE_1, 2: BASE_2 },
+      });
+
+      await expect(
+        aggregator.getClaimInputs({
+          recordingNetworkId: 1,
+          destinationNetworkId: 2,
+          depositCount: 2,
+        })
+      ).rejects.toMatchObject({ httpStatus: 500 });
+    });
+
+    it("L2 -> L2: rc6's /claim-proof 404 (source settled, destination injected, a syncer a few blocks behind on the leaf) returns { claimable: false, reason: 'CLAIM_PROOF_NOT_AVAILABLE', sourceL1InfoTreeIndex } — NOT a throw. Activates the not-ready arm design 2.2/2.6 reserved (audit finding C3)", async () => {
+      installRouter([
+        rule(
+          BASE_1,
+          ['/l1-info-tree-index', 'network_id=1', 'deposit_count=2'],
+          200,
+          loadFixture('l2l2_165338016Z_l1_info_tree_index.json')
+        ),
+        rule(
+          BASE_2,
+          ['/injected-l1-info-leaf', 'network_id=2', 'leaf_index=7'],
+          200,
+          injectedLeafBody(7)
+        ),
+        rule(
+          BASE_1,
+          ['/claim-proof', 'network_id=1', 'leaf_index=7', 'deposit_count=2'],
+          404,
+          loadFixture('claim_proof_rc6_bridgesync_l2_not_indexed_404.json')
+        ),
+      ]);
+
+      const aggregator = new AggkitBridgeAggregator({
+        networks: { 1: BASE_1, 2: BASE_2 },
+      });
+
+      const result = await aggregator.getClaimInputs({
+        recordingNetworkId: 1,
+        destinationNetworkId: 2,
+        depositCount: 2,
+      });
+
+      expect(result).toEqual({
+        claimable: false,
+        reason: 'CLAIM_PROOF_NOT_AVAILABLE',
+        detail: expect.stringContaining('has not indexed deposit count'),
+        sourceL1InfoTreeIndex: 7,
+      });
+    });
+
+    it("L2 -> L1: rc6's /claim-proof 503 returns { claimable: false, reason: 'SYNCER_INCONSISTENT' } — NOT a throw (audit finding C3)", async () => {
+      installRouter([
+        rule(
+          BASE_1,
+          ['/l1-info-tree-index', 'network_id=1', 'deposit_count=3'],
+          200,
+          loadFixture('l2l1_lifecycle_l1_info_tree_index_ready.json')
+        ),
+        rule(
+          BASE_1,
+          ['/claim-proof', 'network_id=1', 'leaf_index=7', 'deposit_count=3'],
+          503,
+          loadFixture('claim_proof_rc6_syncer_inconsistent_503.json')
+        ),
+      ]);
+
+      const aggregator = new AggkitBridgeAggregator({
+        networks: { 1: BASE_1 },
+      });
+
+      const result = await aggregator.getClaimInputs({
+        recordingNetworkId: 1,
+        destinationNetworkId: 0,
+        depositCount: 3,
+      });
+
+      expect(result).toEqual({
+        claimable: false,
+        reason: 'SYNCER_INCONSISTENT',
+        detail: expect.stringContaining('a syncer is temporarily inconsistent'),
+        sourceL1InfoTreeIndex: 7,
+      });
+    });
+
+    // The prose gate on /claim-proof's 503 is load-bearing: ClaimProofHandler has
+    // two 503 sources that are genuine configuration faults, in rc5 AND rc6+.
+    it.each([
+      [
+        'L1 bridge syncer is not available',
+        'claim_proof_l1_bridge_syncer_unavailable_503.json',
+      ],
+      [
+        'L2 bridge syncer is not available',
+        'claim_proof_l2_bridge_syncer_unavailable_503.json',
+      ],
+    ])(
+      'L2 -> L1: /claim-proof\'s GENUINE-FAULT 503 "%s" still throws AggkitApiError — a misconfigured aggkit must never be read as "keep polling forever" (audit finding C3)',
+      async (message, fixture) => {
+        installRouter([
+          rule(
+            BASE_1,
+            ['/l1-info-tree-index', 'network_id=1', 'deposit_count=3'],
+            200,
+            loadFixture('l2l1_lifecycle_l1_info_tree_index_ready.json')
+          ),
+          rule(
+            BASE_1,
+            ['/claim-proof', 'network_id=1', 'leaf_index=7', 'deposit_count=3'],
+            503,
+            loadFixture(fixture)
+          ),
+        ]);
+
+        const aggregator = new AggkitBridgeAggregator({
+          networks: { 1: BASE_1 },
+        });
+
+        await expect(
+          aggregator.getClaimInputs({
+            recordingNetworkId: 1,
+            destinationNetworkId: 0,
+            depositCount: 3,
+          })
+        ).rejects.toMatchObject({ httpStatus: 503, message });
+      }
+    );
+
+    it("L2 -> L1: the aggkit-proxy's OWN routing-failure 404 on /claim-proof throws — never classified as CLAIM_PROOF_NOT_AVAILABLE (the proxy-prose trap, now that 404 is a not-ready carrier on this endpoint too)", async () => {
+      installRouter([
+        rule(
+          BASE_1,
+          ['/l1-info-tree-index', 'network_id=1', 'deposit_count=3'],
+          200,
+          loadFixture('l2l1_lifecycle_l1_info_tree_index_ready.json')
+        ),
+        rule(
+          BASE_1,
+          ['/claim-proof', 'network_id=1', 'leaf_index=7', 'deposit_count=3'],
+          404,
+          loadFixture('error_404_unknown_network.json')
+        ),
+      ]);
+
+      const aggregator = new AggkitBridgeAggregator({
+        networks: { 1: BASE_1 },
+      });
+
+      await expect(
+        aggregator.getClaimInputs({
+          recordingNetworkId: 1,
+          destinationNetworkId: 0,
+          depositCount: 3,
+        })
+      ).rejects.toMatchObject({
+        httpStatus: 404,
+        message: expect.stringContaining('bridge service url not found'),
       });
     });
 

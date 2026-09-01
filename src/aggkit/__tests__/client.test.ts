@@ -328,15 +328,79 @@ describe('AggkitBridgeClient', () => {
       }
     });
 
-    it('throws AggkitApiError — does NOT return the not-ready union — for a bare "not found" 500 (l1_info_tree_index_network1_error.json): the old loose pattern list treated this as not-ready, but a bare "not found" is a trap (comment 3862896539) — it is aggkit\'s wrapped `db.ErrNotFound`, indistinguishable in prose from a genuine unrelated failure', async () => {
+    // C1 REGRESSION GUARD. This fixture is LIVE-CAPTURED from a devnet running
+    // rc4/rc5 and is a genuine not-ready carrier there: `db.ErrNotFound`
+    // ("not found", db/sqlite.go:17) returned raw by
+    // getFirstL1InfoTreeIndexForL2Bridge's GetLastVerifiedBatches
+    // (v0.11.0-rc5:bridgeservice/bridge.go:1498-1501) and wrapped into the
+    // handler's 500 body (:832-835). rc6 confirms the classification by mapping
+    // the same sentinel to a 404 not-ready (v0.11.0-rc6:bridge.go:1778).
+    // Commit 54c10b9 deleted the pattern that matched it and committed a test
+    // asserting the inverse; this is that test flipped back. Do NOT re-invert it
+    // without also deleting the rc4/rc5 500 branch per client.ts's own
+    // DELETION CONDITION.
+    it("returns { ready: false, reason: 'SOURCE_NOT_ON_L1_INFO_TREE' } — NOT a throw — for rc4/rc5's bare \"not found\" 500 carrier (l1_info_tree_index_network1_error.json, live-captured): matched by the fully ANCHORED L1_INFO_TREE_INDEX_LEGACY_BARE_NOT_FOUND regex, not by a bare substring, so the trap in comment 3862896539 stays closed (audit finding C1)", async () => {
       mockFetchOnce(loadFixture('l1_info_tree_index_network1_error.json'), 500);
+
+      const result = await client.getL1InfoTreeIndex({
+        networkId: 1,
+        depositCount: 0,
+      });
+
+      expect(result).toEqual({
+        ready: false,
+        reason: 'SOURCE_NOT_ON_L1_INFO_TREE',
+        detail:
+          'failed to get l1 info tree index for network id 1 and deposit count 0, error: not found',
+      });
+    });
+
+    it("returns not-ready for the same rc4/rc5 carrier with the `l1infotreesync: ` error prefix (l1infotreesync.ErrNotFound, v0.11.0-rc5:l1infotreesync/l1infotreesync.go:38) — the regex's optional prefix group", async () => {
+      mockFetchOnce(
+        JSON.stringify({
+          error:
+            'failed to get l1 info tree index for network id 1 and deposit count 12, error: l1infotreesync: not found',
+        }),
+        500
+      );
+
+      const result = await client.getL1InfoTreeIndex({
+        networkId: 1,
+        depositCount: 12,
+      });
+
+      expect(result).toMatchObject({
+        ready: false,
+        reason: 'SOURCE_NOT_ON_L1_INFO_TREE',
+      });
+    });
+
+    it('throws AggkitApiError for a 500 whose body merely CONTAINS "not found" inside a nested error chain ("... error: failed to get last root for L2: LER not found for verified batch 7"): the C1 restoration is anchored at BOTH ends, so it cannot swallow a genuine fault (comment 3862896539\'s trap)', async () => {
+      mockFetchOnce(
+        JSON.stringify({
+          error:
+            'failed to get l1 info tree index for network id 1 and deposit count 0, error: failed to get last root for L2: LER not found for verified batch 7',
+        }),
+        500
+      );
 
       await expect(
         client.getL1InfoTreeIndex({ networkId: 1, depositCount: 0 })
       ).rejects.toMatchObject({
         httpStatus: 500,
         endpoint: '/l1-info-tree-index',
-        message: expect.stringContaining('not found'),
+      });
+    });
+
+    it('throws AggkitApiError for the aggkit-proxy\'s routing prose on a 500 ("bridge service url not found for network: network 9"): the anchored C1 regex cannot match it, and the proxy exclusion runs first anyway', async () => {
+      mockFetchOnce(loadFixture('error_404_unknown_network.json'), 500);
+
+      await expect(
+        client.getL1InfoTreeIndex({ networkId: 9, depositCount: 1 })
+      ).rejects.toMatchObject({
+        httpStatus: 500,
+        endpoint: '/l1-info-tree-index',
+        message: 'bridge service url not found for network: network 9',
       });
     });
 
@@ -481,6 +545,141 @@ describe('AggkitBridgeClient', () => {
       });
     });
 
+    // C3. rc6+ routes FIVE ClaimProofHandler error paths through
+    // respondSyncerError, each with its own fixed 404 notFoundMsg; all five
+    // share "has not indexed". Before this, assertOk threw for all of them —
+    // and /claim-proof is the LAST call getClaimInputs makes, so the source was
+    // settled and the destination had injected before the SDK threw.
+    it.each([
+      [
+        'l1infotreesync leaf index (v0.11.0-rc6:bridgeservice/bridge.go:1067)',
+        'claim_proof_rc6_l1_info_leaf_not_indexed_404.json',
+      ],
+      [
+        'bridgesync L1 deposit count (bridge.go:1084)',
+        'claim_proof_rc6_bridgesync_l1_not_indexed_404.json',
+      ],
+      [
+        'l1infotreesync local exit root (bridge.go:1093-1094)',
+        'claim_proof_rc6_local_exit_root_not_indexed_404.json',
+      ],
+      [
+        'bridgesync L2 deposit count (bridge.go:1107)',
+        'claim_proof_rc6_bridgesync_l2_not_indexed_404.json',
+      ],
+      [
+        'l1infotreesync rollup exit tree (bridge.go:1123-1124)',
+        'claim_proof_rc6_rollup_exit_tree_not_indexed_404.json',
+      ],
+    ])(
+      "returns { ready: false, reason: 'CLAIM_PROOF_NOT_AVAILABLE' } — NOT a throw — for the rc6 404 not-ready body: %s (audit finding C3)",
+      async (_label, fixture) => {
+        mockFetchOnce(loadFixture(fixture), 404);
+
+        const result = await client.getClaimProof({
+          networkId: 1,
+          leafIndex: 42,
+          depositCount: 4,
+        });
+
+        expect(result).toEqual({
+          ready: false,
+          reason: 'CLAIM_PROOF_NOT_AVAILABLE',
+          detail: expect.stringContaining('has not indexed'),
+        });
+      }
+    );
+
+    it("returns { ready: false, reason: 'SYNCER_INCONSISTENT' } for the rc6 503 while a syncer resolves a reorg (claim_proof_rc6_syncer_inconsistent_503.json, errSyncerInconsistent, bridge.go:80 written at :1800-1803)", async () => {
+      mockFetchOnce(
+        loadFixture('claim_proof_rc6_syncer_inconsistent_503.json'),
+        503
+      );
+
+      const result = await client.getClaimProof({
+        networkId: 1,
+        leafIndex: 42,
+        depositCount: 4,
+      });
+
+      expect(result).toEqual({
+        ready: false,
+        reason: 'SYNCER_INCONSISTENT',
+        detail: expect.stringContaining('a syncer is temporarily inconsistent'),
+      });
+    });
+
+    // The 503 branch on THIS endpoint must stay prose-gated: ClaimProofHandler
+    // has two OTHER 503 sources that are genuine configuration faults, present
+    // in rc5 AND rc6+. A blanket "503 means not-ready" would silently convert a
+    // misconfigured aggkit into "keep polling forever".
+    it.each([
+      [
+        'L1 bridge syncer is not available (v0.11.0-rc6:bridge.go:1076-1078; rc5 :1062-1063)',
+        'claim_proof_l1_bridge_syncer_unavailable_503.json',
+        'L1 bridge syncer is not available',
+      ],
+      [
+        'L2 bridge syncer is not available (bridge.go:1099-1101; rc5 :1083-1084)',
+        'claim_proof_l2_bridge_syncer_unavailable_503.json',
+        'L2 bridge syncer is not available',
+      ],
+    ])(
+      "throws AggkitApiError for /claim-proof's GENUINE-FAULT 503 — %s — which must never be read as not-ready (audit finding C3)",
+      async (_label, fixture, message) => {
+        mockFetchOnce(loadFixture(fixture), 503);
+
+        await expect(
+          client.getClaimProof({ networkId: 1, leafIndex: 42, depositCount: 4 })
+        ).rejects.toMatchObject({
+          httpStatus: 503,
+          endpoint: '/claim-proof',
+          message,
+        });
+      }
+    );
+
+    it("throws AggkitApiError for the aggkit-proxy's OWN routing-failure 404 on /claim-proof (error_404_unknown_network.json): the proxy sits in front of every route, so its prose must never be misclassified as not-ready now that 404 is a recognised not-ready carrier here", async () => {
+      mockFetchOnce(loadFixture('error_404_unknown_network.json'), 404);
+
+      await expect(
+        client.getClaimProof({ networkId: 9, leafIndex: 42, depositCount: 4 })
+      ).rejects.toMatchObject({
+        httpStatus: 404,
+        endpoint: '/claim-proof',
+        message: 'bridge service url not found for network: network 9',
+      });
+    });
+
+    it('throws AggkitApiError for a 404 on /claim-proof that does NOT carry the "has not indexed" anchor (an unrelated 404 stays an error)', async () => {
+      mockFetchOnce(JSON.stringify({ error: 'route not found' }), 404);
+
+      await expect(
+        client.getClaimProof({ networkId: 1, leafIndex: 42, depositCount: 4 })
+      ).rejects.toMatchObject({
+        httpStatus: 404,
+        endpoint: '/claim-proof',
+        message: 'route not found',
+      });
+    });
+
+    it('throws AggkitApiError for a 500 whose body carries "has not indexed" prose: the C3 branch is scoped to 404 ONLY, because rc4/rc5 answered every one of these paths with a genuine-fault-shaped 500', async () => {
+      mockFetchOnce(
+        JSON.stringify({
+          error:
+            'bridgesync L2 has not indexed deposit count 4 yet, retry later',
+        }),
+        500
+      );
+
+      await expect(
+        client.getClaimProof({ networkId: 1, leafIndex: 42, depositCount: 4 })
+      ).rejects.toMatchObject({
+        httpStatus: 500,
+        endpoint: '/claim-proof',
+      });
+    });
+
     it('throws AggkitApiError(400) for claim_proof_error_missing_param.json', async () => {
       mockFetchOnce(loadFixture('claim_proof_error_missing_param.json'), 400);
 
@@ -557,6 +756,89 @@ describe('AggkitBridgeClient', () => {
         httpStatus: 404,
         endpoint: '/injected-l1-info-leaf',
         message: 'bridge service url not found for network: network 9',
+      });
+    });
+
+    // C2. rc6+ added two respondSyncerError 404s to InjectedL1InfoLeafHandler
+    // (rc5 answered 500 for both), plus a 503. `['not injected']` matched none
+    // of the three, so all three threw.
+    it.each([
+      [
+        'GER already injected on L2, L1-info leaf not indexed yet (v0.11.0-rc6:bridgeservice/bridge.go:916-917; rc5 answered 500 at :909-913)',
+        'injected_l1_info_leaf_rc6_leaf_not_indexed_404.json',
+      ],
+      [
+        'mainnet arm, L1-info leaf not indexed yet (bridge.go:931; rc5 answered 500 at :923-928)',
+        'injected_l1_info_leaf_rc6_leaf_not_indexed_mainnet_404.json',
+      ],
+    ])(
+      "returns { ready: false, reason: 'L1_INFO_LEAF_NOT_INDEXED' } — NOT a throw — for the rc6 404 not-ready body: %s (audit finding C2)",
+      async (_label, fixture) => {
+        mockFetchOnce(loadFixture(fixture), 404);
+
+        const result = await client.getInjectedL1InfoLeaf({
+          networkId: 2,
+          leafIndex: 7,
+        });
+
+        expect(result).toEqual({
+          ready: false,
+          reason: 'L1_INFO_LEAF_NOT_INDEXED',
+          detail: expect.stringContaining(
+            'has not indexed l1 info tree leaf index'
+          ),
+        });
+      }
+    );
+
+    it("returns { ready: false, reason: 'SYNCER_INCONSISTENT' } for the rc6 503 on /injected-l1-info-leaf (injected_l1_info_leaf_rc6_syncer_inconsistent_503.json) — an ordinary destination-side reorg must not flood failedNetworks (audit finding C2)", async () => {
+      mockFetchOnce(
+        loadFixture('injected_l1_info_leaf_rc6_syncer_inconsistent_503.json'),
+        503
+      );
+
+      const result = await client.getInjectedL1InfoLeaf({
+        networkId: 2,
+        leafIndex: 7,
+      });
+
+      expect(result).toEqual({
+        ready: false,
+        reason: 'SYNCER_INCONSISTENT',
+        detail: expect.stringContaining('a syncer is temporarily inconsistent'),
+      });
+    });
+
+    it('throws AggkitApiError for a 503 on /injected-l1-info-leaf without the fixed syncer-inconsistent prose (a proxy outage or an unrelated 503 stays an error)', async () => {
+      mockFetchOnce(
+        JSON.stringify({
+          error: 'upstream connect error or disconnect/reset before headers',
+        }),
+        503
+      );
+
+      await expect(
+        client.getInjectedL1InfoLeaf({ networkId: 2, leafIndex: 7 })
+      ).rejects.toMatchObject({
+        httpStatus: 503,
+        endpoint: '/injected-l1-info-leaf',
+      });
+    });
+
+    it('throws AggkitApiError for the genuine-fault 500 on /injected-l1-info-leaf ("failed to get injected global exit root for leaf index=..", v0.11.0-rc6:bridgeservice/bridge.go:906-910) — a 500 here is never not-ready', async () => {
+      mockFetchOnce(
+        JSON.stringify({
+          error:
+            'failed to get injected global exit root for leaf index=7, error: database is locked',
+        }),
+        500
+      );
+
+      await expect(
+        client.getInjectedL1InfoLeaf({ networkId: 2, leafIndex: 7 })
+      ).rejects.toMatchObject({
+        httpStatus: 500,
+        endpoint: '/injected-l1-info-leaf',
       });
     });
 
