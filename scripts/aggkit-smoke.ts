@@ -573,7 +573,13 @@ async function main(): Promise<void> {
         if (oldBuggyQuery.ready && l1Row) {
           assert(
             l1Row.destination_network !== otherL2NetworkId ||
-              l1Row.from_address.toLowerCase() !==
+              // `from_address` is documented-optional (`AggkitBridge.from_address`
+              // in types.ts: "May be '' or absent; do not trust for identity
+              // beyond sender display") -- an absent value must not TypeError
+              // here (audit finding C13), so default it the same way the SDK
+              // itself does (aggregator.ts: `bridge.from_address ||
+              // bridge.txn_sender`) before comparing.
+              (l1Row.from_address ?? '').toLowerCase() !==
                 account.address.toLowerCase(),
             `(b) network 0's OWN deposit_count=${caseD.depositCount} (destination_network=${l1Row.destination_network}, bridge_hash=${l1Row.bridge_hash}) is a DIFFERENT bridge than the one just sent (destination_network=${otherL2NetworkId}) -- proof that origin_network-based routing would have silently answered for the WRONG deposit`
           );

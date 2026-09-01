@@ -40,11 +40,16 @@ function clampPageSize(pageSize: number | undefined): number {
 }
 
 /**
- * Accepts ONLY a value that is unambiguously a non-negative integer:
- * either a `number` that is itself `Number.isInteger` and `>= 0`, or a
+ * Accepts ONLY a value that is unambiguously a non-negative safe integer:
+ * either a `number` that is itself `Number.isSafeInteger` and `>= 0`, or a
  * non-empty digits-only `string` (`/^\d+$/` -- no sign, no decimal point,
  * no exponent, no surrounding whitespace, no radix prefix) whose numeric
- * value is a safe non-negative integer. A blanket `Number(value)` coercion
+ * value is a safe non-negative integer. Both branches enforce the same
+ * `Number.isSafeInteger` bound so a numeric literal outside it (e.g. `1e21`,
+ * or `9007199254740993` silently rounding to `9007199254740992`) is rejected
+ * exactly like the equivalent string would be -- otherwise it would reach
+ * aggkit as `page_number=1e%2B21` and 400 the whole fan-out for that network
+ * (audit finding C5). A blanket `Number(value)` coercion
  * is deliberately NOT used here: `Number(null)`, `Number("")`,
  * `Number([])`, and `Number(false)` all evaluate to `0`, and `Number(true)`
  * evaluates to `1` -- silently accepting those as legitimate cursor state
@@ -52,7 +57,7 @@ function clampPageSize(pageSize: number | undefined): number {
  */
 function isValidCursorPageNumber(value: unknown): boolean {
   if (typeof value === 'number') {
-    return Number.isInteger(value) && value >= 0;
+    return Number.isSafeInteger(value) && value >= 0;
   }
   if (typeof value === 'string' && /^\d+$/.test(value)) {
     const num = Number(value);
@@ -202,8 +207,28 @@ interface NetworkFanoutResult {
   nextCursorPatch: AggkitPageCursor;
 }
 
+/**
+ * Renders an error's message, appending its `.cause` chain (if any) so the
+ * information the retry-exhaustion path in `httpRaw.ts` attaches via
+ * `new Error(msg, { cause })` doesn't get dropped again here -- the one
+ * remaining place inside the SDK that discarded it (audit finding C11,
+ * closing the rest of comment 3862898418: the chain now survives all the way
+ * to `AggkitFailedNetwork.error`, which is what dev-ui actually renders).
+ * Walks more than one level in case a future wrapper nests causes.
+ */
 function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+  if (!(error instanceof Error)) {
+    return String(error);
+  }
+  const causes: string[] = [];
+  let cause: unknown = error.cause;
+  while (cause instanceof Error) {
+    causes.push(cause.message);
+    cause = cause.cause;
+  }
+  return causes.length > 0
+    ? `${error.message} (cause: ${causes.join(' -> ')})`
+    : error.message;
 }
 
 /** Builds a failed-network attribution from a caught error. */
@@ -493,6 +518,18 @@ export class AggkitBridgeAggregator {
     const networkIds = this.listNetworkIds();
     const pageSize = MAX_PAGE_SIZE;
 
+    // Mirrors `getActivity`'s guard (comment 3862897421, audit finding C8):
+    // without this, `getReadyToClaimCount({ networks: {} })` silently
+    // returned `0` for the same config bug `getActivity` now throws for --
+    // an unannounced badge-vs-feed asymmetry (an aggregator constructed
+    // before config resolves would render an empty feed AND a claimable
+    // count of 0, masking the misconfiguration either way).
+    if (networkIds.length === 0) {
+      throw new Error(
+        'AggkitBridgeAggregator.getReadyToClaimCount: no networks configured'
+      );
+    }
+
     const settled = await Promise.allSettled(
       networkIds.map((networkId) =>
         this.fetchNetworkFanout(networkId, params.fromAddress, {}, pageSize)
@@ -627,20 +664,22 @@ export class AggkitBridgeAggregator {
         networkId: destinationNetworkId,
         globalIndex: bridge.global_index,
       });
-      const claim = result.claims[0];
-      // Verify the returned claim actually matches the requested
-      // global_index (comment 3847451952): if a proxy ever drops the
-      // `global_index` filter param, aggkit could return an unrelated
-      // claim, which would otherwise be reported as this bridge's claim --
-      // showing a stranger's claim tx as the user's and undercounting the
-      // ready-to-claim badge.
-      if (
-        !claim ||
-        !globalIndexesMatch(claim.global_index, bridge.global_index)
-      ) {
-        return null;
-      }
-      return claim;
+      // Find (not index [0]) the claim actually matching the requested
+      // global_index (comment 3847451952, audit finding C6): if a proxy ever
+      // drops the `global_index` filter param, aggkit returns page 1 of ALL
+      // claims for the network, and the caller's claim can sit at any index,
+      // not just 0 -- indexing `[0]` would then either show a stranger's
+      // claim as the user's (the false-positive direction the original guard
+      // closed) or, if that stranger's index happens not to match, wrongly
+      // report an actually-claimed deposit as unclaimed (the false-negative
+      // direction `[0]`-indexing reopened: `getReadyToClaimCount` counts it
+      // as ready and `getActivity` shows a Claim button for a deposit whose
+      // claim tx would revert `AlreadyClaimed`). `.find()` checks every
+      // returned claim, not just the first.
+      const claim = result.claims.find((c) =>
+        globalIndexesMatch(c.global_index, bridge.global_index)
+      );
+      return claim ?? null;
     } catch {
       // The confirmation query is a correctness backstop, not a hard
       // dependency — if it fails, fall back to the Tier-2 probe result

@@ -190,6 +190,7 @@ function networkRules(
 
 const BASE_1 = 'http://127.0.0.1:30001';
 const BASE_2 = 'http://127.0.0.1:30002';
+const BASE_3 = 'http://127.0.0.1:30003';
 const ADDRESS = '0x3C4d3AAB4356120117E88225e649f0A7ae0401DE';
 
 describe('AggkitBridgeAggregator', () => {
@@ -341,6 +342,15 @@ describe('AggkitBridgeAggregator', () => {
         'junk:hexPrefix': '0x3',
         'junk:whitespacePadded': ' 3 ',
         'junk:object': { nested: 1 },
+        // Audit finding C5: the number branch previously used
+        // `Number.isInteger`, which is true for `1e21` and for
+        // `9007199254740993` (both round-trip through `Number.isInteger`
+        // even though neither is a SAFE integer) -- so a numeric junk value
+        // survived where the equivalent STRING was already rejected below.
+        // `1e21` would reach aggkit as `page_number=1e%2B21` and 400 the
+        // whole fan-out for that network.
+        'junk:numericExponent': 1e21,
+        'junk:numericUnsafeInteger': Number.MAX_SAFE_INTEGER + 2,
         'valid:zero': 0,
         'valid:zeroString': '0',
         'valid:three': '3',
@@ -364,6 +374,8 @@ describe('AggkitBridgeAggregator', () => {
         'junk:hexPrefix',
         'junk:whitespacePadded',
         'junk:object',
+        'junk:numericExponent',
+        'junk:numericUnsafeInteger',
       ]) {
         expect(Object.prototype.hasOwnProperty.call(decoded, junkKey)).toBe(
           false
@@ -394,6 +406,20 @@ describe('AggkitBridgeAggregator', () => {
       expect(Object.prototype.hasOwnProperty.call(decoded, 'huge:unsafe')).toBe(
         false
       );
+    });
+
+    it('drops a NUMBER (not just an equivalent string) that fails Number.isSafeInteger, e.g. 1e21 (audit finding C5)', () => {
+      // `Number.isInteger(1e21) === true`, so a check that stopped at
+      // `Number.isInteger` (rather than `Number.isSafeInteger`) would let
+      // this numeric literal survive even though the digits-only STRING
+      // "1e21" is rejected earlier by regex alone (no exponent notation
+      // allowed) and the equivalent unsafe-integer string
+      // "90071992547409910000" is rejected above by the safe-integer check.
+      // The number branch must enforce the identical bound.
+      const decoded = decodeCursor(JSON.stringify({ 'huge:exponent': 1e21 }));
+      expect(
+        Object.prototype.hasOwnProperty.call(decoded, 'huge:exponent')
+      ).toBe(false);
     });
   });
 
@@ -453,6 +479,21 @@ describe('AggkitBridgeAggregator', () => {
 
       await expect(
         aggregator.getActivity({ fromAddress: ADDRESS })
+      ).rejects.toThrow(/no networks configured/);
+      expect(global.fetch).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('getReadyToClaimCount — empty networks guard (audit finding C8)', () => {
+    it('rejects instead of silently returning 0 when no networks are configured, mirroring getActivity', async () => {
+      // Before this fix, `getActivity({ networks: {} })` threw (comment
+      // 3862897421) but `getReadyToClaimCount({ networks: {} })` silently
+      // returned 0 for the identical config bug -- an unannounced asymmetry
+      // between the feed and the badge that feeds off the same aggregator.
+      const aggregator = new AggkitBridgeAggregator({ networks: {} });
+
+      await expect(
+        aggregator.getReadyToClaimCount({ fromAddress: ADDRESS })
       ).rejects.toThrow(/no networks configured/);
       expect(global.fetch).not.toHaveBeenCalled();
     });
@@ -1401,6 +1442,65 @@ describe('AggkitBridgeAggregator', () => {
       expect(tx?.leafIndexForProof).toBe(42);
       expect(tx?.claimTransactionHash).toBeUndefined();
     });
+
+    it('finds the matching claim at a NON-ZERO index, not just claims[0] (audit finding C6): a legitimate claim must not be missed', async () => {
+      // Same dropped-filter scenario as above, but this time the targeted
+      // `/claims?global_index=42` response -- as if a proxy dropped the
+      // filter and aggkit returned page 1 of ALL claims for the network --
+      // carries the deposit's OWN matching claim at index 1, behind an
+      // unrelated stranger's claim at index 0. Indexing `claims[0]` (the
+      // pre-fix behaviour) would inspect only the stranger's claim, fail
+      // the globalIndexesMatch check, and return null -- wrongly deriving
+      // this ALREADY-CLAIMED deposit as READY_TO_CLAIM (the opposite wrong
+      // answer from the false-positive direction the original guard closed).
+      const matchedRow = makeBridge({
+        bridge_hash: '0xmatchedatindex1',
+        origin_network: 1,
+        destination_network: 0,
+        deposit_count: 42,
+        global_index: 42,
+        block_timestamp: 900,
+      });
+
+      installRouter([
+        rule(
+          BASE_1,
+          ['/claims', 'network_id=0', 'global_index=42'],
+          200,
+          claimsBody(
+            [
+              {
+                global_index: '999',
+                tx_hash: '0xstrangertx',
+                block_timestamp: 111,
+                block_num: 1,
+              },
+              {
+                global_index: '42',
+                tx_hash: '0xtherealclaimtx',
+                block_timestamp: 950,
+                block_num: 2,
+              },
+            ],
+            2
+          )
+        ),
+        ...networkRules(BASE_1, 1, {
+          a: { status: 200, body: bridgesBody([matchedRow], 1) },
+        }),
+        rule(BASE_1, ['/l1-info-tree-index', 'deposit_count=42'], 200, '42'),
+      ]);
+
+      const aggregator = new AggkitBridgeAggregator({
+        networks: { 1: BASE_1 },
+      });
+      const page = await aggregator.getActivity({ fromAddress: ADDRESS });
+
+      const tx = page.data.find((t) => t.bridgeHash === '0xmatchedatindex1');
+      expect(tx).toBeDefined();
+      expect(tx?.status).toBe('CLAIMED');
+      expect(tx?.claimTransactionHash).toBe('0xtherealclaimtx');
+    });
   });
 
   describe('getClaimInputs', () => {
@@ -2044,6 +2144,88 @@ describe('AggkitBridgeAggregator', () => {
           (url.includes('/l1-info-tree-index') || url.includes('/claim-proof'))
       );
       expect(networkZeroTreeCalls).toHaveLength(0);
+      // Both tree-relative endpoints used the SAME recording network.
+      expect(
+        calls.filter(
+          ([url]) =>
+            url.includes('/l1-info-tree-index') && url.includes('network_id=1')
+        )
+      ).toHaveLength(1);
+      expect(
+        calls.filter(
+          ([url]) =>
+            url.includes('/claim-proof') && url.includes('network_id=1')
+        )
+      ).toHaveLength(1);
+    });
+
+    it('L2-1 -> L2-2 of a THIRD-NETWORK-ORIGIN token (origin_network=3, recorded on L2-1): builds the proof from the RECORDING network (1), never from network 3 (audit finding P2 — Case C)', async () => {
+      // Case C from the design/audit's four-routing-cases table: a token
+      // whose origin is a THIRD network (3), distinct from both the
+      // recording network (1, where the bridging tx executed) and the
+      // destination (2). `getClaimInputs` has no `origin_network` parameter
+      // at all (it was removed — comment 3847422009), so there is nothing
+      // in this call for a reintroduced origin-keyed shortcut to read except
+      // by routing through a hypothetical `clientFor(3)`. Network 3 is
+      // CONFIGURED (so `clientFor(3)` would successfully resolve a client,
+      // not throw "no client configured") but deliberately left UNROUTED —
+      // same technique as the case-D test above — so any request that ever
+      // targets it fails immediately with "no rule matched" rather than
+      // masking the regression behind a differently-worded config error.
+      installRouter([
+        rule(
+          BASE_1,
+          ['/l1-info-tree-index', 'network_id=1', 'deposit_count=7'],
+          200,
+          '10'
+        ),
+        rule(
+          BASE_2,
+          ['/injected-l1-info-leaf', 'network_id=2', 'leaf_index=10'],
+          200,
+          injectedLeafBody(12)
+        ),
+        rule(
+          BASE_1,
+          ['/claim-proof', 'network_id=1', 'leaf_index=12', 'deposit_count=7'],
+          200,
+          loadFixture('claim_proof_valid.json')
+        ),
+      ]);
+
+      const aggregator = new AggkitBridgeAggregator({
+        // retries: 0 — see the case-D test above: a routing regression must
+        // surface immediately as "no rule matched", not a 5s vitest timeout.
+        networks: { 1: BASE_1, 2: BASE_2, 3: BASE_3 },
+        retries: 0,
+      });
+
+      const result = await aggregator.getClaimInputs({
+        recordingNetworkId: 1,
+        destinationNetworkId: 2,
+        depositCount: 7,
+      });
+      expect(result.claimable).toBe(true);
+      if (!result.claimable) {
+        throw new Error(
+          `expected claimable: true, got ${result.reason}: ${result.detail}`
+        );
+      }
+
+      expect(result.sourceL1InfoTreeIndex).toBe(10);
+      expect(result.leafIndex).toBe(12);
+
+      const calls = (global.fetch as Mock).mock.calls as [string][];
+      // Neither tree-relative endpoint may ever be asked about network 3
+      // (the notional origin) or network 0.
+      const wrongNetworkTreeCalls = calls.filter(
+        ([url]) =>
+          (url.includes('network_id=3') || url.includes('network_id=0')) &&
+          (url.includes('/l1-info-tree-index') || url.includes('/claim-proof'))
+      );
+      expect(wrongNetworkTreeCalls).toHaveLength(0);
+      // No request of any kind was sent to network 3's instance.
+      expect(calls.some(([url]) => url.startsWith(BASE_3))).toBe(false);
       // Both tree-relative endpoints used the SAME recording network.
       expect(
         calls.filter(
