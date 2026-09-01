@@ -732,9 +732,13 @@ export class AggkitBridgeAggregator {
    * `{ claimable: false, reason, detail }` for a valid request whose deposit
    * simply is not claimable yet (source not settled to the L1 info tree, or
    * the destination has not injected the GER). It throws only for genuine
-   * failures — `AggkitApiError` for a real non-2xx/transport failure, a plain
-   * `Error` for a backend-contract violation or a configuration problem
-   * (comments 3847523270 / 3847600104).
+   * failures — `AggkitApiError` for a real non-2xx response, a plain `Error`
+   * for a backend-contract violation or a configuration problem, OR a plain
+   * `Error` (with `.cause` set to the underlying network error) for a
+   * transport failure after retries are exhausted — a transport failure does
+   * NOT produce `AggkitApiError` (`httpRaw.ts`'s `fetchRawText` throws before
+   * any response ever reaches the code that constructs one; see audit
+   * finding C4) (comments 3847523270 / 3847600104).
    *
    * `reason` is an OPEN union (`AggkitNotReadyReason`): branch with a
    * `default` that keeps polling, never with an exhaustive `assertNever`.

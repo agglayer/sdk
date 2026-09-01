@@ -255,8 +255,13 @@ export interface AggkitClaimInputsParams {
    * `AggkitTransaction.sourceNetwork`. Raw from aggkit it is the `network_id`
    * the `/bridges` call that produced the row was made with.
    *
-   * Keys ALL THREE of: which aggkit instance answers, `/l1-info-tree-index`'s
-   * `network_id`, and `/claim-proof`'s `network_id`.
+   * Keys `/l1-info-tree-index`'s `network_id` and `/claim-proof`'s
+   * `network_id` unconditionally. Also keys which aggkit instance answers,
+   * EXCEPT when `recordingNetworkId === 0` (L1 has no dedicated instance):
+   * there the destination L2's instance is used instead (it is the one that
+   * must also answer the injected-GER probe), via
+   * `clientForRecordingNetwork` — falling back to any configured instance if
+   * the destination itself isn't configured.
    */
   recordingNetworkId: number;
   /**
@@ -304,9 +309,14 @@ export interface AggkitClaimInputsNotReady {
   /** Human-readable detail (aggkit's own message where there is one). Log/display only. */
   detail: string;
   /**
-   * Present only when the source index had already been resolved before the
-   * blocking step — i.e. for `DESTINATION_GER_NOT_INJECTED`. Diagnostics only;
-   * this is the index the destination has not injected up to yet.
+   * Present whenever the source index was resolved before the blocking
+   * step — i.e. for every not-ready reason that can only be reached AFTER
+   * the source `/l1-info-tree-index` probe already succeeded:
+   * `DESTINATION_GER_NOT_INJECTED`, `L1_INFO_LEAF_NOT_INDEXED`,
+   * `SYNCER_INCONSISTENT` (from the destination-side probe or from
+   * `/claim-proof`), and `CLAIM_PROOF_NOT_AVAILABLE`. Absent for
+   * `SOURCE_NOT_ON_L1_INFO_TREE`, which blocks before the source index is
+   * known. Diagnostics only.
    */
   sourceL1InfoTreeIndex?: number;
 }

@@ -48,17 +48,25 @@
  * `getClaimInputs` returns `{ claimable: false, reason, detail }` for a valid
  * request whose deposit simply has not settled yet -- it never throws for
  * that condition. It throws only for genuine failures: `AggkitApiError` for
- * a real non-2xx/transport response, or a plain `Error` for a
- * backend-contract violation or a configuration problem. There is no thrown
- * not-ready state anywhere on this path.
+ * a real non-2xx response, a plain `Error` for a backend-contract violation
+ * or a configuration problem, or a plain `Error` (its `.cause` carries the
+ * original network error) for a transport failure after retries are
+ * exhausted -- a transport failure does NOT produce `AggkitApiError`;
+ * that class is only ever constructed from an actual HTTP response. There is
+ * no thrown not-ready state anywhere on this path.
  *
  * `reason` (`AggkitNotReadyReason`) is an OPEN string-literal union that WILL
- * gain members as aggkit's error taxonomy evolves. Always branch with a
- * `default` / `else` that treats an unrecognised reason as "not ready yet,
- * keep polling" -- never write an exhaustive `switch` with an `assertNever`
- * default, or a future non-breaking SDK minor becomes a breaking change for
- * you. `detail` is a human-readable string for logging/display only; never
- * branch on its text.
+ * gain members as aggkit's error taxonomy evolves. It currently has five
+ * members: `SOURCE_NOT_ON_L1_INFO_TREE`, `DESTINATION_GER_NOT_INJECTED`,
+ * `SYNCER_INCONSISTENT` (a transient reorg-resolution wait, reachable from
+ * all three claim-path endpoints -- `/l1-info-tree-index`,
+ * `/injected-l1-info-leaf`, and `/claim-proof`), `L1_INFO_LEAF_NOT_INDEXED`,
+ * and `CLAIM_PROOF_NOT_AVAILABLE`. Always branch with a `default` / `else`
+ * that treats an unrecognised reason as "not ready yet, keep polling" --
+ * never write an exhaustive `switch` with an `assertNever` default, or a
+ * future non-breaking SDK minor becomes a breaking change for you. `detail`
+ * is a human-readable string for logging/display only; never branch on its
+ * text.
  *
  * The lower-level client probes (`AggkitBridgeClient.getL1InfoTreeIndex`,
  * `getInjectedL1InfoLeaf`, `getClaimProof`) return the same-shaped

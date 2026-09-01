@@ -1,11 +1,20 @@
 /**
  * aggkit API Error
  *
- * Thrown by `AggkitBridgeClient` for every non-2xx HTTP response and for
- * network/transport failures after retries are exhausted. Distinct from the
- * core `ApiError` (`../core/utils/apiError.ts`) — aggkit's error bodies are a
- * uniform bare `{"error": "<message>"}` shape (no `code`/`name`/`details`),
- * so this class carries `httpStatus` + `endpoint` + the raw `body` instead.
+ * Thrown by `AggkitBridgeClient` for every non-2xx HTTP response it actually
+ * receives. Distinct from the core `ApiError` (`../core/utils/apiError.ts`) —
+ * aggkit's error bodies are a uniform bare `{"error": "<message>"}` shape (no
+ * `code`/`name`/`details`), so this class carries `httpStatus` + `endpoint` +
+ * the raw `body` instead.
+ *
+ * NOT thrown for a network/transport failure after retries are exhausted
+ * (audit finding C4): `httpRaw.ts`'s `fetchRawText` throws a plain `Error`
+ * (`{ cause: lastError }`) in that case, before any HTTP response ever
+ * reaches the code that would construct an `AggkitApiError` — there is no
+ * status code or body to carry. A caller distinguishing "aggkit answered
+ * badly" (`AggkitApiError`) from "the request never got a response"
+ * (plain `Error`, inspect `.cause`) should branch on `instanceof
+ * AggkitApiError` accordingly.
  *
  * Never used for "the request succeeded, the deposit is simply not claimable
  * yet" — that is modelled as data (`AggkitProbeResult` /

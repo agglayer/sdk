@@ -338,16 +338,24 @@ if (!result.claimable) {
 ```
 
 `getClaimInputs` throws **only** for genuine failures — `AggkitApiError` for
-a real non-2xx/transport response, or a plain `Error` for a backend-contract
-violation or a configuration problem. It never throws to signal "not ready
-yet"; not yet claimable is data, not an error, and is always returned as the
-`{ claimable: false, reason, detail }` branch above — there is no thrown
-not-ready state anywhere on this path.
+a real non-2xx response, a plain `Error` for a backend-contract violation or
+a configuration problem, or a plain `Error` (its `.cause` carries the
+original network error) for a transport failure after retries are
+exhausted. A transport failure does **not** produce `AggkitApiError` — that
+class is only ever constructed from an actual HTTP response, and a transport
+failure never gets one; a caller branching on `instanceof AggkitApiError`
+should treat the plain-`Error`/`.cause` case as a distinct outcome. It never
+throws to signal "not ready yet"; not yet claimable is data, not an error,
+and is always returned as the `{ claimable: false, reason, detail }` branch
+above — there is no thrown not-ready state anywhere on this path.
 
-**Routing.** `recordingNetworkId` is REQUIRED and keys every tree-relative
-lookup `getClaimInputs` makes (which aggkit instance answers, and the
-`network_id` sent to both the L1-info-tree-index probe and the claim-proof
-call). It is **not** the asset's `origin_network` — the two diverge for
+**Routing.** `recordingNetworkId` is REQUIRED and keys the `network_id` sent
+to both the L1-info-tree-index probe and the claim-proof call. It also keys
+which aggkit instance answers **except** when `recordingNetworkId === 0`
+(L1 has no dedicated instance): there, the destination L2's instance is used
+instead, since it is the one that must also answer the injected-GER probe
+(falling back to any configured instance if the destination itself isn't
+configured). It is **not** the asset's `origin_network` — the two diverge for
 native-gas-token withdrawals and for transfers of a token whose origin
 differs from the network the transfer executed on. Passing `origin_network`
 in those cases silently builds a well-formed proof for a different,
@@ -363,9 +371,16 @@ not-ready state these endpoints report. On the supported floor, the client
 absorbs aggkit's not-ready wire shapes across `/l1-info-tree-index`,
 `/injected-l1-info-leaf`, and `/claim-proof` into the same stable
 `AggkitNotReadyReason` values — a 404 with a fixed not-ready prose, or a 503
-while a syncer resolves a reorg (`SYNCER_INCONSISTENT`) — while any 500 on
+while a syncer resolves a reorg (`SYNCER_INCONSISTENT` — reachable from ALL
+THREE of those endpoints, not just `/l1-info-tree-index`) — while any 500 on
 any of the three is unconditionally a genuine fault and throws
-`AggkitApiError`.
+`AggkitApiError`. `AggkitNotReadyReason` currently has five members:
+`SOURCE_NOT_ON_L1_INFO_TREE` and `DESTINATION_GER_NOT_INJECTED` (shown in the
+switch above), plus `SYNCER_INCONSISTENT`, `L1_INFO_LEAF_NOT_INDEXED` (the
+destination's GER _is_ already injected; a different syncer is merely a few
+blocks behind indexing that leaf), and `CLAIM_PROOF_NOT_AVAILABLE` (the
+`/claim-proof` call itself is waiting on one of several syncers). The union
+is open — see the `default` branch above.
 
 ## ⚙️ Configuration
 
@@ -739,6 +754,72 @@ try {
   }
 }
 ```
+
+## ⚠️ Breaking Changes
+
+### `ChainRegistry.getChainByNetworkId()` registration precedence (base branch, commit `b9a990c`)
+
+**Not introduced by this PR** — this shipped on the base branch
+(`origin/feat/aggkit-bridge-client`), independent of anything in this fix
+branch. Recorded here because its blast radius crosses module boundaries and
+was otherwise undocumented (reviewer comment 3862898221).
+
+`ChainRegistry.getChainByNetworkId()` now resolves networkId collisions with
+consumer precedence in every case, not just when the consumer picks a
+brand-new chainId. Previously, `defaultChainIds` was frozen at construction
+and never cleared, so a consumer re-registering one of the SDK's own
+built-in default chainIds (e.g. the real Sepolia chainId, `11155111`) stayed
+flagged as a default alongside the SDK's pre-seeded entry for that same
+networkId, and `getChainByNetworkId()` fell back to whichever of the two was
+registered first — in practice, always the SDK's own default (e.g. Ethereum
+mainnet at networkId 0), never the consumer's override. `registerChain()`
+now deletes a chainId from `defaultChainIds` on every call, so any
+re-registration — whether it introduces a brand-new chainId or reuses one of
+the SDK's own defaults — immediately graduates that chainId to
+consumer-registered status and wins the collision, independent of
+registration order.
+
+Consumers who register a chain at a networkId already used by an SDK
+default, using the SDK's own default chainId for that chain, will now see
+`getChainByNetworkId()` (and everything downstream of it) resolve to their
+registration instead of the SDK default; this is the intended fix, but is a
+behavior change for anyone who was relying on (or unaware of) the previous
+frozen-defaults fallback. **The blast radius is not limited to aggkit**: it
+includes the existing NATIVE path via `BridgeUtil.fromNetworkId`
+(`src/native/bridge/bridge.ts:280`, `:307`, `:330`), which resolves chain
+configuration for native bridge operations, in addition to
+`AggkitBridgeAggregator.getTokenMetadata` (`src/aggkit/aggregator.ts`). Any
+consumer relying on the old first-registered/frozen-defaults fallback for a
+re-registered default chainId will see different resolution results after
+this change.
+
+### `AggkitBridgeAggregator.getClaimInputs` (this PR)
+
+Two related breaking changes to this method:
+
+1. **`originNetworkId` removed, `recordingNetworkId` now required.** The
+   parameter was routing claim-proof lookups by the asset's `origin_network`,
+   which silently builds a well-formed proof against the wrong network's
+   exit tree for native-gas-token withdrawals and for cross-network
+   transfers of a token whose origin differs from the network the transfer
+   executed on (comment 3847422009). `originNetworkId` is declared as
+   `never` rather than deprecated, so a stale call site is a compile error;
+   a JS caller that still passes it gets a thrown migration `Error` at
+   runtime. Replace `originNetworkId` with `recordingNetworkId` —
+   `AggkitTransaction.sourceNetwork` from `getActivity`/`getReadyToClaimCount`
+   rows — never the asset's `origin_network`.
+2. **"Not yet claimable" changed from a thrown, fabricated `AggkitApiError`
+   to a returned result union.** Previously a not-ready source or
+   destination state was reported as a thrown `AggkitApiError` with an
+   `httpStatus` that did not correspond to any real aggkit response
+   (comments 3847523270 / 3847600104). `getClaimInputs` now returns
+   `AggkitClaimInputsResult = AggkitClaimInputsReady | AggkitClaimInputsNotReady`
+   (discriminated on `claimable`) — a not-ready deposit is
+   `{ claimable: false, reason, detail }`, not a `catch` branch. Callers that
+   wrapped `getClaimInputs` in a `try`/`catch` to detect "not ready yet" must
+   switch to checking `result.claimable` instead; genuine failures (a real
+   non-2xx response, a transport failure, or a config/contract violation)
+   still throw.
 
 ## 📈 Roadmap & Future Development
 
