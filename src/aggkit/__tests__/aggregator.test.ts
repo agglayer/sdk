@@ -1450,7 +1450,7 @@ describe('AggkitBridgeAggregator', () => {
           BASE_1,
           ['/l1-info-tree-index', 'network_id=1', 'deposit_count=0'],
           500,
-          loadFixture('l1_info_tree_index_network1_error.json')
+          loadFixture('l1_info_tree_index_notfound_error.json')
         ),
       ]);
 
@@ -1467,7 +1467,9 @@ describe('AggkitBridgeAggregator', () => {
       expect(result).toEqual({
         claimable: false,
         reason: 'SOURCE_NOT_ON_L1_INFO_TREE',
-        detail: expect.stringContaining('not found'),
+        detail: expect.stringContaining(
+          'not been included on the L1 Info Tree'
+        ),
       });
       // No `/claim-proof` request is made once the source is known not-ready.
       const calls = (global.fetch as Mock).mock.calls as [string][];
@@ -1483,6 +1485,86 @@ describe('AggkitBridgeAggregator', () => {
             url.includes('network_id=1')
         )
       ).toHaveLength(1);
+    });
+
+    it('L2 -> L1: rc6 wire shape — a 404 with the fixed "is not available yet, retry later" prefix ALSO returns { claimable: false, reason: \'SOURCE_NOT_ON_L1_INFO_TREE\' } (aggkit #1794 / v0.11.0-rc6, comment 3862896539)', async () => {
+      installRouter([
+        rule(
+          BASE_1,
+          ['/l1-info-tree-index', 'network_id=1', 'deposit_count=0'],
+          404,
+          loadFixture('l1_info_tree_index_rc6_not_available_404.json')
+        ),
+      ]);
+
+      const aggregator = new AggkitBridgeAggregator({
+        networks: { 1: BASE_1 },
+      });
+
+      const result = await aggregator.getClaimInputs({
+        recordingNetworkId: 1,
+        destinationNetworkId: 0,
+        depositCount: 0,
+      });
+
+      expect(result).toEqual({
+        claimable: false,
+        reason: 'SOURCE_NOT_ON_L1_INFO_TREE',
+        detail: expect.stringContaining('is not available yet, retry later'),
+      });
+    });
+
+    it("L2 -> L1: the aggkit-proxy's OWN routing-failure 404 on /l1-info-tree-index throws — NEVER silently classifies as not-ready — even though 404 is now a recognised not-ready carrier for this endpoint (the proxy-prose trap, comment 3862896539)", async () => {
+      installRouter([
+        rule(
+          BASE_1,
+          ['/l1-info-tree-index', 'network_id=1', 'deposit_count=0'],
+          404,
+          loadFixture('error_404_unknown_network.json')
+        ),
+      ]);
+
+      const aggregator = new AggkitBridgeAggregator({
+        networks: { 1: BASE_1 },
+      });
+
+      await expect(
+        aggregator.getClaimInputs({
+          recordingNetworkId: 1,
+          destinationNetworkId: 0,
+          depositCount: 0,
+        })
+      ).rejects.toMatchObject({
+        httpStatus: 404,
+        message: expect.stringContaining('bridge service url not found'),
+      });
+    });
+
+    it("L2 -> L1: rc6 syncer-inconsistent 503 (a syncer is halted resolving a reorg) returns { claimable: false, reason: 'SYNCER_INCONSISTENT' } — NOT a throw — rather than flooding failedNetworks for every in-flight deposit during an ordinary reorg (v0.11.0-rc6, comment 3862896539)", async () => {
+      installRouter([
+        rule(
+          BASE_1,
+          ['/l1-info-tree-index', 'network_id=1', 'deposit_count=0'],
+          503,
+          loadFixture('l1_info_tree_index_rc6_syncer_inconsistent_503.json')
+        ),
+      ]);
+
+      const aggregator = new AggkitBridgeAggregator({
+        networks: { 1: BASE_1 },
+      });
+
+      const result = await aggregator.getClaimInputs({
+        recordingNetworkId: 1,
+        destinationNetworkId: 0,
+        depositCount: 0,
+      });
+
+      expect(result).toEqual({
+        claimable: false,
+        reason: 'SYNCER_INCONSISTENT',
+        detail: expect.stringContaining('a syncer is temporarily inconsistent'),
+      });
     });
 
     it('L2 -> L1 (destination 0) skips Tier-2b entirely: no /injected-l1-info-leaf request is made', async () => {

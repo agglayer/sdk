@@ -132,7 +132,9 @@ export interface AggkitClaimProof {
  * ## OPEN UNION — forward-compatibility contract
  *
  * This union is EXTENSIBLE BY DESIGN and WILL gain members as aggkit's error
- * taxonomy evolves (aggkit v0.11.0-rc6 reworks the status codes). Consumers
+ * taxonomy evolves (aggkit v0.11.0-rc6 reworked this endpoint's status codes
+ * — see `SYNCER_INCONSISTENT` below and `client.ts`'s
+ * `L1_INFO_TREE_INDEX_NOT_READY_PATTERNS`). Consumers
  * MUST branch with a `default` / `else` fallback that treats an unrecognised
  * reason as "not ready yet, keep polling", and MUST NOT write an exhaustive
  * `switch` with an `assertNever` default — that would turn a non-breaking SDK
@@ -151,7 +153,28 @@ export type AggkitNotReadyReason =
    * global exit root at or after the deposit's own L1-info-tree index. The
    * source side IS done; the destination side is not. Retry.
    */
-  | 'DESTINATION_GER_NOT_INJECTED';
+  | 'DESTINATION_GER_NOT_INJECTED'
+  /**
+   * `/l1-info-tree-index` (aggkit v0.11.0-rc6+ only — see `client.ts`'s
+   * `L1_INFO_TREE_INDEX_SYNCER_INCONSISTENT_PATTERN`): the syncer serving
+   * this network answered 503 because it is halted resolving a chain reorg
+   * (`aggkitsync.ErrInconsistentState`, `sync/evmdriver.go:18`; mapped to 503
+   * by `httpStatusForSyncerError`, `bridgeservice/bridge.go:1774-1786`).
+   *
+   * DECISION (S7, comment 3862896539): modelled as not-ready rather than as
+   * a genuine `AggkitApiError` throw, even though the condition is
+   * syncer-wide rather than specific to this one deposit. Justification:
+   * aggkit's own OpenAPI contract for this endpoint documents 503 with the
+   * same "retry later" framing as its 404
+   * (`@Failure 503 ... "a syncer is resolving a reorg, retry later"`,
+   * `bridge.go:786`) — it is a transient, self-resolving condition (a reorg
+   * settles in seconds to minutes), not evidence of a bug. Throwing here
+   * would flood `failedNetworks` for every in-flight deposit on that network
+   * for the duration of any ordinary reorg, which is a worse consumer
+   * experience than a `default`-branch "not ready yet" while it clears.
+   * Retry.
+   */
+  | 'SYNCER_INCONSISTENT';
 
 /**
  * Result of a claim-path aggkit probe: either the value, or a machine-readable

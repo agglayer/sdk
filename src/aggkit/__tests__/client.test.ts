@@ -328,18 +328,79 @@ describe('AggkitBridgeClient', () => {
       }
     });
 
-    it('returns the not-ready union for the "not found" 500 variant (l1_info_tree_index_network1_error.json)', async () => {
+    it('throws AggkitApiError — does NOT return the not-ready union — for a bare "not found" 500 (l1_info_tree_index_network1_error.json): the old loose pattern list treated this as not-ready, but a bare "not found" is a trap (comment 3862896539) — it is aggkit\'s wrapped `db.ErrNotFound`, indistinguishable in prose from a genuine unrelated failure', async () => {
       mockFetchOnce(loadFixture('l1_info_tree_index_network1_error.json'), 500);
+
+      await expect(
+        client.getL1InfoTreeIndex({ networkId: 1, depositCount: 0 })
+      ).rejects.toMatchObject({
+        httpStatus: 500,
+        endpoint: '/l1-info-tree-index',
+        message: expect.stringContaining('not found'),
+      });
+    });
+
+    it('returns { ready: false, reason: \'SOURCE_NOT_ON_L1_INFO_TREE\' } for the rc6 wire shape: a 404 with the fixed "is not available yet, retry later" prefix (l1_info_tree_index_rc6_not_available_404.json, aggkit #1794 / v0.11.0-rc6, comment 3862896539)', async () => {
+      mockFetchOnce(
+        loadFixture('l1_info_tree_index_rc6_not_available_404.json'),
+        404
+      );
 
       const result = await client.getL1InfoTreeIndex({
         networkId: 1,
-        depositCount: 0,
+        depositCount: 50,
       });
 
-      expect(result.ready).toBe(false);
-      if (!result.ready) {
-        expect(result.reason).toBe('SOURCE_NOT_ON_L1_INFO_TREE');
-      }
+      expect(result).toEqual({
+        ready: false,
+        reason: 'SOURCE_NOT_ON_L1_INFO_TREE',
+        detail: expect.stringContaining('is not available yet, retry later'),
+      });
+    });
+
+    it('throws AggkitApiError — does NOT return the not-ready union — for the aggkit-proxy\'s OWN routing-failure 404 arriving on THIS endpoint (error_404_unknown_network.json): the proxy sits in front of every route, so its "bridge service url not found for network" prose must never be misclassified as not-ready, even now that 404 is a recognised not-ready carrier (comment 3862896539)', async () => {
+      mockFetchOnce(loadFixture('error_404_unknown_network.json'), 404);
+
+      await expect(
+        client.getL1InfoTreeIndex({ networkId: 9, depositCount: 1 })
+      ).rejects.toMatchObject({
+        httpStatus: 404,
+        endpoint: '/l1-info-tree-index',
+        message: 'bridge service url not found for network: network 9',
+      });
+    });
+
+    it("returns { ready: false, reason: 'SYNCER_INCONSISTENT' } for the rc6 wire shape: a 503 while a syncer resolves a reorg (l1_info_tree_index_rc6_syncer_inconsistent_503.json, v0.11.0-rc6, comment 3862896539)", async () => {
+      mockFetchOnce(
+        loadFixture('l1_info_tree_index_rc6_syncer_inconsistent_503.json'),
+        503
+      );
+
+      const result = await client.getL1InfoTreeIndex({
+        networkId: 1,
+        depositCount: 50,
+      });
+
+      expect(result).toEqual({
+        ready: false,
+        reason: 'SYNCER_INCONSISTENT',
+        detail: expect.stringContaining('a syncer is temporarily inconsistent'),
+      });
+    });
+
+    it('throws AggkitApiError for a 503 that does NOT match the syncer-inconsistent prefix (a genuine/unrelated 503, e.g. a different handler\'s "syncer is not available" or a proxy outage, stays an error)', async () => {
+      mockFetchOnce(
+        JSON.stringify({ error: 'L1 bridge syncer is not available' }),
+        503
+      );
+
+      await expect(
+        client.getL1InfoTreeIndex({ networkId: 1, depositCount: 50 })
+      ).rejects.toMatchObject({
+        httpStatus: 503,
+        endpoint: '/l1-info-tree-index',
+        message: 'L1 bridge syncer is not available',
+      });
     });
 
     it('throws AggkitApiError for a 500 whose body does NOT match the not-ready patterns (a genuine server error stays an error)', async () => {

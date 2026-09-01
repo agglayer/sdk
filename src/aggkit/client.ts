@@ -36,15 +36,90 @@ const MAX_PAGE_SIZE = 200;
 const MAX_NETWORK_IDS = 5;
 
 /**
- * Substrings of the aggkit `/l1-info-tree-index` 500 error message that mean
- * "not claimable yet" rather than a genuine failure:
- * - "this bridge has not been included on the L1 Info Tree yet"
- * - "not found" (L2-origin deposits, pre-settlement)
+ * `/l1-info-tree-index` not-ready detection (comment 3862896539).
+ *
+ * aggkit's wire format for this endpoint changed mid-rc-series:
+ *
+ * - **rc4/rc5** (verified: `v0.11.0-rc4`/`v0.11.0-rc5`,
+ *   `bridgeservice/bridge.go:783-840` — identical on both tags): every
+ *   failure, not-ready included, is reported as **500** with body
+ *   `"failed to get l1 info tree index for network id %d and deposit count
+ *   %d, error: %s"`, `%s` being the raw underlying error — either
+ *   `ErrNotOnL1Info`'s `"this bridge has not been included on the L1 Info
+ *   Tree yet"` (`bridge.go:87`), or, for some pre-settlement L2-origin
+ *   deposits, a bare `"not found"` (`db.ErrNotFound`, `db/sqlite.go:17`).
+ * - **rc6+** (verified: `v0.11.0-rc6`, aggkit #1794 — `httpStatusForSyncerError`,
+ *   `bridge.go:1764-1786`, wired in via `respondSyncerError`,
+ *   `bridge.go:1789-1811`, called from `L1InfoTreeIndexForBridgeHandler`,
+ *   `bridge.go:825-838`): not-yet-indexed errors (`db.ErrNotFound`,
+ *   `l1infotreesync.ErrNotFound`, `ErrNotOnL1Info`, ...) now report **404**
+ *   with the FIXED body prefix `"l1 info tree index for network id %d and
+ *   deposit count %d is not available yet, retry later: %s"`
+ *   (`bridge.go:834`) — present on every not-ready 404 regardless of which
+ *   underlying not-found error triggered it, and genuine faults stay 500
+ *   with the SAME body format as rc4/rc5 above (`bridge.go:836-837`, byte-
+ *   for-byte unchanged).
+ *
+ * So both statuses must be inspected (404 rc6, 500 rc4/rc5-and-genuine-rc6),
+ * and only these two EXACT phrasings are matched — never a bare "not found"
+ * (comment 3862896539's trap: "not found" is one of the most common
+ * substrings in error prose anywhere in aggkit's stack — it interpolates raw
+ * error chains into its 500 bodies, e.g. "LER not found for verified
+ * batch...", and aggkit-proxy's OWN routing-failure body is literally
+ * "bridge service url not found for network..." — see
+ * `AGGKIT_PROXY_ROUTING_FAILURE_PATTERN` below). A bare match risks silently
+ * swallowing a genuine failure as "not ready", stranding a row at BRIDGED
+ * forever with no `failedNetworks` entry and no visible error.
+ *
+ * DELETION CONDITION for the rc4/rc5 500-pattern-matching branch: once the
+ * SDK's supported aggkit floor is >= v0.11.0-rc6 (i.e. rc4/rc5 are no longer
+ * a deployable target), the 500 body can no longer carry a not-ready
+ * classification (rc6+ 500 is unconditionally a genuine fault) — the 500
+ * check in `getL1InfoTreeIndex` becomes dead and can be deleted, along with
+ * the "not been included on the L1 Info Tree" pattern if no other 500 source
+ * needs it.
  */
 const L1_INFO_TREE_INDEX_NOT_READY_PATTERNS = [
-  'not been included',
-  'not found',
+  // rc4/rc5 (500) and rc6+ (404, via ErrNotOnL1Info) — bridge.go:87.
+  'not been included on the l1 info tree',
+  // rc6+ only (404) — the FIXED prefix respondSyncerError's notFoundMsg uses
+  // for EVERY not-indexed-yet cause, bridge.go:834.
+  'is not available yet, retry later',
 ];
+
+/**
+ * aggkit-proxy's OWN routing-failure body — `ErrURLNotFound`,
+ * `bridgeservicefinder/interfaces.go:35`,
+ * `errors.New("bridge service url not found for network")`. The proxy sits
+ * in front of every bridge-service route, `/l1-info-tree-index` included, so
+ * its 404 can arrive here too. MUST be excluded even though it never matches
+ * `L1_INFO_TREE_INDEX_NOT_READY_PATTERNS` today — defense in depth per
+ * comment 3862896539's explicit ask, and because it collides with the same
+ * hazard the sibling `INJECTED_L1_INFO_LEAF_NOT_READY_PATTERNS` comment
+ * below already warns about for a different endpoint. A genuine routing
+ * failure must never be misclassified as "not ready" — that strands the row
+ * forever with no `failedNetworks` entry.
+ */
+const AGGKIT_PROXY_ROUTING_FAILURE_PATTERN =
+  'bridge service url not found for network';
+
+/**
+ * `/l1-info-tree-index` 503 (rc6+ only — verified `v0.11.0-rc6`): the FIXED
+ * body `respondSyncerError` writes when `httpStatusForSyncerError` maps the
+ * underlying error to `aggkitsync.ErrInconsistentState`
+ * (`sync/evmdriver.go:18`, `"state is inconsistent, try again later once the
+ * state is consolidated"`) — `errSyncerInconsistent`, `bridge.go:80`:
+ * `"a syncer is temporarily inconsistent (reorg being resolved), retry
+ * later: %s"`, written at `bridge.go:1803`. Confirmed this is the ONLY 503
+ * source inside `L1InfoTreeIndexForBridgeHandler` (`bridge.go:783-840`) —
+ * no other branch in that handler sets `StatusServiceUnavailable` — so this
+ * fixed prefix reliably discriminates it from an unrelated 503 (e.g. a
+ * different handler's "syncer is not available" misconfiguration, or a
+ * proxy-level outage). See the 503 DECISION note on `SYNCER_INCONSISTENT` in
+ * `types.ts`.
+ */
+const L1_INFO_TREE_INDEX_SYNCER_INCONSISTENT_PATTERN =
+  'a syncer is temporarily inconsistent';
 
 /**
  * Substrings of the `/injected-l1-info-leaf` 404 body that mean "destination GER
@@ -155,13 +230,20 @@ export class AggkitBridgeClient {
    * the leaf at `depositCount` — never the asset's `origin_network`
    * (comment 3847422009).
    *
-   * Answers `{ ready: false, reason: 'SOURCE_NOT_ON_L1_INFO_TREE', detail }`
-   * when aggkit reports the deposit is not yet included on the L1 info tree
-   * (its documented 500 branches — see
-   * `L1_INFO_TREE_INDEX_NOT_READY_PATTERNS`). That is DATA, not an error: the
-   * request succeeded and the answer is "not yet" (comment 3847523270). Any
-   * genuine failure — a non-numeric 2xx body, an unmatched 500, any other
-   * status — still throws `AggkitApiError` (comment 3847600104).
+   * Answers `{ ready: false, reason, detail }` rather than throwing for three
+   * documented "the request succeeded, the deposit just isn't ready" shapes
+   * — DATA, not an error (comment 3847523270):
+   * - `'SOURCE_NOT_ON_L1_INFO_TREE'` — not yet included on the L1 info tree.
+   *   Carried as a 500 on aggkit rc4/rc5, or a 404 on rc6+ (aggkit #1794
+   *   remapped this endpoint's statuses — comment 3862896539). See
+   *   `L1_INFO_TREE_INDEX_NOT_READY_PATTERNS`.
+   * - `'SYNCER_INCONSISTENT'` — rc6+ only: the syncer is halted resolving a
+   *   reorg (503). See `L1_INFO_TREE_INDEX_SYNCER_INCONSISTENT_PATTERN` and
+   *   the DECISION note on this reason in `types.ts`.
+   *
+   * Any genuine failure — a non-numeric 2xx body, an unmatched 404/500/503,
+   * the aggkit-proxy's own routing-failure prose, or any other status — still
+   * throws `AggkitApiError` (comment 3847600104).
    */
   async getL1InfoTreeIndex(params: {
     networkId: 0 | number;
@@ -190,29 +272,40 @@ export class AggkitBridgeClient {
       return { ready: true, value };
     }
 
-    if (status === 500) {
-      const message = this.parseErrorMessage(text);
-      const lowerMessage = message.toLowerCase();
-      const notReady = L1_INFO_TREE_INDEX_NOT_READY_PATTERNS.some((pattern) =>
-        lowerMessage.includes(pattern)
-      );
-      if (notReady) {
+    const message = this.parseErrorMessage(text);
+    const lowerMessage = message.toLowerCase();
+    const isProxyRoutingFailure = lowerMessage.includes(
+      AGGKIT_PROXY_ROUTING_FAILURE_PATTERN
+    );
+
+    if (!isProxyRoutingFailure) {
+      if (
+        (status === 404 || status === 500) &&
+        L1_INFO_TREE_INDEX_NOT_READY_PATTERNS.some((pattern) =>
+          lowerMessage.includes(pattern)
+        )
+      ) {
         return {
           ready: false,
           reason: 'SOURCE_NOT_ON_L1_INFO_TREE',
           detail: message,
         };
       }
-      throw new AggkitApiError({
-        message,
-        httpStatus: status,
-        endpoint: '/l1-info-tree-index',
-        body: text,
-      });
+
+      if (
+        status === 503 &&
+        lowerMessage.includes(L1_INFO_TREE_INDEX_SYNCER_INCONSISTENT_PATTERN)
+      ) {
+        return {
+          ready: false,
+          reason: 'SYNCER_INCONSISTENT',
+          detail: message,
+        };
+      }
     }
 
     throw new AggkitApiError({
-      message: this.parseErrorMessage(text),
+      message,
       httpStatus: status,
       endpoint: '/l1-info-tree-index',
       body: text,
