@@ -6,9 +6,11 @@
  * 2-L2 (L2-1/L2-2) devnet — an integration script, NOT a fixture-driven unit
  * test. Exercises: per-network sync-status across {0,1,2}, a real
  * address's multi-network activity fan-out (via the aggregator), a
- * known-ground-truth CLAIMED check, an L2->L2 row's derived status, the
- * destination-injected `getClaimInputs` roundtrip for both an L2->L2 and an
- * L2->L1 deposit, token-mappings, and (optionally) the proxy-502
+ * known-ground-truth CLAIMED check, an L2->L2 row's derived status, a LIVE
+ * native-gas-token bridge proving the not-ready union (no throw) and
+ * recording-network routing (comments 3847422009 / 3847523270 / 3847600104),
+ * the destination-injected `getClaimInputs` roundtrip for both a sampled
+ * L2->L2 and L2->L1 deposit, token-mappings, and (optionally) the proxy-502
  * partial-failure path.
  *
  * Run:
@@ -39,11 +41,41 @@
  *                             NOTE: this default is ENCLAVE-SPECIFIC. Bridge
  *                             history does not survive `kurtosis enclave rm`,
  *                             so against any recreated enclave this address
- *                             has no activity and sections 3/5/6/7 fail for
+ *                             has no activity and sections 3/5/7/8 fail for
  *                             want of data rather than for a real defect.
  *                             Always pass FROM_ADDRESS explicitly when running
  *                             against an enclave you did not originally
  *                             generate traffic on.
+ *   L1_RPC_URL                optional, no default (ENCLAVE-SPECIFIC, ports
+ *                             are ephemeral). The L1 chain's JSON-RPC
+ *                             endpoint — NOT the aggkit REST API. When set
+ *                             (together with BRIDGE_RPC_URL), section 6 sends
+ *                             REAL bridgeAsset transactions (via viem) to
+ *                             prove the not-ready union and recording-network
+ *                             routing live, instead of only sampling
+ *                             already-settled history. Re-resolve with
+ *                             `kurtosis port print cdk el-1-<el>-<cl> rpc`.
+ *                             SKIPPED (with an explicit message, not silently)
+ *                             when unset.
+ *   BRIDGE_RPC_URL             optional, no default (ENCLAVE-SPECIFIC). The
+ *                             chain JSON-RPC endpoint for `L2_NETWORK_IDS[0]`
+ *                             (the primary/recording L2). Re-resolve with
+ *                             `kurtosis port print cdk
+ *                             op-el-1-op-reth-op-node-<suffix> rpc`.
+ *   BRIDGE_ADDRESS             optional, default
+ *                             `0xC8cbEBf950B9Df44d987c8619f092beA980fF038` —
+ *                             the LxLy bridge contract's CREATE2 address under
+ *                             kurtosis-cdk's fixed deployment salt
+ *                             (`0x0...01`), which is the SAME address on L1
+ *                             and every L2 in this topology. Override if your
+ *                             deployment used a different salt.
+ *   BRIDGE_PRIVATE_KEY         optional, default kurtosis-cdk's well-known,
+ *                             PUBLIC devnet `l2_admin_private_key`
+ *                             (`DEFAULT_ACCOUNTS` in
+ *                             `kurtosis-cdk/src/package_io/input_parser.star`)
+ *                             — funded via genesis alloc on L1 and every L2 in
+ *                             this topology. Not a secret; never use for
+ *                             anything but a throwaway devnet.
  *   RUN_PARTIAL_FAILURE_TEST  optional, default "false". When "true", runs
  *                             the final section: stops `aggkit-002-bridge`
  *                             via `kurtosis service stop cdk
@@ -54,9 +86,18 @@
  */
 
 import { execSync } from 'node:child_process';
+import {
+  createPublicClient,
+  createWalletClient,
+  decodeEventLog,
+  http,
+  parseEther,
+} from 'viem';
+import { privateKeyToAccount } from 'viem/accounts';
 import { AggkitBridgeClient } from '../src/aggkit/client';
 import { AggkitBridgeAggregator } from '../src/aggkit/aggregator';
 import type { AggkitClaimInputsResult } from '../src/aggkit/types';
+import { bridgeAbi } from '../src/native/bridge/abi/bridge';
 
 const AGGKIT_URL = process.env['AGGKIT_URL'];
 if (!AGGKIT_URL) {
@@ -74,6 +115,13 @@ const L2_NETWORK_IDS = (process.env['L2_NETWORK_IDS'] ?? '1,2')
   .map((s) => Number(s.trim()));
 const FROM_ADDRESS =
   process.env['FROM_ADDRESS'] ?? '0x9BEE1d978DF451350fA93C69c4A1f6fFca12d107';
+const L1_RPC_URL = process.env['L1_RPC_URL'];
+const BRIDGE_RPC_URL = process.env['BRIDGE_RPC_URL'];
+const BRIDGE_ADDRESS = (process.env['BRIDGE_ADDRESS'] ??
+  '0xC8cbEBf950B9Df44d987c8619f092beA980fF038') as `0x${string}`;
+const BRIDGE_PRIVATE_KEY = (process.env['BRIDGE_PRIVATE_KEY'] ??
+  '0x12d7de8621a77640c9241b2595ba78ce443d05e94090365ab3bb5e19df82c625') as `0x${string}`;
+const NATIVE_TOKEN = '0x0000000000000000000000000000000000000000' as const;
 const RUN_PARTIAL_FAILURE_TEST =
   process.env['RUN_PARTIAL_FAILURE_TEST'] === 'true';
 
@@ -173,7 +221,7 @@ async function main(): Promise<void> {
     // The default FROM_ADDRESS is the EOA that sent one specific past round's
     // lifecycle deposits. Enclave state does NOT survive `kurtosis enclave rm`,
     // so on any freshly recreated enclave that address has zero traffic and
-    // sections 3/5/6/7 all fail for want of data — indistinguishable, from the
+    // sections 3/5/7/8 all fail for want of data — indistinguishable, from the
     // output alone, from a genuine SDK regression. Say so explicitly.
     console.log(
       `\n  !! No bridge activity found for fromAddress=${FROM_ADDRESS}.\n` +
@@ -296,14 +344,300 @@ async function main(): Promise<void> {
   }
 
   console.log(
-    `\n=== 6. getClaimInputs — L2->L2 deposit (destination-injected index) ===`
+    `\n=== 6. getClaimInputs — LIVE not-ready union + recording-network routing (comments 3847422009 / 3847523270 / 3847600104) ===`
+  );
+  // This section sends REAL bridgeAsset transactions against the live chain
+  // RPCs (via viem) -- NOT just the aggkit REST API the rest of this script
+  // talks to -- so it can prove two things fixture/history sampling cannot:
+  //
+  //   (a) a genuinely NOT-YET-SETTLED deposit really does come back as
+  //       `{ claimable: false, reason, detail }` with NO throw (comments
+  //       3847523270 / 3847600104), checked immediately after the tx
+  //       confirms, before the source's local exit root has had any chance
+  //       to settle to the L1 info tree; and
+  //   (b) a NATIVE-GAS-TOKEN deposit (origin_network === 0, recorded on the
+  //       L2's OWN tree -- not L1's) is routed by `recordingNetworkId`, never
+  //       by `origin_network` -- the exact case (comment 3847422009) where
+  //       the pre-fix code would have silently built a proof from L1's
+  //       UNRELATED deposit at the same deposit_count.
+  //   (c) the destination-injected `leafIndex >= sourceL1InfoTreeIndex`
+  //       assertion is re-run against this same LIVE deposit below.
+  if (!L1_RPC_URL || !BRIDGE_RPC_URL) {
+    console.log(
+      'SKIPPED — set L1_RPC_URL and BRIDGE_RPC_URL (chain JSON-RPC endpoints, ' +
+        'NOT the aggkit REST API) to send a live native-gas-token bridge and ' +
+        'exercise this section. Re-resolve (ports are ephemeral):\n' +
+        '  kurtosis port print cdk el-1-<el>-<cl> rpc                              # L1_RPC_URL\n' +
+        `  kurtosis port print cdk op-el-1-op-reth-op-node-<suffix for network ${primaryNetworkId}> rpc  # BRIDGE_RPC_URL`
+    );
+  } else {
+    const otherL2NetworkId = L2_NETWORK_IDS.find(
+      (id) => id !== primaryNetworkId
+    );
+    assert(
+      otherL2NetworkId !== undefined,
+      'a second configured L2 network id exists (needed for a live L2->L2 native-gas-token bridge)'
+    );
+    if (otherL2NetworkId !== undefined) {
+      const account = privateKeyToAccount(BRIDGE_PRIVATE_KEY);
+      const l1Public = createPublicClient({ transport: http(L1_RPC_URL) });
+      const l1Wallet = createWalletClient({
+        account,
+        transport: http(L1_RPC_URL),
+      });
+      const bridgePublic = createPublicClient({
+        transport: http(BRIDGE_RPC_URL),
+      });
+      const bridgeWallet = createWalletClient({
+        account,
+        transport: http(BRIDGE_RPC_URL),
+      });
+
+      const sendBridgeAsset = async (
+        publicClient: ReturnType<typeof createPublicClient>,
+        walletClient: ReturnType<typeof createWalletClient>,
+        destinationNetworkId: number,
+        amountWei: bigint
+      ): Promise<{
+        depositCount: number;
+        originNetwork: number;
+        txHash: string;
+      }> => {
+        const hash = await walletClient.writeContract({
+          address: BRIDGE_ADDRESS,
+          abi: bridgeAbi,
+          functionName: 'bridgeAsset',
+          args: [
+            destinationNetworkId,
+            account.address,
+            amountWei,
+            NATIVE_TOKEN,
+            true,
+            '0x',
+          ],
+          value: amountWei,
+          // These clients are created WITHOUT a bound `chain` (the RPC
+          // endpoints are ephemeral kurtosis ports with no fixed chain id
+          // known ahead of time) -- viem requires this to be explicit rather
+          // than silently defaulted.
+          chain: null,
+          account,
+        });
+        const receipt = await publicClient.waitForTransactionReceipt({
+          hash,
+        });
+        for (const log of receipt.logs) {
+          if (log.address.toLowerCase() !== BRIDGE_ADDRESS.toLowerCase())
+            continue;
+          try {
+            const decoded = decodeEventLog({
+              abi: bridgeAbi,
+              data: log.data,
+              topics: log.topics,
+            });
+            if (decoded.eventName === 'BridgeEvent') {
+              const args = decoded.args as unknown as {
+                originNetwork: number;
+                depositCount: number;
+              };
+              return {
+                depositCount: args.depositCount,
+                originNetwork: args.originNetwork,
+                txHash: hash,
+              };
+            }
+          } catch {
+            // Not a BridgeEvent log -- keep scanning.
+          }
+        }
+        throw new Error(
+          `aggkit-smoke: bridgeAsset tx ${hash} succeeded but no BridgeEvent found in its receipt logs`
+        );
+      };
+
+      // --- Seed step (infrastructure, not itself asserted on) ---
+      // A sovereign-chain bridge tracks a LocalBalanceTree per (network,
+      // token): an L2 cannot bridge OUT more of the native gas token than it
+      // has ever received IN via a claimed bridge, regardless of the
+      // account's raw (genesis-funded) balance. Seed it with a fresh L1->L2
+      // native ETH deposit and wait for autoclaim
+      // (aggkit_autoclaim_destinations includes the primary L2 in this
+      // topology) before attempting the case this section actually tests.
+      const seedAmount = parseEther('0.05');
+      console.log(
+        `  seeding network ${primaryNetworkId}'s LocalBalanceTree via a fresh L1->L2 native ETH deposit...`
+      );
+      const balanceBefore = await bridgePublic.getBalance({
+        address: account.address,
+      });
+      const seed = await sendBridgeAsset(
+        l1Public,
+        l1Wallet,
+        primaryNetworkId,
+        seedAmount
+      );
+      console.log(
+        `    seed sent: tx=${seed.txHash} depositCount=${seed.depositCount} on L1 (network 0) -> network ${primaryNetworkId}; waiting for auto-claim (up to 3 min)...`
+      );
+      const seedDeadline = Date.now() + 180_000;
+      let seeded = false;
+      while (Date.now() < seedDeadline && !seeded) {
+        const balanceNow = await bridgePublic.getBalance({
+          address: account.address,
+        });
+        seeded = balanceNow >= balanceBefore + seedAmount;
+        if (!seeded) {
+          await new Promise((resolve) => setTimeout(resolve, 5_000));
+        }
+      }
+      assert(
+        seeded,
+        `LocalBalanceTree seed deposit was auto-claimed on network ${primaryNetworkId} within 3 minutes`
+      );
+
+      if (seeded) {
+        console.log(
+          `  sending LIVE native-gas-token bridge: network ${primaryNetworkId} -> network ${otherL2NetworkId} ` +
+            `(case D: origin_network=0, recorded on network ${primaryNetworkId}'s OWN tree)...`
+        );
+        const caseDAmount = parseEther('0.001');
+        const caseD = await sendBridgeAsset(
+          bridgePublic,
+          bridgeWallet,
+          otherL2NetworkId,
+          caseDAmount
+        );
+        console.log(
+          `    sent: tx=${caseD.txHash} depositCount=${caseD.depositCount} origin_network=${caseD.originNetwork} ` +
+            `recordingNetworkId=${primaryNetworkId} destinationNetworkId=${otherL2NetworkId}`
+        );
+        assert(
+          caseD.originNetwork === 0,
+          'the live bridge is a native-gas-token deposit (origin_network === 0) -- the exact asset shape that diverges the recording network from origin_network (comment 3847422009)'
+        );
+
+        // (a) UNION SHAPE, NO THROW: probe immediately -- before the source's
+        // local exit root has had any chance to settle to the L1 info tree.
+        const immediateResult = await aggregator.getClaimInputs({
+          recordingNetworkId: primaryNetworkId,
+          destinationNetworkId: otherL2NetworkId,
+          depositCount: caseD.depositCount,
+        });
+        console.log(
+          `  immediate getClaimInputs result (expect not-ready, no throw): ${JSON.stringify(immediateResult)}`
+        );
+        assert(
+          immediateResult.claimable === false,
+          `(a) a freshly-sent, not-yet-settled deposit (depositCount=${caseD.depositCount}) returns claimable:false -- checked immediately after the tx confirmed, with NO throw`
+        );
+        if (!immediateResult.claimable) {
+          assert(
+            immediateResult.reason === 'SOURCE_NOT_ON_L1_INFO_TREE',
+            `(a) not-ready reason is the machine-readable SOURCE_NOT_ON_L1_INFO_TREE (got '${immediateResult.reason}': ${immediateResult.detail})`
+          );
+        }
+
+        // (b) ROUTING BY RECORDING NETWORK, not origin_network: repeat the
+        // SAME /l1-info-tree-index probe the pre-fix code would have made --
+        // keyed by origin_network (0) instead of recordingNetworkId
+        // (primaryNetworkId) -- via the RAW client for network 0.
+        // deposit_count is a PER-TREE counter, so this either answers for an
+        // UNRELATED L1 deposit at the same index (the silent-wrong-proof
+        // failure mode this fix closes) or legitimately answers not-ready --
+        // for the WRONG tree either way.
+        const oldBuggyQuery = await mustGetClient(0).getL1InfoTreeIndex({
+          networkId: 0, // <-- what origin_network-based routing would pass
+          depositCount: caseD.depositCount,
+        });
+        const correctQuery = await mustGetClient(
+          primaryNetworkId
+        ).getL1InfoTreeIndex({
+          networkId: primaryNetworkId, // <-- recordingNetworkId (the fix)
+          depositCount: caseD.depositCount,
+        });
+        console.log(
+          `  (b) routing comparison for deposit_count=${caseD.depositCount}: ` +
+            `network_id=0 (origin_network, OLD/BUGGY) -> ${JSON.stringify(oldBuggyQuery)}; ` +
+            `network_id=${primaryNetworkId} (recordingNetworkId, FIX) -> ${JSON.stringify(correctQuery)}`
+        );
+        // Ground truth: independently fetch what deposit_count=D actually IS
+        // on network 0's own tree, to show it is a DIFFERENT bridge than the
+        // one just sent -- i.e. the OLD query, if it answered ready:true,
+        // would have been silently answering for someone else's deposit.
+        const l1GroundTruth = await mustGetClient(0).getBridges({
+          networkId: 0,
+          depositCount: caseD.depositCount,
+          pageSize: 1,
+        });
+        const l1Row = l1GroundTruth.bridges[0];
+        if (oldBuggyQuery.ready && l1Row) {
+          assert(
+            l1Row.destination_network !== otherL2NetworkId ||
+              l1Row.from_address.toLowerCase() !==
+                account.address.toLowerCase(),
+            `(b) network 0's OWN deposit_count=${caseD.depositCount} (destination_network=${l1Row.destination_network}, bridge_hash=${l1Row.bridge_hash}) is a DIFFERENT bridge than the one just sent (destination_network=${otherL2NetworkId}) -- proof that origin_network-based routing would have silently answered for the WRONG deposit`
+          );
+        } else if (!oldBuggyQuery.ready) {
+          console.log(
+            `  (b) network 0 (origin_network, OLD/BUGGY) answers not-ready for this deposit_count regardless: reason=${oldBuggyQuery.reason} -- it is answering about NETWORK 0's tree, never network ${primaryNetworkId}'s`
+          );
+        }
+
+        // Poll for the CORRECT, recordingNetworkId-routed answer to become
+        // ready, then re-run the proof-shape assertions -- including (c) the
+        // injected-leaf >= assertion -- against this LIVE deposit.
+        console.log(
+          '  polling for the recordingNetworkId-routed getClaimInputs to become claimable (up to 3 min)...'
+        );
+        const claimDeadline = Date.now() + 180_000;
+        let liveResult: AggkitClaimInputsResult | undefined;
+        while (Date.now() < claimDeadline) {
+          liveResult = await aggregator.getClaimInputs({
+            recordingNetworkId: primaryNetworkId,
+            destinationNetworkId: otherL2NetworkId,
+            depositCount: caseD.depositCount,
+          });
+          if (liveResult.claimable) break;
+          await new Promise((resolve) => setTimeout(resolve, 10_000));
+        }
+        assert(
+          liveResult?.claimable === true,
+          `(b) the recording-network-routed getClaimInputs eventually returns claimable:true for the live native-gas-token deposit (depositCount=${caseD.depositCount})`
+        );
+        if (liveResult?.claimable) {
+          const { leafIndex, proof, sourceL1InfoTreeIndex } = liveResult;
+          console.log(
+            `  LIVE routing proof: recordingNetworkId=${primaryNetworkId} origin_network=${caseD.originNetwork} -> ` +
+              `sourceL1InfoTreeIndex=${sourceL1InfoTreeIndex}, leafIndex=${leafIndex}, ` +
+              `proof_local_exit_root.length=${proof.proof_local_exit_root.length}, ` +
+              `proof_rollup_exit_root.length=${proof.proof_rollup_exit_root.length}`
+          );
+          assert(
+            proof.proof_local_exit_root.length === 32,
+            'live native-gas-token proof_local_exit_root has 32 entries'
+          );
+          assert(
+            proof.proof_rollup_exit_root.length === 32,
+            'live native-gas-token proof_rollup_exit_root has 32 entries'
+          );
+          assert(
+            leafIndex >= sourceL1InfoTreeIndex,
+            `(c) live native-gas-token leafIndex (destination-injected) >= sourceL1InfoTreeIndex (${leafIndex} >= ${sourceL1InfoTreeIndex})`
+          );
+        }
+      }
+    }
+  }
+
+  console.log(
+    `\n=== 7. getClaimInputs — L2->L2 deposit (destination-injected index) ===`
   );
   // `getClaimInputs` returns a union: `claimable: false` (with a
   // machine-readable `reason`) is a valid non-throwing answer for a deposit
   // that simply has not settled yet. Hoisted so the proof assertions can run
   // in a narrowed block without aborting the rest of the smoke run.
-  let result6: AggkitClaimInputsResult | undefined;
-  let result7: AggkitClaimInputsResult | undefined;
+  let resultL2L2: AggkitClaimInputsResult | undefined;
+  let resultL2L1: AggkitClaimInputsResult | undefined;
   const originBridges = await primaryClient.getBridges({
     networkId: primaryNetworkId,
     fromAddress: FROM_ADDRESS,
@@ -324,7 +658,7 @@ async function main(): Promise<void> {
     // above -- `getBridges({ networkId: primaryNetworkId })` -- so it is
     // recorded on that network's own local exit tree by construction,
     // regardless of the asset's `origin_network`.
-    result6 = await aggregator.getClaimInputs({
+    resultL2L2 = await aggregator.getClaimInputs({
       recordingNetworkId: primaryNetworkId,
       destinationNetworkId: l2l2Sample.destination_network,
       depositCount: l2l2Sample.deposit_count,
@@ -333,16 +667,16 @@ async function main(): Promise<void> {
     // This section samples an already-settled deposit, so assert readiness
     // before narrowing to the proof.
     assert(
-      result6.claimable,
+      resultL2L2.claimable,
       `L2->L2 getClaimInputs returned claimable${
-        result6.claimable
+        resultL2L2.claimable
           ? ''
-          : `; got false: ${result6.reason} — ${result6.detail}`
+          : `; got false: ${resultL2L2.reason} — ${resultL2L2.detail}`
       }`
     );
   }
-  if (l2l2Sample && result6?.claimable) {
-    const { leafIndex, proof, sourceL1InfoTreeIndex } = result6;
+  if (l2l2Sample && resultL2L2?.claimable) {
+    const { leafIndex, proof, sourceL1InfoTreeIndex } = resultL2L2;
     console.log(
       `L2->L2 depositCount=${l2l2Sample.deposit_count} destinationNetwork=${l2l2Sample.destination_network} -> ` +
         `sourceL1InfoTreeIndex=${sourceL1InfoTreeIndex}, leafIndex=${leafIndex}, ` +
@@ -373,7 +707,7 @@ async function main(): Promise<void> {
   }
 
   console.log(
-    `\n=== 7. getClaimInputs — L2->L1 deposit (destination 0, no injection step) ===`
+    `\n=== 8. getClaimInputs — L2->L1 deposit (destination 0, no injection step) ===`
   );
   const l2l1Sample = originBridges.bridges.find(
     (b) => b.destination_network === 0
@@ -388,22 +722,22 @@ async function main(): Promise<void> {
     // sampled deposit was a native-gas-token withdrawal (`origin_network=0`
     // recorded on the L2's own tree). `recordingNetworkId` removes the asset
     // origin from the routing decision entirely.
-    result7 = await aggregator.getClaimInputs({
+    resultL2L1 = await aggregator.getClaimInputs({
       recordingNetworkId: primaryNetworkId,
       destinationNetworkId: 0,
       depositCount: l2l1Sample.deposit_count,
     });
     assert(
-      result7.claimable,
+      resultL2L1.claimable,
       `L2->L1 getClaimInputs returned claimable${
-        result7.claimable
+        resultL2L1.claimable
           ? ''
-          : `; got false: ${result7.reason} — ${result7.detail}`
+          : `; got false: ${resultL2L1.reason} — ${resultL2L1.detail}`
       }`
     );
   }
-  if (l2l1Sample && result7?.claimable) {
-    const { leafIndex, proof, sourceL1InfoTreeIndex } = result7;
+  if (l2l1Sample && resultL2L1?.claimable) {
+    const { leafIndex, proof, sourceL1InfoTreeIndex } = resultL2L1;
     console.log(
       `L2->L1 depositCount=${l2l1Sample.deposit_count} -> ` +
         `sourceL1InfoTreeIndex=${sourceL1InfoTreeIndex}, leafIndex=${leafIndex}, ` +
@@ -424,7 +758,7 @@ async function main(): Promise<void> {
     );
   }
 
-  console.log(`\n=== 8. Token mappings ===`);
+  console.log(`\n=== 9. Token mappings ===`);
   const mappings = await primaryClient.getTokenMappings({
     networkId: primaryNetworkId,
   });
@@ -435,7 +769,7 @@ async function main(): Promise<void> {
     'count matches token_mappings.length'
   );
 
-  console.log(`\n=== 9. Proxy-502 partial-failure path ===`);
+  console.log(`\n=== 10. Proxy-502 partial-failure path ===`);
   if (!RUN_PARTIAL_FAILURE_TEST) {
     console.log(
       'SKIPPED — set RUN_PARTIAL_FAILURE_TEST=true to run this (mutates the ' +
