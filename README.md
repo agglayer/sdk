@@ -300,7 +300,69 @@ seconds to tens of seconds — it reflects only the tracker's own fast-path
 read of the settlement tx's L1 receipt, not aggkit's separate bridge-service
 L1-info-tree sync that a claim's proof fetch depends on. Gate claim-readiness
 UX on your own check (e.g. the bridge-service's own status/proof
-availability), not on the tracker reaching `WaitingClaim`.
+availability), not on the tracker reaching `WaitingClaim`. `getClaimInputs`,
+documented next, is exactly that check.
+
+#### Claim Readiness & Claim Inputs
+
+```typescript
+// Resolve the proof inputs needed to claim a single bridge deposit.
+// `recordingNetworkId` is the network whose LOCAL EXIT TREE recorded the
+// deposit — from an `AggkitTransaction` row (e.g. from `getActivity` /
+// `getReadyToClaimCount`) this is `transaction.sourceNetwork`, NOT the
+// asset's `origin_network`.
+const result = await aggregator.getClaimInputs({
+  recordingNetworkId: transaction.sourceNetwork,
+  destinationNetworkId: transaction.destinationNetwork,
+  depositCount: transaction.depositCount,
+});
+
+if (!result.claimable) {
+  // Not yet claimable is data, not an error: a well-formed request whose
+  // deposit simply has not settled yet. `reason` is an OPEN union — always
+  // keep a `default` branch, never an exhaustive `assertNever` switch.
+  switch (result.reason) {
+    case 'SOURCE_NOT_ON_L1_INFO_TREE':
+      // still settling on the source network
+      break;
+    case 'DESTINATION_GER_NOT_INJECTED':
+      // waiting for the destination to inject the global exit root
+      break;
+    default:
+      // e.g. 'SYNCER_INCONSISTENT' (a syncer is resolving a reorg) — keep polling
+      break;
+  }
+} else {
+  // result.proof, result.leafIndex, result.sourceL1InfoTreeIndex
+}
+```
+
+`getClaimInputs` throws **only** for genuine failures — `AggkitApiError` for
+a real non-2xx/transport response, or a plain `Error` for a backend-contract
+violation or a configuration problem. It never throws to signal "not ready
+yet"; not yet claimable is data, not an error, and is always returned as the
+`{ claimable: false, reason, detail }` branch above — there is no thrown
+not-ready state anywhere on this path.
+
+**Routing.** `recordingNetworkId` is REQUIRED and keys every tree-relative
+lookup `getClaimInputs` makes (which aggkit instance answers, and the
+`network_id` sent to both the L1-info-tree-index probe and the claim-proof
+call). It is **not** the asset's `origin_network` — the two diverge for
+native-gas-token withdrawals and for transfers of a token whose origin
+differs from the network the transfer executed on. Passing `origin_network`
+in those cases silently builds a well-formed proof for a different,
+unrelated deposit, with no error raised anywhere. There is no
+`originNetworkId` parameter to fall back to; it was removed rather than
+deprecated, so a stale call site fails to compile instead of mis-routing at
+runtime.
+
+**Version compatibility (aggkit rc4 → rc6+).** aggkit's wire shape for "not
+yet on the L1 info tree" has changed twice across releases — rc4/rc5 report
+it as an HTTP 500 with prose; rc6+ remaps the same condition to a 404 and
+adds a distinct 503 (`SYNCER_INCONSISTENT`) for a syncer mid-reorg — and the
+client absorbs all of it into the same stable `AggkitNotReadyReason` values,
+so code written against one aggkit version keeps working unchanged against
+the others.
 
 ## ⚙️ Configuration
 

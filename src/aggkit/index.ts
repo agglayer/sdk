@@ -39,6 +39,55 @@
  * `_string` pairs — only `error_type` and certificate `status` keep that
  * convention), and steps carry `step_name`, not `step`. rc4's API.md
  * described these differently; the wire format itself never changed.
+ *
+ * ## Claim Inputs & the Not-Ready Union
+ *
+ * `AggkitBridgeAggregator.getClaimInputs` returns
+ * `AggkitClaimInputsResult = AggkitClaimInputsReady | AggkitClaimInputsNotReady`
+ * (discriminated on `claimable`). Not yet claimable is data, not an error:
+ * `getClaimInputs` returns `{ claimable: false, reason, detail }` for a valid
+ * request whose deposit simply has not settled yet -- it never throws for
+ * that condition. It throws only for genuine failures: `AggkitApiError` for
+ * a real non-2xx/transport response, or a plain `Error` for a
+ * backend-contract violation or a configuration problem. There is no thrown
+ * not-ready state anywhere on this path.
+ *
+ * `reason` (`AggkitNotReadyReason`) is an OPEN string-literal union that WILL
+ * gain members as aggkit's error taxonomy evolves. Always branch with a
+ * `default` / `else` that treats an unrecognised reason as "not ready yet,
+ * keep polling" -- never write an exhaustive `switch` with an `assertNever`
+ * default, or a future non-breaking SDK minor becomes a breaking change for
+ * you. `detail` is a human-readable string for logging/display only; never
+ * branch on its text.
+ *
+ * The lower-level client probes (`AggkitBridgeClient.getL1InfoTreeIndex`,
+ * `getInjectedL1InfoLeaf`, `getClaimProof`) return the same-shaped
+ * `AggkitProbeResult<T>` union (`{ ready: true; value: T } | { ready: false;
+ * reason; detail }`), with identical not-error semantics.
+ *
+ * ## Recording-Network Routing
+ *
+ * `getClaimInputs` takes a REQUIRED `recordingNetworkId` -- the network whose
+ * LOCAL EXIT TREE recorded the deposit (i.e. the network the bridging
+ * transaction executed on) -- NOT the asset's `origin_network`. The two
+ * diverge for native-gas-token withdrawals and for cross-network transfers
+ * of a token whose origin differs from the network the transfer executed
+ * on; passing `origin_network` there silently builds a well-formed claim
+ * proof for a different, unrelated deposit, with no error raised anywhere.
+ * From `getActivity` / `getReadyToClaimCount` rows the correct value is
+ * `AggkitTransaction.sourceNetwork`. There is no `originNetworkId`
+ * parameter -- it was removed, not deprecated, so a stale call site is a
+ * compile error rather than a silently wrong proof.
+ *
+ * ## aggkit rc4-rc6 Compatibility
+ *
+ * The client absorbs aggkit's changing not-ready wire shapes across
+ * versions so callers never see the difference: rc4/rc5 report a
+ * not-yet-on-the-L1-info-tree deposit as an HTTP 500 with prose; rc6+
+ * remaps the same condition to 404 and adds a distinct 503 for a syncer
+ * mid-reorg (`SYNCER_INCONSISTENT`). Both map to the same stable
+ * `AggkitNotReadyReason` members; genuine faults keep throwing
+ * `AggkitApiError` on every version.
  */
 
 export { AggkitBridgeClient } from './client';
