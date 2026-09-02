@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { http } from 'viem';
 import { describe, it, expect, beforeEach, vi, type Mock } from 'vitest';
-import { AggkitBridgeAggregator } from '../aggregator';
+import { AggkitBridgeAggregator, decodeCursor } from '../aggregator';
 import { AggkitApiError } from '../errors';
 import { chainRegistry } from '../../native/chains/registry';
 
@@ -190,6 +190,7 @@ function networkRules(
 
 const BASE_1 = 'http://127.0.0.1:30001';
 const BASE_2 = 'http://127.0.0.1:30002';
+const BASE_3 = 'http://127.0.0.1:30003';
 const ADDRESS = '0x3C4d3AAB4356120117E88225e649f0A7ae0401DE';
 
 describe('AggkitBridgeAggregator', () => {
@@ -322,6 +323,182 @@ describe('AggkitBridgeAggregator', () => {
     });
   });
 
+  describe('decodeCursor — junk-value coercion (comment 3862897288)', () => {
+    it('accepts ONLY a non-negative-integer number or a digits-only string, dropping every other value entirely (key absent from the result, not merely non-junk)', () => {
+      // Each entry is decoded independently (decodeCursor has no
+      // cross-key dependency), so a single object can exercise the full
+      // accept/reject matrix in one call.
+      const cursor = JSON.stringify({
+        'junk:null': null,
+        'junk:emptyString': '',
+        'junk:emptyArray': [],
+        'junk:false': false,
+        'junk:true': true,
+        'junk:trailingLetters': '3abc',
+        'junk:exponent': '1e3',
+        'junk:negativeNumber': -1,
+        'junk:negativeString': '-1',
+        'junk:fraction': 1.5,
+        'junk:hexPrefix': '0x3',
+        'junk:whitespacePadded': ' 3 ',
+        'junk:object': { nested: 1 },
+        // Audit finding C5: the number branch previously used
+        // `Number.isInteger`, which is true for `1e21` and for
+        // `9007199254740993` (both round-trip through `Number.isInteger`
+        // even though neither is a SAFE integer) -- so a numeric junk value
+        // survived where the equivalent STRING was already rejected below.
+        // `1e21` would reach aggkit as `page_number=1e%2B21` and 400 the
+        // whole fan-out for that network.
+        'junk:numericExponent': 1e21,
+        'junk:numericUnsafeInteger': Number.MAX_SAFE_INTEGER + 2,
+        'valid:zero': 0,
+        'valid:zeroString': '0',
+        'valid:three': '3',
+        'valid:threeNumber': 3,
+      });
+
+      const decoded = decodeCursor(cursor);
+
+      // Every junk key must be ABSENT -- not present-with-some-fallback.
+      for (const junkKey of [
+        'junk:null',
+        'junk:emptyString',
+        'junk:emptyArray',
+        'junk:false',
+        'junk:true',
+        'junk:trailingLetters',
+        'junk:exponent',
+        'junk:negativeNumber',
+        'junk:negativeString',
+        'junk:fraction',
+        'junk:hexPrefix',
+        'junk:whitespacePadded',
+        'junk:object',
+        'junk:numericExponent',
+        'junk:numericUnsafeInteger',
+      ]) {
+        expect(Object.prototype.hasOwnProperty.call(decoded, junkKey)).toBe(
+          false
+        );
+      }
+
+      // Legitimate non-negative integers (including the 0 EXHAUSTED
+      // sentinel, both as a number and as a digits-only string) survive.
+      expect(decoded['valid:zero']).toBe(0);
+      expect(decoded['valid:zeroString']).toBe(0);
+      expect(decoded['valid:three']).toBe(3);
+      expect(decoded['valid:threeNumber']).toBe(3);
+
+      expect(Object.keys(decoded).sort()).toEqual(
+        [
+          'valid:zero',
+          'valid:zeroString',
+          'valid:three',
+          'valid:threeNumber',
+        ].sort()
+      );
+    });
+
+    it('drops a value that is unsafe as an integer even though it is digits-only (beyond Number.isSafeInteger)', () => {
+      const decoded = decodeCursor(
+        JSON.stringify({ 'huge:unsafe': '90071992547409910000' })
+      );
+      expect(Object.prototype.hasOwnProperty.call(decoded, 'huge:unsafe')).toBe(
+        false
+      );
+    });
+
+    it('drops a NUMBER (not just an equivalent string) that fails Number.isSafeInteger, e.g. 1e21 (audit finding C5)', () => {
+      // `Number.isInteger(1e21) === true`, so a check that stopped at
+      // `Number.isInteger` (rather than `Number.isSafeInteger`) would let
+      // this numeric literal survive even though the digits-only STRING
+      // "1e21" is rejected earlier by regex alone (no exponent notation
+      // allowed) and the equivalent unsafe-integer string
+      // "90071992547409910000" is rejected above by the safe-integer check.
+      // The number branch must enforce the identical bound.
+      const decoded = decodeCursor(JSON.stringify({ 'huge:exponent': 1e21 }));
+      expect(
+        Object.prototype.hasOwnProperty.call(decoded, 'huge:exponent')
+      ).toBe(false);
+    });
+  });
+
+  describe('getActivity — decodeCursor junk-value coercion, end-to-end (comment 3862897288)', () => {
+    it('drops a non-integer cursor entry (e.g. "abc") as junk, but preserves a legitimate EXHAUSTED (0) entry as a sentinel, not junk', async () => {
+      installRouter([
+        // Simulates aggkit 400ing on a junk page_number -- if the old code
+        // let the cursor's "abc" pass straight through as-is, this rule
+        // would be hit instead of the well-formed page_number=1 fallback.
+        rule(
+          BASE_1,
+          ['/bridges', 'network_id=1', 'page_number=abc'],
+          400,
+          errorBody('page_number must be a number')
+        ),
+        // If EXHAUSTED (0) were wrongly coerced away as "not a positive
+        // integer", this call would be wrongly re-requested at page 1 and
+        // 400 here.
+        rule(
+          BASE_1,
+          ['/claims', 'network_id=1', 'page_number=1'],
+          400,
+          errorBody('should not be re-requested: call is EXHAUSTED')
+        ),
+        ...networkRules(BASE_1, 1, {}),
+      ]);
+
+      const aggregator = new AggkitBridgeAggregator({
+        networks: { 1: BASE_1 },
+      });
+
+      const cursor = JSON.stringify({
+        '1:bridgesOrigin': 'abc', // junk -> dropped -> defaults to page 1
+        '1:claimsHere': 0, // EXHAUSTED sentinel -> preserved -> call skipped
+      });
+      const page = await aggregator.getActivity({
+        fromAddress: ADDRESS,
+        cursor,
+      });
+
+      expect(page.failedNetworks).toEqual([]);
+      expect(page.data).toEqual([]);
+
+      // The EXHAUSTED claimsHere call was skipped entirely -- no request to
+      // /claims?network_id=1 was made at all.
+      const calls = (global.fetch as Mock).mock.calls as [string][];
+      const claimsHereCalls = calls.filter(
+        ([url]) => url.includes('/claims') && url.includes('network_id=1')
+      );
+      expect(claimsHereCalls).toHaveLength(0);
+    });
+  });
+
+  describe('getActivity — empty networks guard (comment 3862897421)', () => {
+    it('rejects instead of silently returning an empty page when no networks are configured', async () => {
+      const aggregator = new AggkitBridgeAggregator({ networks: {} });
+
+      await expect(
+        aggregator.getActivity({ fromAddress: ADDRESS })
+      ).rejects.toThrow(/no networks configured/);
+      expect(global.fetch).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('getReadyToClaimCount — empty networks guard (audit finding C8)', () => {
+    it('rejects instead of silently returning 0 when no networks are configured, mirroring getActivity', async () => {
+      // Before this fix, `getActivity({ networks: {} })` threw (comment
+      // 3862897421) but `getReadyToClaimCount({ networks: {} })` silently
+      // returned 0 for the identical config bug -- an unannounced asymmetry
+      // between the feed and the badge that feeds off the same aggregator.
+      const aggregator = new AggkitBridgeAggregator({ networks: {} });
+
+      await expect(
+        aggregator.getReadyToClaimCount({ fromAddress: ADDRESS })
+      ).rejects.toThrow(/no networks configured/);
+      expect(global.fetch).not.toHaveBeenCalled();
+    });
+  });
+
   describe('getActivity — status derivation: L1 -> L2 (fixture-backed)', () => {
     // bridges_network0.json (B call: L1-origin destined to network 1) has 6
     // rows; deposit_count=1 <-> global_index 18446744073709551617.
@@ -340,7 +517,7 @@ describe('AggkitBridgeAggregator', () => {
         rule(
           BASE_1,
           ['/l1-info-tree-index'],
-          500,
+          404,
           loadFixture('l1_info_tree_index_notfound_error.json')
         ),
       ]);
@@ -358,7 +535,7 @@ describe('AggkitBridgeAggregator', () => {
       expect(row?.claimTransactionHash).toBeDefined();
     });
 
-    it('BRIDGED: not claimed AND l1-info-tree-index probe 500s (l1_info_tree_index_notfound_error.json)', async () => {
+    it("BRIDGED: not claimed AND l1-info-tree-index probe 404s (l1_info_tree_index_notfound_error.json — this SDK's minimum supported aggkit is v0.11.0-rc6, which carries this not-ready state as a 404)", async () => {
       installRouter([
         ...networkRules(BASE_1, 1, {
           b: { status: 200, body: loadFixture('bridges_network0.json') },
@@ -366,7 +543,7 @@ describe('AggkitBridgeAggregator', () => {
         rule(
           BASE_1,
           ['/l1-info-tree-index'],
-          500,
+          404,
           loadFixture('l1_info_tree_index_notfound_error.json')
         ),
       ]);
@@ -424,7 +601,7 @@ describe('AggkitBridgeAggregator', () => {
     // deposit_count=0 <-> global_index "0".
     const TARGET_GLOBAL_INDEX = '0';
 
-    it('BRIDGED: claims_network0.json is empty (no autoclaim) AND probe 500s (l1_info_tree_index_network1_error.json)', async () => {
+    it('BRIDGED: claims_network0.json is empty (no autoclaim) AND probe 500s — rc4/rc5\'s bare "not found" body is NOT a supported wire shape, so it degrades to BRIDGED WITH a failedNetworks entry (l1_info_tree_index_network1_error.json, live-captured; supersedes audit finding C1 / commit 60d7407)', async () => {
       installRouter([
         ...networkRules(BASE_1, 1, {
           a: { status: 200, body: loadFixture('bridges_network1.json') },
@@ -448,6 +625,21 @@ describe('AggkitBridgeAggregator', () => {
       );
       expect(row).toBeDefined();
       expect(row?.status).toBe('BRIDGED');
+      // FLOOR DECISION. This SDK's minimum supported aggkit is v0.11.0-rc6;
+      // rc4/rc5 are not supported. On the supported floor a 500 on this
+      // endpoint is UNCONDITIONALLY a genuine fault, so this rc4/rc5-shaped
+      // body now correctly throws and populates `failedNetworks` — the
+      // opposite of what commit `54c10b9`'s C1 fix (`60d7407`) asserted. Do
+      // not flip this back to an empty array without first restoring rc4/rc5
+      // as a supported target.
+      expect(page.failedNetworks).toEqual([
+        {
+          networkId: 1,
+          error:
+            'failed to get l1 info tree index for network id 1 and deposit count 0, error: not found',
+          httpStatus: 500,
+        },
+      ]);
     });
 
     it('READY_TO_CLAIM: not claimed AND probe succeeds (post-settlement — code-verified against bridge.go, not fixture-captured: all enclave L2->L1 deposits were pre-settlement)', async () => {
@@ -742,7 +934,7 @@ describe('AggkitBridgeAggregator', () => {
         rule(
           BASE_1,
           ['/l1-info-tree-index'],
-          500,
+          404,
           loadFixture('l1_info_tree_index_notfound_error.json')
         ),
         rule(
@@ -766,6 +958,80 @@ describe('AggkitBridgeAggregator', () => {
       expect(row?.leafIndexForProof).toBeUndefined();
       expect(page.failedNetworks).toEqual([]);
     });
+
+    // C2 end-to-end through getActivity: before this, the two rc6 404s and the
+    // 503 on /injected-l1-info-leaf all threw, so the row degraded to
+    // LEAF_INCLUDED *plus* a failedNetworks entry naming the destination network,
+    // on every poll for the whole (normal, transient) window. The status is the
+    // same either way, so `failedNetworks` is the only thing that distinguishes
+    // correct classification from throw-then-degrade.
+    it.each([
+      [
+        'rc6 404 "l1infotreesync has not indexed l1 info tree leaf index N yet (already injected on L2 per l2gersync)"',
+        404,
+        'injected_l1_info_leaf_rc6_leaf_not_indexed_404.json',
+      ],
+      [
+        'rc6 503 syncer-inconsistent (an ordinary destination-side reorg)',
+        503,
+        'injected_l1_info_leaf_rc6_syncer_inconsistent_503.json',
+      ],
+    ])(
+      'LEAF_INCLUDED with an EMPTY failedNetworks for the destination-side %s — a transient wait must never be reported as a network failure (audit finding C2)',
+      async (_label, status, fixture) => {
+        installRouter([
+          rule(
+            BASE_2,
+            ['/claims', 'network_id=2', 'global_index=2'],
+            200,
+            claimsBody([], 0)
+          ),
+          ...networkRules(BASE_1, 1, {
+            a: {
+              status: 200,
+              body: loadFixture('l2l2_lifecycle_origin_bridges_row.json'),
+            },
+          }),
+          ...networkRules(BASE_2, 2, {
+            c: {
+              status: 200,
+              body: loadFixture('l2l2_165338016Z_dest_claims.json'),
+            },
+          }),
+          rule(
+            BASE_1,
+            ['/l1-info-tree-index', 'deposit_count=2'],
+            200,
+            loadFixture('l2l2_165338016Z_l1_info_tree_index.json')
+          ),
+          rule(
+            BASE_1,
+            ['/l1-info-tree-index'],
+            404,
+            loadFixture('l1_info_tree_index_notfound_error.json')
+          ),
+          rule(
+            BASE_2,
+            ['/injected-l1-info-leaf', 'network_id=2', 'leaf_index=7'],
+            status,
+            loadFixture(fixture)
+          ),
+        ]);
+
+        const aggregator = new AggkitBridgeAggregator({
+          networks: { 1: BASE_1, 2: BASE_2 },
+        });
+        const page = await aggregator.getActivity({ fromAddress: ADDRESS });
+
+        const row = page.data.find(
+          (tx) => tx.globalIndex === TARGET_GLOBAL_INDEX
+        );
+        expect(row).toBeDefined();
+        expect(row?.status).toBe('LEAF_INCLUDED');
+        expect(row?.leafIndexForProof).toBeUndefined();
+        expect(page.failedNetworks).toEqual([]);
+      }
+    );
 
     it('READY_TO_CLAIM with leafIndexForProof = 7 once the destination GER is injected (16:53:46.035Z snapshot, counterfactual pre-autoclaim)', async () => {
       installRouter([
@@ -798,7 +1064,7 @@ describe('AggkitBridgeAggregator', () => {
         rule(
           BASE_1,
           ['/l1-info-tree-index'],
-          500,
+          404,
           loadFixture('l1_info_tree_index_notfound_error.json')
         ),
         rule(
@@ -856,7 +1122,7 @@ describe('AggkitBridgeAggregator', () => {
         rule(
           BASE_1,
           ['/l1-info-tree-index'],
-          500,
+          404,
           loadFixture('l1_info_tree_index_notfound_error.json')
         ),
       ]);
@@ -909,7 +1175,7 @@ describe('AggkitBridgeAggregator', () => {
         rule(
           BASE_1,
           ['/l1-info-tree-index'],
-          500,
+          404,
           loadFixture('l1_info_tree_index_notfound_error.json')
         ),
         // Network 2's backend is "stopped" — the destination-injected-leaf
@@ -1123,8 +1389,122 @@ describe('AggkitBridgeAggregator', () => {
     });
   });
 
+  describe('confirmClaimed — global_index mismatch guard (comment 3847451952)', () => {
+    it('does not treat a claim with a DIFFERENT global_index as a match: derives READY_TO_CLAIM, not CLAIMED', async () => {
+      // Simulates a proxy that drops the `global_index` filter param: the
+      // targeted confirmClaimed query for global_index=42 comes back with
+      // an unrelated claim (global_index "999") instead of an empty or
+      // matching result.
+      const mismatchedRow = makeBridge({
+        bridge_hash: '0xmismatchedclaim',
+        origin_network: 1,
+        destination_network: 0,
+        deposit_count: 42,
+        global_index: 42,
+        block_timestamp: 900,
+      });
+
+      installRouter([
+        // Must be matched before the generic `d` rule below (network_id=0
+        // claims, no global_index requirement), which would otherwise
+        // return the default empty response instead of this deliberately
+        // mismatched claim.
+        rule(
+          BASE_1,
+          ['/claims', 'network_id=0', 'global_index=42'],
+          200,
+          claimsBody(
+            [
+              {
+                global_index: '999',
+                tx_hash: '0xstrangertx',
+                block_timestamp: 111,
+                block_num: 1,
+              },
+            ],
+            1
+          )
+        ),
+        ...networkRules(BASE_1, 1, {
+          a: { status: 200, body: bridgesBody([mismatchedRow], 1) },
+        }),
+        rule(BASE_1, ['/l1-info-tree-index', 'deposit_count=42'], 200, '42'),
+      ]);
+
+      const aggregator = new AggkitBridgeAggregator({
+        networks: { 1: BASE_1 },
+      });
+      const page = await aggregator.getActivity({ fromAddress: ADDRESS });
+
+      const tx = page.data.find((t) => t.bridgeHash === '0xmismatchedclaim');
+      expect(tx).toBeDefined();
+      expect(tx?.status).toBe('READY_TO_CLAIM');
+      expect(tx?.leafIndexForProof).toBe(42);
+      expect(tx?.claimTransactionHash).toBeUndefined();
+    });
+
+    it('finds the matching claim at a NON-ZERO index, not just claims[0] (audit finding C6): a legitimate claim must not be missed', async () => {
+      // Same dropped-filter scenario as above, but this time the targeted
+      // `/claims?global_index=42` response -- as if a proxy dropped the
+      // filter and aggkit returned page 1 of ALL claims for the network --
+      // carries the deposit's OWN matching claim at index 1, behind an
+      // unrelated stranger's claim at index 0. Indexing `claims[0]` (the
+      // pre-fix behaviour) would inspect only the stranger's claim, fail
+      // the globalIndexesMatch check, and return null -- wrongly deriving
+      // this ALREADY-CLAIMED deposit as READY_TO_CLAIM (the opposite wrong
+      // answer from the false-positive direction the original guard closed).
+      const matchedRow = makeBridge({
+        bridge_hash: '0xmatchedatindex1',
+        origin_network: 1,
+        destination_network: 0,
+        deposit_count: 42,
+        global_index: 42,
+        block_timestamp: 900,
+      });
+
+      installRouter([
+        rule(
+          BASE_1,
+          ['/claims', 'network_id=0', 'global_index=42'],
+          200,
+          claimsBody(
+            [
+              {
+                global_index: '999',
+                tx_hash: '0xstrangertx',
+                block_timestamp: 111,
+                block_num: 1,
+              },
+              {
+                global_index: '42',
+                tx_hash: '0xtherealclaimtx',
+                block_timestamp: 950,
+                block_num: 2,
+              },
+            ],
+            2
+          )
+        ),
+        ...networkRules(BASE_1, 1, {
+          a: { status: 200, body: bridgesBody([matchedRow], 1) },
+        }),
+        rule(BASE_1, ['/l1-info-tree-index', 'deposit_count=42'], 200, '42'),
+      ]);
+
+      const aggregator = new AggkitBridgeAggregator({
+        networks: { 1: BASE_1 },
+      });
+      const page = await aggregator.getActivity({ fromAddress: ADDRESS });
+
+      const tx = page.data.find((t) => t.bridgeHash === '0xmatchedatindex1');
+      expect(tx).toBeDefined();
+      expect(tx?.status).toBe('CLAIMED');
+      expect(tx?.claimTransactionHash).toBe('0xtherealclaimtx');
+    });
+  });
+
   describe('getClaimInputs', () => {
-    it('L1 -> L2: uses the DESTINATION network client with network_id=0 (origin) for both calls, and builds /claim-proof on the destination-injected index', async () => {
+    it('L1 -> L2: uses the DESTINATION network client with network_id=0 (recording network = L1) for both calls, and builds /claim-proof on the destination-injected index', async () => {
       installRouter([
         rule(
           BASE_1,
@@ -1152,10 +1532,16 @@ describe('AggkitBridgeAggregator', () => {
         networks: { 1: BASE_1 },
       });
       const result = await aggregator.getClaimInputs({
-        originNetworkId: 0,
+        recordingNetworkId: 0,
         destinationNetworkId: 1,
         depositCount: 1,
       });
+      expect(result.claimable).toBe(true);
+      if (!result.claimable) {
+        throw new Error(
+          `expected claimable: true, got ${result.reason}: ${result.detail}`
+        );
+      }
 
       expect(result.leafIndex).toBe(1);
       expect(result.sourceL1InfoTreeIndex).toBe(1);
@@ -1191,16 +1577,22 @@ describe('AggkitBridgeAggregator', () => {
         networks: { 1: BASE_1 },
       });
       const result = await aggregator.getClaimInputs({
-        originNetworkId: 0,
+        recordingNetworkId: 0,
         destinationNetworkId: 1,
         depositCount: 2,
       });
+      expect(result.claimable).toBe(true);
+      if (!result.claimable) {
+        throw new Error(
+          `expected claimable: true, got ${result.reason}: ${result.detail}`
+        );
+      }
 
       expect(result.sourceL1InfoTreeIndex).toBe(2);
       expect(result.leafIndex).toBe(3);
     });
 
-    it('getClaimInputs throws 404 /injected-l1-info-leaf while the destination has not injected the GER yet', async () => {
+    it("returns { claimable: false, reason: 'DESTINATION_GER_NOT_INJECTED' } — NOT a throw — while the destination has not injected the GER yet (comments 3847523270 / 3847600104)", async () => {
       installRouter([
         rule(
           BASE_1,
@@ -1220,26 +1612,151 @@ describe('AggkitBridgeAggregator', () => {
         networks: { 1: BASE_1, 2: BASE_2 },
       });
 
-      let caught: unknown;
-      try {
-        await aggregator.getClaimInputs({
-          originNetworkId: 1,
-          destinationNetworkId: 2,
-          depositCount: 2,
-        });
-      } catch (error) {
-        caught = error;
-      }
+      const result = await aggregator.getClaimInputs({
+        recordingNetworkId: 1,
+        destinationNetworkId: 2,
+        depositCount: 2,
+      });
 
-      expect(caught).toBeInstanceOf(AggkitApiError);
-      expect((caught as AggkitApiError).httpStatus).toBe(404);
-      expect((caught as AggkitApiError).endpoint).toBe(
-        '/injected-l1-info-leaf'
-      );
-      expect((caught as AggkitApiError).message).toMatch(/not injected/);
+      // The old fabricated `AggkitApiError(httpStatus: 404)` claimed a server
+      // error for a request that succeeded; the answer was simply "not yet".
+      expect(result).toEqual({
+        claimable: false,
+        reason: 'DESTINATION_GER_NOT_INJECTED',
+        detail: expect.any(String),
+        sourceL1InfoTreeIndex: 7,
+      });
+      // aggkit's own wording is propagated, not re-fabricated.
+      expect(result.claimable).toBe(false);
+      if (!result.claimable) {
+        expect(result.detail).toMatch(/not injected/);
+      }
     });
 
-    it('L2 -> L1: uses the ORIGIN network client with network_id=<origin>', async () => {
+    it("L2 -> L1: a not-yet-settled source returns { claimable: false, reason: 'SOURCE_NOT_ON_L1_INFO_TREE' } from the RECORDING network's client, without throwing (comment 3847523270)", async () => {
+      installRouter([
+        rule(
+          BASE_1,
+          ['/l1-info-tree-index', 'network_id=1', 'deposit_count=0'],
+          404,
+          loadFixture('l1_info_tree_index_notfound_error.json')
+        ),
+      ]);
+
+      const aggregator = new AggkitBridgeAggregator({
+        networks: { 1: BASE_1 },
+      });
+
+      const result = await aggregator.getClaimInputs({
+        recordingNetworkId: 1,
+        destinationNetworkId: 0,
+        depositCount: 0,
+      });
+
+      expect(result).toEqual({
+        claimable: false,
+        reason: 'SOURCE_NOT_ON_L1_INFO_TREE',
+        detail: expect.stringContaining(
+          'not been included on the L1 Info Tree'
+        ),
+      });
+      // No `/claim-proof` request is made once the source is known not-ready.
+      const calls = (global.fetch as Mock).mock.calls as [string][];
+      expect(
+        calls.filter(([url]) => url.includes('/claim-proof'))
+      ).toHaveLength(0);
+      // The probe went to the recording network (1), keyed by network_id=1.
+      expect(
+        calls.filter(
+          ([url]) =>
+            url.startsWith(BASE_1) &&
+            url.includes('/l1-info-tree-index') &&
+            url.includes('network_id=1')
+        )
+      ).toHaveLength(1);
+    });
+
+    it('L2 -> L1: rc6 wire shape — a 404 with the fixed "is not available yet, retry later" prefix ALSO returns { claimable: false, reason: \'SOURCE_NOT_ON_L1_INFO_TREE\' } (aggkit #1794 / v0.11.0-rc6, comment 3862896539)', async () => {
+      installRouter([
+        rule(
+          BASE_1,
+          ['/l1-info-tree-index', 'network_id=1', 'deposit_count=0'],
+          404,
+          loadFixture('l1_info_tree_index_rc6_not_available_404.json')
+        ),
+      ]);
+
+      const aggregator = new AggkitBridgeAggregator({
+        networks: { 1: BASE_1 },
+      });
+
+      const result = await aggregator.getClaimInputs({
+        recordingNetworkId: 1,
+        destinationNetworkId: 0,
+        depositCount: 0,
+      });
+
+      expect(result).toEqual({
+        claimable: false,
+        reason: 'SOURCE_NOT_ON_L1_INFO_TREE',
+        detail: expect.stringContaining('is not available yet, retry later'),
+      });
+    });
+
+    it("L2 -> L1: the aggkit-proxy's OWN routing-failure 404 on /l1-info-tree-index throws — NEVER silently classifies as not-ready — even though 404 is now a recognised not-ready carrier for this endpoint (the proxy-prose trap, comment 3862896539)", async () => {
+      installRouter([
+        rule(
+          BASE_1,
+          ['/l1-info-tree-index', 'network_id=1', 'deposit_count=0'],
+          404,
+          loadFixture('error_404_unknown_network.json')
+        ),
+      ]);
+
+      const aggregator = new AggkitBridgeAggregator({
+        networks: { 1: BASE_1 },
+      });
+
+      await expect(
+        aggregator.getClaimInputs({
+          recordingNetworkId: 1,
+          destinationNetworkId: 0,
+          depositCount: 0,
+        })
+      ).rejects.toMatchObject({
+        httpStatus: 404,
+        message: expect.stringContaining('bridge service url not found'),
+      });
+    });
+
+    it("L2 -> L1: rc6 syncer-inconsistent 503 (a syncer is halted resolving a reorg) returns { claimable: false, reason: 'SYNCER_INCONSISTENT' } — NOT a throw — rather than flooding failedNetworks for every in-flight deposit during an ordinary reorg (v0.11.0-rc6, comment 3862896539)", async () => {
+      installRouter([
+        rule(
+          BASE_1,
+          ['/l1-info-tree-index', 'network_id=1', 'deposit_count=0'],
+          503,
+          loadFixture('l1_info_tree_index_rc6_syncer_inconsistent_503.json')
+        ),
+      ]);
+
+      const aggregator = new AggkitBridgeAggregator({
+        networks: { 1: BASE_1 },
+      });
+
+      const result = await aggregator.getClaimInputs({
+        recordingNetworkId: 1,
+        destinationNetworkId: 0,
+        depositCount: 0,
+      });
+
+      expect(result).toEqual({
+        claimable: false,
+        reason: 'SYNCER_INCONSISTENT',
+        detail: expect.stringContaining('a syncer is temporarily inconsistent'),
+      });
+    });
+
+    it('L2 -> L1: rc4/rc5\'s bare "not found" 500 carrier THROWS AggkitApiError end-to-end — rc4/rc5 are NOT a supported aggkit target, so this rc4/rc5-shaped body is a genuine fault on the supported v0.11.0-rc6+ floor (l1_info_tree_index_network1_error.json, live-captured; supersedes audit finding C1 / commit 60d7407)', async () => {
       installRouter([
         rule(
           BASE_1,
@@ -1255,11 +1772,266 @@ describe('AggkitBridgeAggregator', () => {
 
       await expect(
         aggregator.getClaimInputs({
-          originNetworkId: 1,
+          recordingNetworkId: 1,
           destinationNetworkId: 0,
           depositCount: 0,
         })
-      ).rejects.toBeInstanceOf(AggkitApiError);
+      ).rejects.toMatchObject({
+        httpStatus: 500,
+        message: expect.stringContaining('error: not found'),
+      });
+    });
+
+    it("L2 -> L2: rc6's /injected-l1-info-leaf 404 \"l1infotreesync has not indexed l1 info tree leaf index N yet (already injected on L2 per l2gersync)\" returns { claimable: false, reason: 'L1_INFO_LEAF_NOT_INDEXED' } — NOT a throw (audit finding C2)", async () => {
+      installRouter([
+        rule(
+          BASE_1,
+          ['/l1-info-tree-index', 'network_id=1', 'deposit_count=2'],
+          200,
+          loadFixture('l2l2_165338016Z_l1_info_tree_index.json')
+        ),
+        rule(
+          BASE_2,
+          ['/injected-l1-info-leaf', 'network_id=2', 'leaf_index=7'],
+          404,
+          loadFixture('injected_l1_info_leaf_rc6_leaf_not_indexed_404.json')
+        ),
+      ]);
+
+      const aggregator = new AggkitBridgeAggregator({
+        networks: { 1: BASE_1, 2: BASE_2 },
+      });
+
+      const result = await aggregator.getClaimInputs({
+        recordingNetworkId: 1,
+        destinationNetworkId: 2,
+        depositCount: 2,
+      });
+
+      // The union member is DISTINCT from DESTINATION_GER_NOT_INJECTED: the wire
+      // says the GER IS already injected on L2; only the L1-side index lags.
+      expect(result).toEqual({
+        claimable: false,
+        reason: 'L1_INFO_LEAF_NOT_INDEXED',
+        detail: expect.stringContaining(
+          'has not indexed l1 info tree leaf index'
+        ),
+        sourceL1InfoTreeIndex: 7,
+      });
+    });
+
+    it("L2 -> L2: rc6's /injected-l1-info-leaf 503 returns { claimable: false, reason: 'SYNCER_INCONSISTENT' } — NOT a throw — so an ordinary destination-side reorg does not flood failedNetworks (audit finding C2)", async () => {
+      installRouter([
+        rule(
+          BASE_1,
+          ['/l1-info-tree-index', 'network_id=1', 'deposit_count=2'],
+          200,
+          loadFixture('l2l2_165338016Z_l1_info_tree_index.json')
+        ),
+        rule(
+          BASE_2,
+          ['/injected-l1-info-leaf', 'network_id=2', 'leaf_index=7'],
+          503,
+          loadFixture('injected_l1_info_leaf_rc6_syncer_inconsistent_503.json')
+        ),
+      ]);
+
+      const aggregator = new AggkitBridgeAggregator({
+        networks: { 1: BASE_1, 2: BASE_2 },
+      });
+
+      const result = await aggregator.getClaimInputs({
+        recordingNetworkId: 1,
+        destinationNetworkId: 2,
+        depositCount: 2,
+      });
+
+      expect(result).toEqual({
+        claimable: false,
+        reason: 'SYNCER_INCONSISTENT',
+        detail: expect.stringContaining('a syncer is temporarily inconsistent'),
+        sourceL1InfoTreeIndex: 7,
+      });
+    });
+
+    it('L2 -> L2: a GENUINE 500 on /injected-l1-info-leaf still throws AggkitApiError (the C2 widening is 404/prose-gated 503 only)', async () => {
+      installRouter([
+        rule(
+          BASE_1,
+          ['/l1-info-tree-index', 'network_id=1', 'deposit_count=2'],
+          200,
+          loadFixture('l2l2_165338016Z_l1_info_tree_index.json')
+        ),
+        rule(
+          BASE_2,
+          ['/injected-l1-info-leaf', 'network_id=2', 'leaf_index=7'],
+          500,
+          errorBody(
+            'failed to get injected global exit root for leaf index=7, error: database is locked'
+          )
+        ),
+      ]);
+
+      const aggregator = new AggkitBridgeAggregator({
+        networks: { 1: BASE_1, 2: BASE_2 },
+      });
+
+      await expect(
+        aggregator.getClaimInputs({
+          recordingNetworkId: 1,
+          destinationNetworkId: 2,
+          depositCount: 2,
+        })
+      ).rejects.toMatchObject({ httpStatus: 500 });
+    });
+
+    it("L2 -> L2: rc6's /claim-proof 404 (source settled, destination injected, a syncer a few blocks behind on the leaf) returns { claimable: false, reason: 'CLAIM_PROOF_NOT_AVAILABLE', sourceL1InfoTreeIndex } — NOT a throw. Activates the not-ready arm design 2.2/2.6 reserved (audit finding C3)", async () => {
+      installRouter([
+        rule(
+          BASE_1,
+          ['/l1-info-tree-index', 'network_id=1', 'deposit_count=2'],
+          200,
+          loadFixture('l2l2_165338016Z_l1_info_tree_index.json')
+        ),
+        rule(
+          BASE_2,
+          ['/injected-l1-info-leaf', 'network_id=2', 'leaf_index=7'],
+          200,
+          injectedLeafBody(7)
+        ),
+        rule(
+          BASE_1,
+          ['/claim-proof', 'network_id=1', 'leaf_index=7', 'deposit_count=2'],
+          404,
+          loadFixture('claim_proof_rc6_bridgesync_l2_not_indexed_404.json')
+        ),
+      ]);
+
+      const aggregator = new AggkitBridgeAggregator({
+        networks: { 1: BASE_1, 2: BASE_2 },
+      });
+
+      const result = await aggregator.getClaimInputs({
+        recordingNetworkId: 1,
+        destinationNetworkId: 2,
+        depositCount: 2,
+      });
+
+      expect(result).toEqual({
+        claimable: false,
+        reason: 'CLAIM_PROOF_NOT_AVAILABLE',
+        detail: expect.stringContaining('has not indexed deposit count'),
+        sourceL1InfoTreeIndex: 7,
+      });
+    });
+
+    it("L2 -> L1: rc6's /claim-proof 503 returns { claimable: false, reason: 'SYNCER_INCONSISTENT' } — NOT a throw (audit finding C3)", async () => {
+      installRouter([
+        rule(
+          BASE_1,
+          ['/l1-info-tree-index', 'network_id=1', 'deposit_count=3'],
+          200,
+          loadFixture('l2l1_lifecycle_l1_info_tree_index_ready.json')
+        ),
+        rule(
+          BASE_1,
+          ['/claim-proof', 'network_id=1', 'leaf_index=7', 'deposit_count=3'],
+          503,
+          loadFixture('claim_proof_rc6_syncer_inconsistent_503.json')
+        ),
+      ]);
+
+      const aggregator = new AggkitBridgeAggregator({
+        networks: { 1: BASE_1 },
+      });
+
+      const result = await aggregator.getClaimInputs({
+        recordingNetworkId: 1,
+        destinationNetworkId: 0,
+        depositCount: 3,
+      });
+
+      expect(result).toEqual({
+        claimable: false,
+        reason: 'SYNCER_INCONSISTENT',
+        detail: expect.stringContaining('a syncer is temporarily inconsistent'),
+        sourceL1InfoTreeIndex: 7,
+      });
+    });
+
+    // The prose gate on /claim-proof's 503 is load-bearing: ClaimProofHandler has
+    // two 503 sources that are genuine configuration faults, in rc5 AND rc6+.
+    it.each([
+      [
+        'L1 bridge syncer is not available',
+        'claim_proof_l1_bridge_syncer_unavailable_503.json',
+      ],
+      [
+        'L2 bridge syncer is not available',
+        'claim_proof_l2_bridge_syncer_unavailable_503.json',
+      ],
+    ])(
+      'L2 -> L1: /claim-proof\'s GENUINE-FAULT 503 "%s" still throws AggkitApiError — a misconfigured aggkit must never be read as "keep polling forever" (audit finding C3)',
+      async (message, fixture) => {
+        installRouter([
+          rule(
+            BASE_1,
+            ['/l1-info-tree-index', 'network_id=1', 'deposit_count=3'],
+            200,
+            loadFixture('l2l1_lifecycle_l1_info_tree_index_ready.json')
+          ),
+          rule(
+            BASE_1,
+            ['/claim-proof', 'network_id=1', 'leaf_index=7', 'deposit_count=3'],
+            503,
+            loadFixture(fixture)
+          ),
+        ]);
+
+        const aggregator = new AggkitBridgeAggregator({
+          networks: { 1: BASE_1 },
+        });
+
+        await expect(
+          aggregator.getClaimInputs({
+            recordingNetworkId: 1,
+            destinationNetworkId: 0,
+            depositCount: 3,
+          })
+        ).rejects.toMatchObject({ httpStatus: 503, message });
+      }
+    );
+
+    it("L2 -> L1: the aggkit-proxy's OWN routing-failure 404 on /claim-proof throws — never classified as CLAIM_PROOF_NOT_AVAILABLE (the proxy-prose trap, now that 404 is a not-ready carrier on this endpoint too)", async () => {
+      installRouter([
+        rule(
+          BASE_1,
+          ['/l1-info-tree-index', 'network_id=1', 'deposit_count=3'],
+          200,
+          loadFixture('l2l1_lifecycle_l1_info_tree_index_ready.json')
+        ),
+        rule(
+          BASE_1,
+          ['/claim-proof', 'network_id=1', 'leaf_index=7', 'deposit_count=3'],
+          404,
+          loadFixture('error_404_unknown_network.json')
+        ),
+      ]);
+
+      const aggregator = new AggkitBridgeAggregator({
+        networks: { 1: BASE_1 },
+      });
+
+      await expect(
+        aggregator.getClaimInputs({
+          recordingNetworkId: 1,
+          destinationNetworkId: 0,
+          depositCount: 3,
+        })
+      ).rejects.toMatchObject({
+        httpStatus: 404,
+        message: expect.stringContaining('bridge service url not found'),
+      });
     });
 
     it('L2 -> L1 (destination 0) skips Tier-2b entirely: no /injected-l1-info-leaf request is made', async () => {
@@ -1286,10 +2058,16 @@ describe('AggkitBridgeAggregator', () => {
       });
 
       const result = await aggregator.getClaimInputs({
-        originNetworkId: 1,
+        recordingNetworkId: 1,
         destinationNetworkId: 0,
         depositCount: 3,
       });
+      expect(result.claimable).toBe(true);
+      if (!result.claimable) {
+        throw new Error(
+          `expected claimable: true, got ${result.reason}: ${result.detail}`
+        );
+      }
 
       expect(result.sourceL1InfoTreeIndex).toBe(7);
       expect(result.leafIndex).toBe(7);
@@ -1298,6 +2076,412 @@ describe('AggkitBridgeAggregator', () => {
         url.includes('/injected-l1-info-leaf')
       );
       expect(injectedLeafCalls).toHaveLength(0);
+    });
+
+    // -----------------------------------------------------------------------
+    // Recording-network routing regressions (comment 3847422009).
+    // These deliberately route ONLY the recording-network URLs: the router
+    // throws `no rule matched URL` for anything else, so the pre-fix code
+    // (which keyed both endpoints off `bridge.origin_network`) fails loudly
+    // here instead of silently building a proof from the wrong tree.
+    // -----------------------------------------------------------------------
+
+    it('L2-1 -> L2-2 NATIVE GAS TOKEN (origin_network=0, recorded on L2-1): builds the proof from the RECORDING network (1), never from network 0 (comment 3847422009)', async () => {
+      installRouter([
+        // ONLY network_id=1 is routed. A request for network_id=0 (what the
+        // old origin-keyed routing would issue for origin_network=0) hits the
+        // router's no-rule-matched throw.
+        rule(
+          BASE_1,
+          ['/l1-info-tree-index', 'network_id=1', 'deposit_count=4'],
+          200,
+          '9'
+        ),
+        rule(
+          BASE_2,
+          ['/injected-l1-info-leaf', 'network_id=2', 'leaf_index=9'],
+          200,
+          injectedLeafBody(9)
+        ),
+        rule(
+          BASE_1,
+          ['/claim-proof', 'network_id=1', 'leaf_index=9', 'deposit_count=4'],
+          200,
+          loadFixture('claim_proof_valid.json')
+        ),
+      ]);
+
+      const aggregator = new AggkitBridgeAggregator({
+        // retries: 0 so a routing regression surfaces as the router's
+        // `no rule matched URL: ...network_id=0...` message immediately,
+        // rather than as a 5s vitest timeout (fetchRawText's retry heuristic
+        // treats any error message containing "network" as retryable, and the
+        // unrouted URL contains `network_id`).
+        networks: { 1: BASE_1, 2: BASE_2 },
+        retries: 0,
+      });
+
+      const result = await aggregator.getClaimInputs({
+        recordingNetworkId: 1,
+        destinationNetworkId: 2,
+        depositCount: 4,
+      });
+      expect(result.claimable).toBe(true);
+      if (!result.claimable) {
+        throw new Error(
+          `expected claimable: true, got ${result.reason}: ${result.detail}`
+        );
+      }
+
+      expect(result.sourceL1InfoTreeIndex).toBe(9);
+      expect(result.leafIndex).toBe(9);
+
+      const calls = (global.fetch as Mock).mock.calls as [string][];
+      // Neither tree-relative endpoint may ever be asked about network 0.
+      const networkZeroTreeCalls = calls.filter(
+        ([url]) =>
+          url.includes('network_id=0') &&
+          (url.includes('/l1-info-tree-index') || url.includes('/claim-proof'))
+      );
+      expect(networkZeroTreeCalls).toHaveLength(0);
+      // Both tree-relative endpoints used the SAME recording network.
+      expect(
+        calls.filter(
+          ([url]) =>
+            url.includes('/l1-info-tree-index') && url.includes('network_id=1')
+        )
+      ).toHaveLength(1);
+      expect(
+        calls.filter(
+          ([url]) =>
+            url.includes('/claim-proof') && url.includes('network_id=1')
+        )
+      ).toHaveLength(1);
+    });
+
+    it('L2-1 -> L2-2 of a THIRD-NETWORK-ORIGIN token (origin_network=3, recorded on L2-1): builds the proof from the RECORDING network (1), never from network 3 (audit finding P2 — Case C)', async () => {
+      // Case C from the design/audit's four-routing-cases table: a token
+      // whose origin is a THIRD network (3), distinct from both the
+      // recording network (1, where the bridging tx executed) and the
+      // destination (2). `getClaimInputs` has no `origin_network` parameter
+      // at all (it was removed — comment 3847422009), so there is nothing
+      // in this call for a reintroduced origin-keyed shortcut to read except
+      // by routing through a hypothetical `clientFor(3)`. Network 3 is
+      // CONFIGURED (so `clientFor(3)` would successfully resolve a client,
+      // not throw "no client configured") but deliberately left UNROUTED —
+      // same technique as the case-D test above — so any request that ever
+      // targets it fails immediately with "no rule matched" rather than
+      // masking the regression behind a differently-worded config error.
+      installRouter([
+        rule(
+          BASE_1,
+          ['/l1-info-tree-index', 'network_id=1', 'deposit_count=7'],
+          200,
+          '10'
+        ),
+        rule(
+          BASE_2,
+          ['/injected-l1-info-leaf', 'network_id=2', 'leaf_index=10'],
+          200,
+          injectedLeafBody(12)
+        ),
+        rule(
+          BASE_1,
+          ['/claim-proof', 'network_id=1', 'leaf_index=12', 'deposit_count=7'],
+          200,
+          loadFixture('claim_proof_valid.json')
+        ),
+      ]);
+
+      const aggregator = new AggkitBridgeAggregator({
+        // retries: 0 — see the case-D test above: a routing regression must
+        // surface immediately as "no rule matched", not a 5s vitest timeout.
+        networks: { 1: BASE_1, 2: BASE_2, 3: BASE_3 },
+        retries: 0,
+      });
+
+      const result = await aggregator.getClaimInputs({
+        recordingNetworkId: 1,
+        destinationNetworkId: 2,
+        depositCount: 7,
+      });
+      expect(result.claimable).toBe(true);
+      if (!result.claimable) {
+        throw new Error(
+          `expected claimable: true, got ${result.reason}: ${result.detail}`
+        );
+      }
+
+      expect(result.sourceL1InfoTreeIndex).toBe(10);
+      expect(result.leafIndex).toBe(12);
+
+      const calls = (global.fetch as Mock).mock.calls as [string][];
+      // Neither tree-relative endpoint may ever be asked about network 3
+      // (the notional origin) or network 0.
+      const wrongNetworkTreeCalls = calls.filter(
+        ([url]) =>
+          (url.includes('network_id=3') || url.includes('network_id=0')) &&
+          (url.includes('/l1-info-tree-index') || url.includes('/claim-proof'))
+      );
+      expect(wrongNetworkTreeCalls).toHaveLength(0);
+      // No request of any kind was sent to network 3's instance.
+      expect(calls.some(([url]) => url.startsWith(BASE_3))).toBe(false);
+      // Both tree-relative endpoints used the SAME recording network.
+      expect(
+        calls.filter(
+          ([url]) =>
+            url.includes('/l1-info-tree-index') && url.includes('network_id=1')
+        )
+      ).toHaveLength(1);
+      expect(
+        calls.filter(
+          ([url]) =>
+            url.includes('/claim-proof') && url.includes('network_id=1')
+        )
+      ).toHaveLength(1);
+    });
+
+    it('L2-1 -> L1 NATIVE GAS TOKEN (origin_network=0, destination 0): no "no client configured for network 0" — routes to the recording network 1 (comment 3847422009)', async () => {
+      installRouter([
+        rule(
+          BASE_1,
+          ['/l1-info-tree-index', 'network_id=1', 'deposit_count=6'],
+          200,
+          '11'
+        ),
+        rule(
+          BASE_1,
+          ['/claim-proof', 'network_id=1', 'leaf_index=11', 'deposit_count=6'],
+          200,
+          loadFixture('claim_proof_valid.json')
+        ),
+      ]);
+
+      const aggregator = new AggkitBridgeAggregator({
+        networks: { 1: BASE_1 },
+      });
+
+      const result = await aggregator.getClaimInputs({
+        recordingNetworkId: 1,
+        destinationNetworkId: 0,
+        depositCount: 6,
+      });
+      expect(result.claimable).toBe(true);
+      if (!result.claimable) {
+        throw new Error(
+          `expected claimable: true, got ${result.reason}: ${result.detail}`
+        );
+      }
+
+      expect(result.sourceL1InfoTreeIndex).toBe(11);
+      expect(result.leafIndex).toBe(11);
+    });
+
+    it('L1 -> L2-2 of an L2-1-ORIGIN token (origin_network=1, recorded on L1): probes network_id=0 and never touches L2-1 (comment 3847422009)', async () => {
+      installRouter([
+        // Only network_id=0 is routed for the tree endpoints. The old
+        // origin-keyed routing would have used clientFor(1) with
+        // network_id=1 -> a well-formed proof from L2-1's tree.
+        rule(
+          BASE_2,
+          ['/l1-info-tree-index', 'network_id=0', 'deposit_count=8'],
+          200,
+          '5'
+        ),
+        rule(
+          BASE_2,
+          ['/injected-l1-info-leaf', 'network_id=2', 'leaf_index=5'],
+          200,
+          injectedLeafBody(5)
+        ),
+        rule(
+          BASE_2,
+          ['/claim-proof', 'network_id=0', 'leaf_index=5', 'deposit_count=8'],
+          200,
+          loadFixture('claim_proof_valid.json')
+        ),
+      ]);
+
+      const aggregator = new AggkitBridgeAggregator({
+        // retries: 0 — see the case-D test above.
+        networks: { 1: BASE_1, 2: BASE_2 },
+        retries: 0,
+      });
+
+      const result = await aggregator.getClaimInputs({
+        recordingNetworkId: 0,
+        destinationNetworkId: 2,
+        depositCount: 8,
+      });
+      expect(result.claimable).toBe(true);
+      if (!result.claimable) {
+        throw new Error(
+          `expected claimable: true, got ${result.reason}: ${result.detail}`
+        );
+      }
+
+      expect(result.leafIndex).toBe(5);
+      const calls = (global.fetch as Mock).mock.calls as [string][];
+      expect(calls.every(([url]) => url.startsWith(BASE_2))).toBe(true);
+    });
+
+    it('recordingNetworkId=0 with an UNCONFIGURED destination falls back to any configured instance instead of throwing', async () => {
+      installRouter([
+        rule(
+          BASE_1,
+          ['/l1-info-tree-index', 'network_id=0', 'deposit_count=1'],
+          200,
+          '2'
+        ),
+        rule(
+          BASE_1,
+          ['/claim-proof', 'network_id=0', 'leaf_index=2', 'deposit_count=1'],
+          200,
+          loadFixture('claim_proof_valid.json')
+        ),
+      ]);
+
+      const aggregator = new AggkitBridgeAggregator({
+        networks: { 1: BASE_1 },
+      });
+
+      // destination 7 is unconfigured -> resolveInjectedLeafIndex returns
+      // { kind: 'unknown' } and the proof is built on the source index.
+      const result = await aggregator.getClaimInputs({
+        recordingNetworkId: 0,
+        destinationNetworkId: 7,
+        depositCount: 1,
+      });
+      expect(result.claimable).toBe(true);
+      if (!result.claimable) {
+        throw new Error(
+          `expected claimable: true, got ${result.reason}: ${result.detail}`
+        );
+      }
+
+      expect(result.leafIndex).toBe(2);
+      expect(result.sourceL1InfoTreeIndex).toBe(2);
+    });
+
+    it("throws a migration Error when a JS caller passes the removed 'originNetworkId' (comment 3847422009)", async () => {
+      installRouter([]);
+      const aggregator = new AggkitBridgeAggregator({
+        networks: { 1: BASE_1 },
+      });
+
+      await expect(
+        aggregator.getClaimInputs({
+          // Simulating an un-typechecked JavaScript caller that was not
+          // migrated: `originNetworkId?: never` gives it no protection.
+          originNetworkId: 1,
+          destinationNetworkId: 0,
+          depositCount: 0,
+        } as unknown as Parameters<AggkitBridgeAggregator['getClaimInputs']>[0])
+      ).rejects.toThrow(/'originNetworkId' was removed/);
+    });
+
+    it('still throws AggkitApiError for a GENUINE /l1-info-tree-index 500 whose body does not match the not-ready patterns (comment 3847600104)', async () => {
+      installRouter([
+        rule(
+          BASE_1,
+          ['/l1-info-tree-index', 'network_id=1', 'deposit_count=0'],
+          500,
+          errorBody('unexpected internal database failure')
+        ),
+      ]);
+
+      const aggregator = new AggkitBridgeAggregator({
+        networks: { 1: BASE_1 },
+      });
+
+      let caught: unknown;
+      try {
+        await aggregator.getClaimInputs({
+          recordingNetworkId: 1,
+          destinationNetworkId: 0,
+          depositCount: 0,
+        });
+      } catch (error) {
+        caught = error;
+      }
+
+      expect(caught).toBeInstanceOf(AggkitApiError);
+      expect((caught as AggkitApiError).httpStatus).toBe(500);
+      expect((caught as AggkitApiError).endpoint).toBe('/l1-info-tree-index');
+    });
+
+    it('still throws AggkitApiError for a genuine /claim-proof 500 (claim_proof_error_badindex.json) — the union has no reachable not-ready arm there yet', async () => {
+      installRouter([
+        rule(
+          BASE_1,
+          ['/l1-info-tree-index', 'network_id=1', 'deposit_count=1'],
+          200,
+          '4'
+        ),
+        rule(
+          BASE_1,
+          ['/claim-proof', 'network_id=1', 'leaf_index=4', 'deposit_count=1'],
+          500,
+          loadFixture('claim_proof_error_badindex.json')
+        ),
+      ]);
+
+      const aggregator = new AggkitBridgeAggregator({
+        networks: { 1: BASE_1 },
+      });
+
+      await expect(
+        aggregator.getClaimInputs({
+          recordingNetworkId: 1,
+          destinationNetworkId: 0,
+          depositCount: 1,
+        })
+      ).rejects.toBeInstanceOf(AggkitApiError);
+    });
+
+    it("throws an informative error naming BOTH indices when aggkit returns an injected leaf LOWER than the deposit's own source index (comment 3862897612)", async () => {
+      // Contract violation: `getInjectedL1InfoLeaf` is documented to return
+      // result.l1_info_tree_index >= leafIndex for an L2 destination -- here
+      // it returns 3, lower than the source index (10) that was requested.
+      installRouter([
+        rule(
+          BASE_1,
+          ['/l1-info-tree-index', 'network_id=1', 'deposit_count=5'],
+          200,
+          '10'
+        ),
+        rule(
+          BASE_2,
+          ['/injected-l1-info-leaf', 'network_id=2', 'leaf_index=10'],
+          200,
+          injectedLeafBody(3)
+        ),
+      ]);
+
+      const aggregator = new AggkitBridgeAggregator({
+        networks: { 1: BASE_1, 2: BASE_2 },
+      });
+
+      let caught: unknown;
+      try {
+        await aggregator.getClaimInputs({
+          recordingNetworkId: 1,
+          destinationNetworkId: 2,
+          depositCount: 5,
+        });
+      } catch (error) {
+        caught = error;
+      }
+
+      expect(caught).toBeInstanceOf(Error);
+      // A genuine backend-contract violation is a real error, not a
+      // not-ready state: it must stay a plain `Error` throw and must NOT be
+      // downgraded to a `claimable: false` reason, which would turn a
+      // funds-relevant backend bug into "keep polling forever".
+      // `AggkitApiError` is reserved for real non-2xx/transport failures.
+      expect(caught).not.toBeInstanceOf(AggkitApiError);
+      expect((caught as Error).message).toContain('10');
+      expect((caught as Error).message).toContain('3');
     });
   });
 

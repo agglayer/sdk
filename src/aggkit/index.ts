@@ -16,8 +16,8 @@
  * ```typescript
  * const aggregator = new AggkitBridgeAggregator({
  *   networks: {
- *     1: { baseUrl: "http://proxy.local:8080", networkId: 1 },
- *     2: { baseUrl: "http://proxy.local:8080", networkId: 2 }, // Same URL, different networkId
+ *     1: "http://proxy.local:8080",
+ *     2: "http://proxy.local:8080", // Same URL, different networkId
  *   },
  * });
  * ```
@@ -39,6 +39,67 @@
  * `_string` pairs — only `error_type` and certificate `status` keep that
  * convention), and steps carry `step_name`, not `step`. rc4's API.md
  * described these differently; the wire format itself never changed.
+ *
+ * ## Claim Inputs & the Not-Ready Union
+ *
+ * `AggkitBridgeAggregator.getClaimInputs` returns
+ * `AggkitClaimInputsResult = AggkitClaimInputsReady | AggkitClaimInputsNotReady`
+ * (discriminated on `claimable`). Not yet claimable is data, not an error:
+ * `getClaimInputs` returns `{ claimable: false, reason, detail }` for a valid
+ * request whose deposit simply has not settled yet -- it never throws for
+ * that condition. It throws only for genuine failures: `AggkitApiError` for
+ * a real non-2xx response, a plain `Error` for a backend-contract violation
+ * or a configuration problem, or a plain `Error` (its `.cause` carries the
+ * original network error) for a transport failure after retries are
+ * exhausted -- a transport failure does NOT produce `AggkitApiError`;
+ * that class is only ever constructed from an actual HTTP response. There is
+ * no thrown not-ready state anywhere on this path.
+ *
+ * `reason` (`AggkitNotReadyReason`) is an OPEN string-literal union that WILL
+ * gain members as aggkit's error taxonomy evolves. It currently has five
+ * members: `SOURCE_NOT_ON_L1_INFO_TREE`, `DESTINATION_GER_NOT_INJECTED`,
+ * `SYNCER_INCONSISTENT` (a transient reorg-resolution wait, reachable from
+ * all three claim-path endpoints -- `/l1-info-tree-index`,
+ * `/injected-l1-info-leaf`, and `/claim-proof`), `L1_INFO_LEAF_NOT_INDEXED`,
+ * and `CLAIM_PROOF_NOT_AVAILABLE`. Always branch with a `default` / `else`
+ * that treats an unrecognised reason as "not ready yet, keep polling" --
+ * never write an exhaustive `switch` with an `assertNever` default, or a
+ * future non-breaking SDK minor becomes a breaking change for you. `detail`
+ * is a human-readable string for logging/display only; never branch on its
+ * text.
+ *
+ * The lower-level client probes (`AggkitBridgeClient.getL1InfoTreeIndex`,
+ * `getInjectedL1InfoLeaf`, `getClaimProof`) return the same-shaped
+ * `AggkitProbeResult<T>` union (`{ ready: true; value: T } | { ready: false;
+ * reason; detail }`), with identical not-error semantics.
+ *
+ * ## Recording-Network Routing
+ *
+ * `getClaimInputs` takes a REQUIRED `recordingNetworkId` -- the network whose
+ * LOCAL EXIT TREE recorded the deposit (i.e. the network the bridging
+ * transaction executed on) -- NOT the asset's `origin_network`. The two
+ * diverge for native-gas-token withdrawals and for cross-network transfers
+ * of a token whose origin differs from the network the transfer executed
+ * on; passing `origin_network` there silently builds a well-formed claim
+ * proof for a different, unrelated deposit, with no error raised anywhere.
+ * From `getActivity` / `getReadyToClaimCount` rows the correct value is
+ * `AggkitTransaction.sourceNetwork`. There is no `originNetworkId`
+ * parameter -- it was removed, not deprecated, so a stale call site is a
+ * compile error rather than a silently wrong proof.
+ *
+ * ## Minimum Supported aggkit Version
+ *
+ * **v0.11.0-rc6.** Earlier releases (rc4/rc5) are not supported — this SDK
+ * does not attempt to classify their wire shapes, so a deployment on rc4/rc5
+ * will see a genuine failure (`AggkitApiError`) for any not-ready state these
+ * endpoints report, rather than the `{ claimable: false, reason, detail }`
+ * union described above. On the supported floor, the client absorbs
+ * aggkit's not-ready wire shapes across `/l1-info-tree-index`,
+ * `/injected-l1-info-leaf`, and `/claim-proof` into the same stable
+ * `AggkitNotReadyReason` members — a 404 with a fixed not-ready prose, or a
+ * 503 while a syncer resolves a reorg (`SYNCER_INCONSISTENT`) — while any
+ * 500 on any of the three is unconditionally a genuine fault and keeps
+ * throwing `AggkitApiError`.
  */
 
 export { AggkitBridgeClient } from './client';
@@ -54,6 +115,12 @@ export type {
   AggkitBridge,
   AggkitClaim,
   AggkitClaimProof,
+  AggkitNotReadyReason,
+  AggkitProbeResult,
+  AggkitClaimInputsParams,
+  AggkitClaimInputsReady,
+  AggkitClaimInputsNotReady,
+  AggkitClaimInputsResult,
   AggkitL1InfoTreeLeaf,
   AggkitTokenMapping,
   AggkitSyncStatus,

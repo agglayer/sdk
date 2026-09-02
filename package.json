@@ -21,6 +21,9 @@
     "url": "https://github.com/agglayer/sdk/issues"
   },
   "homepage": "https://github.com/agglayer/sdk#readme",
+  "engines": {
+    "node": ">=18.0.0"
+  },
   "type": "commonjs",
   "types": "./dist/index.d.ts",
   "files": [
@@ -38,12 +41,13 @@
   "scripts": {
     "build": "tsup",
     "dev": "tsup --watch",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && npm run typecheck:scripts",
+    "typecheck:scripts": "tsc --noEmit -p tsconfig.scripts.json",
     "clean": "rm -rf dist",
     "prepublishOnly": "npm run clean && npm run build",
     "prebuild": "npm run clean",
-    "lint": "eslint src --ext .ts",
-    "lint:fix": "eslint src --ext .ts --fix",
+    "lint": "eslint src scripts --ext .ts",
+    "lint:fix": "eslint src scripts --ext .ts --fix",
     "format": "prettier --write \"src/**/*.{ts,json,md}\"",
     "format:check": "prettier --check \"src/**/*.{ts,json,md}\"",
     "test": "vitest",

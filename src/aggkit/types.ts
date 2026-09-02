@@ -119,6 +119,211 @@ export interface AggkitClaimProof {
   l1_info_tree_leaf: AggkitL1InfoTreeLeaf;
 }
 
+/**
+ * Machine-readable reason a claim-path aggkit probe answered "your request was
+ * valid, the deposit simply is not ready yet".
+ *
+ * NOT an error condition: aggkit answering "this bridge has not been included
+ * on the L1 Info Tree yet" is a successful answer to a well-formed question
+ * (comment 3847523270 — the HTTP 500 that rc4/rc5 wraps it in is aggkit's bug,
+ * not a signal). Genuine failures throw `AggkitApiError` instead
+ * (comment 3847600104).
+ *
+ * ## OPEN UNION — forward-compatibility contract
+ *
+ * This union is EXTENSIBLE BY DESIGN and WILL gain members as aggkit's error
+ * taxonomy evolves (aggkit v0.11.0-rc6 reworked this endpoint's status codes
+ * — see `SYNCER_INCONSISTENT` below and `client.ts`'s
+ * `L1_INFO_TREE_INDEX_NOT_READY_PATTERNS`). Consumers
+ * MUST branch with a `default` / `else` fallback that treats an unrecognised
+ * reason as "not ready yet, keep polling", and MUST NOT write an exhaustive
+ * `switch` with an `assertNever` default — that would turn a non-breaking SDK
+ * minor into a compile break. `detail` always carries a human-readable string
+ * safe to log or display for an unrecognised reason.
+ */
+export type AggkitNotReadyReason =
+  /**
+   * `/l1-info-tree-index`: the recording network's exit-tree root covering
+   * this deposit has not been settled to the L1 info tree yet. The source side
+   * is not done. Retry.
+   */
+  | 'SOURCE_NOT_ON_L1_INFO_TREE'
+  /**
+   * `/injected-l1-info-leaf`: the destination network has not yet injected a
+   * global exit root at or after the deposit's own L1-info-tree index. The
+   * source side IS done; the destination side is not. Retry.
+   */
+  | 'DESTINATION_GER_NOT_INJECTED'
+  /**
+   * `/injected-l1-info-leaf` (aggkit v0.11.0-rc6+ only — see `client.ts`'s
+   * `INJECTED_L1_INFO_LEAF_NOT_READY_PATTERNS`): `l1infotreesync` has not
+   * indexed the L1-info-tree leaf itself yet.
+   *
+   * DISTINCT from `DESTINATION_GER_NOT_INJECTED`, which is why it is a separate
+   * member rather than folded into it: on rc6's primary body for this state the
+   * destination HAS already injected the GER (`"... yet (already injected on L2
+   * per l2gersync), retry later"`, `bridgeservice/bridge.go:916-917`) — only the
+   * L1-side index lags. Reporting "not injected" for it would tell a consumer
+   * the opposite of what the wire said.
+   *
+   * On rc4/rc5 the same condition arrived as a 500 and threw; rc6+ reclassifies
+   * it as 404 not-ready via `respondSyncerError` (audit finding C2). Transient,
+   * self-resolving, seconds to minutes. Retry.
+   */
+  | 'L1_INFO_LEAF_NOT_INDEXED'
+  /**
+   * `/claim-proof` (aggkit v0.11.0-rc6+ only — see `client.ts`'s
+   * `CLAIM_PROOF_NOT_READY_PATTERN`): the source is settled and the destination
+   * has injected, but a syncer has not indexed the specific leaf, deposit
+   * count, local exit root or rollup exit tree the proof needs yet.
+   *
+   * Covers all FIVE of `ClaimProofHandler`'s rc6+ 404 `notFoundMsg` bodies
+   * (`bridgeservice/bridge.go:1067`, `:1084`, `:1093-1094`, `:1107`,
+   * `:1123-1124`) — a single wire state as far as a consumer is concerned; the
+   * exact prose travels in `detail`. On rc4/rc5 all five answered 500 and threw.
+   *
+   * This is the member design §2.2/§2.6 reserved when `getClaimProof` was given
+   * a union return with a deliberately unreachable not-ready arm; the arm is now
+   * reachable (audit finding C3). Retry.
+   */
+  | 'CLAIM_PROOF_NOT_AVAILABLE'
+  /**
+   * All three claim-path endpoints — `/l1-info-tree-index`,
+   * `/injected-l1-info-leaf` and `/claim-proof` (aggkit v0.11.0-rc6+ only; see
+   * `client.ts`'s `SYNCER_INCONSISTENT_PATTERN`): the syncer serving
+   * this network answered 503 because it is halted resolving a chain reorg
+   * (`aggkitsync.ErrInconsistentState`, `sync/evmdriver.go:18`; mapped to 503
+   * by `httpStatusForSyncerError`, `bridgeservice/bridge.go:1774-1786`).
+   *
+   * DECISION (S7, comment 3862896539): modelled as not-ready rather than as
+   * a genuine `AggkitApiError` throw, even though the condition is
+   * syncer-wide rather than specific to this one deposit. Justification:
+   * aggkit's own OpenAPI contract for this endpoint documents 503 with the
+   * same "retry later" framing as its 404
+   * (`@Failure 503 ... "a syncer is resolving a reorg, retry later"`,
+   * `bridge.go:786`) — it is a transient, self-resolving condition (a reorg
+   * settles in seconds to minutes), not evidence of a bug. Throwing here
+   * would flood `failedNetworks` for every in-flight deposit on that network
+   * for the duration of any ordinary reorg, which is a worse consumer
+   * experience than a `default`-branch "not ready yet" while it clears.
+   *
+   * EXTENDED (S16, audit findings C2/C3) from `/l1-info-tree-index` to all
+   * three claim-path endpoints, since `respondSyncerError` writes the same
+   * fixed 503 body from all three handlers. The prose gate is load-bearing on
+   * `/claim-proof`: that handler has two OTHER 503s
+   * (`"L1 bridge syncer is not available"`, `bridge.go:1076-1078`, and
+   * `"L2 bridge syncer is not available"`, `:1099-1101`) which are genuine
+   * configuration faults and must keep throwing `AggkitApiError`.
+   * Retry.
+   */
+  | 'SYNCER_INCONSISTENT';
+
+/**
+ * Result of a claim-path aggkit probe: either the value, or a machine-readable
+ * not-ready state. Genuine failures still throw `AggkitApiError` — this union
+ * never represents one.
+ */
+export type AggkitProbeResult<T> =
+  | { ready: true; value: T }
+  | {
+      ready: false;
+      reason: AggkitNotReadyReason;
+      /**
+       * Human-readable detail — aggkit's own error message verbatim where
+       * there is one. For logging and display only; never branch on its text.
+       */
+      detail: string;
+    };
+
+/**
+ * Parameters for `AggkitBridgeAggregator.getClaimInputs`.
+ *
+ * ROUTING CONTRACT (comment 3847422009): every tree-relative argument the
+ * method derives is keyed by `recordingNetworkId`. The asset's
+ * `bridge.origin_network` has NO role here.
+ */
+export interface AggkitClaimInputsParams {
+  /**
+   * The network whose LOCAL EXIT TREE recorded this deposit — i.e. the network
+   * the bridging transaction was executed on. NOT `bridge.origin_network` (the
+   * asset's origin), which diverges for native-gas-token withdrawals
+   * (`origin_network === 0`, recorded on the L2's own tree) and for L1->L2
+   * transfers of an L2-origin token (`origin_network === <that L2>`, recorded
+   * on L1's tree).
+   *
+   * From `getActivity`/`getReadyToClaimCount` rows this is
+   * `AggkitTransaction.sourceNetwork`. Raw from aggkit it is the `network_id`
+   * the `/bridges` call that produced the row was made with.
+   *
+   * Keys `/l1-info-tree-index`'s `network_id` and `/claim-proof`'s
+   * `network_id` unconditionally. Also keys which aggkit instance answers,
+   * EXCEPT when `recordingNetworkId === 0` (L1 has no dedicated instance):
+   * there the destination L2's instance is used instead (it is the one that
+   * must also answer the injected-GER probe), via
+   * `clientForRecordingNetwork` — falling back to any configured instance if
+   * the destination itself isn't configured.
+   */
+  recordingNetworkId: number;
+  /**
+   * Where the deposit lands. Used ONLY for the destination-injected-GER gate
+   * (skipped entirely when 0 — L1 has no injection step). Never used to pick
+   * the tree a proof is built from.
+   */
+  destinationNetworkId: number;
+  /** The deposit's local leaf index in `recordingNetworkId`'s exit tree. */
+  depositCount: number;
+  /**
+   * @deprecated Removed in favour of `recordingNetworkId`. Declared as `never`
+   * so a stale call site is a COMPILE ERROR rather than a silently wrong proof
+   * (comment 3847422009). See the migration note on `recordingNetworkId`.
+   */
+  originNetworkId?: never;
+}
+
+/** `AggkitBridgeAggregator.getClaimInputs` — the deposit is claimable now. */
+export interface AggkitClaimInputsReady {
+  claimable: true;
+  /**
+   * The `leaf_index` the proof was built against: the DESTINATION-INJECTED
+   * index when `destinationNetworkId !== 0`, else the source index.
+   */
+  leafIndex: number;
+  proof: AggkitClaimProof;
+  /**
+   * The deposit's own index from `/l1-info-tree-index` on the recording
+   * network. Equals `leafIndex` when the destination is L1 or when injection
+   * was exact; otherwise `leafIndex >= sourceL1InfoTreeIndex`.
+   */
+  sourceL1InfoTreeIndex: number;
+}
+
+/**
+ * `AggkitBridgeAggregator.getClaimInputs` — the request was valid and the
+ * deposit is simply not claimable yet. This is a SUCCESSFUL return, not an
+ * error (comments 3847523270 / 3847600104).
+ */
+export interface AggkitClaimInputsNotReady {
+  claimable: false;
+  /** See `AggkitNotReadyReason` — an OPEN union; always keep a `default` branch. */
+  reason: AggkitNotReadyReason;
+  /** Human-readable detail (aggkit's own message where there is one). Log/display only. */
+  detail: string;
+  /**
+   * Present whenever the source index was resolved before the blocking
+   * step — i.e. for every not-ready reason that can only be reached AFTER
+   * the source `/l1-info-tree-index` probe already succeeded:
+   * `DESTINATION_GER_NOT_INJECTED`, `L1_INFO_LEAF_NOT_INDEXED`,
+   * `SYNCER_INCONSISTENT` (from the destination-side probe or from
+   * `/claim-proof`), and `CLAIM_PROOF_NOT_AVAILABLE`. Absent for
+   * `SOURCE_NOT_ON_L1_INFO_TREE`, which blocks before the source index is
+   * known. Diagnostics only.
+   */
+  sourceL1InfoTreeIndex?: number;
+}
+
+export type AggkitClaimInputsResult =
+  AggkitClaimInputsReady | AggkitClaimInputsNotReady;
+
 // ---- token mapping ----
 
 export interface AggkitTokenMapping {
@@ -209,6 +414,12 @@ export interface AggkitTransaction {
   txSender: string;
   fromAddress: string;
   receiverAddress: string;
+  /**
+   * The RECORDING network — whose local exit tree holds this deposit's leaf.
+   * Pass this as `getClaimInputs`'s `recordingNetworkId`. NOT the asset's
+   * origin (`originTokenNetwork`), which diverges for native-gas-token
+   * withdrawals and for L1->L2 transfers of an L2-origin token.
+   */
   sourceNetwork: number;
   destinationNetwork: number;
   amount: string;
