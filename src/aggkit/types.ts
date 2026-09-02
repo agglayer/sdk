@@ -445,7 +445,17 @@ export interface AggkitTransaction {
   leafIndexForProof?: number;
 }
 
-/** One configured network's fan-out failed; its rows are simply absent from the page. */
+/**
+ * One fan-out CALL failed — not necessarily this call's whole network
+ * (issue #30 scope item 2): `getActivity`/`getReadyToClaimCount` degrade
+ * `Promise.allSettled`-style PER CALL now (bridges-by-origin,
+ * bridges-by-L1-destination, claims enrichment, and the per-row
+ * claim-readiness probes are each independent failure points), so a single
+ * `networkId` CAN appear more than once in this array — one entry per
+ * distinct call that failed for it, not one entry per network. Consumers
+ * that assumed at most one entry per `networkId` (true of every SDK version
+ * before this redesign) must not rely on that any more.
+ */
 export interface AggkitFailedNetwork {
   networkId: number;
   error: string;
@@ -456,19 +466,90 @@ export interface AggkitFailedNetwork {
 export interface AggkitActivityPage {
   data: AggkitTransaction[];
   pagination: {
-    total: number;
     limit: number;
+    /** Absent iff `exhausted` — pass straight back as `getActivity`'s `cursor` for the next page. */
     nextStartAfterCursor?: string;
   };
+  /**
+   * True iff every configured feed source (bridges-by-origin and
+   * bridges-by-L1-destination, per configured network) has no more pages
+   * left — i.e. `pagination.nextStartAfterCursor` is absent. `total` was
+   * REMOVED from this contract (issue #30 scope item 1, design comment
+   * 3862896800): it is unknowable across federated, per-network-filtered
+   * sources without fetching everything, and the previous value (a sum of
+   * each network's UNFILTERED `/bridges` `count`) never actually reflected
+   * `fromAddress`-filtered rows in the first place. An infinite-scroll
+   * consumer needs `exhausted`/`nextStartAfterCursor`, not a total.
+   */
+  exhausted: boolean;
   failedNetworks: AggkitFailedNetwork[];
 }
 
 /**
- * Opaque composite cursor: one 1-based page counter per fan-out call.
- * A stored value of `0` is a sentinel meaning "this call
- * is exhausted — do not refetch it" (see aggregator.ts).
+ * Result of `AggkitBridgeAggregator.getReadyToClaimCount` (issue #30 scope
+ * item 3): previously a bare `number` with, by design, no failure surface
+ * at all — every dropped per-row probe (a rate limit, a reset connection,
+ * an instance struggling under load) silently folded into "not ready",
+ * under-counting the badge with no signal that anything went wrong.
+ * `failedNetworks` now carries every genuine probe/fetch failure the count
+ * absorbed, so a consumer can distinguish "nothing is ready yet" from
+ * "some networks/probes could not be checked" instead of the two looking
+ * identical.
  */
-export type AggkitPageCursor = Record<string, number>;
+export interface AggkitReadyToClaimCountResult {
+  count: number;
+  failedNetworks: AggkitFailedNetwork[];
+}
+
+/**
+ * Per-source high-water pagination state for one fan-out feed call — keyed
+ * in `AggkitPageCursor` by `` `${networkId}:bridgesOrigin` `` /
+ * `` `${networkId}:bridgesL1` `` (see aggregator.ts's `mergeActivitySources`).
+ *
+ * REDESIGNED (issue #30 scope item 1, design comments 3862896800/3862896964):
+ * previously a bare 1-based page number (with `0` as an EXHAUSTED sentinel),
+ * shared by all 4 fan-out calls including the two `/claims` lists. That
+ * conflated an *enrichment lookup* (claims) with the *paginated feed*
+ * (bridges), and page-number-only state gave a k-way merge nowhere to
+ * record how far it had consumed INTO a fetched page — so a page could only
+ * be taken whole or not at all, making exact `pageSize` slicing across
+ * multiple sources impossible. Claims are no longer part of this cursor at
+ * all (they're re-fetched fresh, unpaginated, every call — see
+ * `AggkitBridgeAggregator`'s claims-enrichment fetch). `offset` is what
+ * makes exact-`pageSize` output possible: a source that contributed only
+ * some of its fetched page's rows to the last response resumes mid-page,
+ * not from a re-fetch of page 1.
+ */
+export interface AggkitSourceCursorState {
+  /** 1-based page number of aggkit's OWN fixed (newest-first) pagination currently loaded for this source. */
+  page: number;
+  /** Rows of `page` already emitted by a PRIOR `getActivity` call. */
+  offset: number;
+  /**
+   * True once this source has no further pages — do not refetch it. Absent
+   * (not `false`) when there may be more; a source that THREW rather than
+   * exhausting keeps its prior `page`/`offset` untouched and this key
+   * un-set, so the next call retries it from exactly where it left off
+   * (design comment 3862896964: a network failing on page 1 used to
+   * contribute no cursor keys at all, with no way to retry short of a full
+   * restart).
+   */
+  exhausted?: boolean;
+}
+
+/**
+ * Opaque composite cursor: one `AggkitSourceCursorState` per real feed
+ * source (`` `${networkId}:bridgesOrigin` `` / `` `${networkId}:bridgesL1` ``
+ * — NOT per claims call; see `AggkitSourceCursorState`'s doc for what
+ * changed and why). Round-trip this value verbatim
+ * (`getActivity(...).pagination.nextStartAfterCursor` back into the next
+ * call's `cursor`) — never construct or inspect it by hand. Only valid for
+ * a stable `pageSize` across one pagination session, same constraint as any
+ * page-number-based cursor (changing `pageSize` mid-pagination makes a
+ * stored `page`/`offset` pair refer to a different slice of data than
+ * intended — pre-existing, unchanged by this redesign).
+ */
+export type AggkitPageCursor = Record<string, AggkitSourceCursorState>;
 
 /**
  * Token metadata output shape = UI's existing `TokenMetadata`

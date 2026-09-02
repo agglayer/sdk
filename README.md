@@ -821,6 +821,50 @@ Two related breaking changes to this method:
    non-2xx response, a transport failure, or a config/contract violation)
    still throw.
 
+### `AggkitBridgeAggregator.getActivity` / `getReadyToClaimCount` pagination + fan-out redesign (issues #30, #31)
+
+Four related breaking changes, all in `src/aggkit/aggregator.ts` /
+`src/aggkit/types.ts`:
+
+1. **`AggkitActivityPage.pagination.total` is REMOVED; `exhausted: boolean`
+   is added at the top level.** `total` summed each network's UNFILTERED
+   `/bridges` count — it never reflected `fromAddress`-filtered rows, is
+   unknowable across federated per-network sources without fetching
+   everything, and the consumer (an infinite-scroll feed) never needed it.
+   Check `page.exhausted` (or the presence of
+   `page.pagination.nextStartAfterCursor`) instead of `page.pagination.total`.
+2. **`AggkitPageCursor`'s per-entry shape changed** from a bare 1-based page
+   number (`0` = exhausted sentinel) to an `AggkitSourceCursorState` object
+   (`page`, `offset`, an optional `exhausted` flag), and it no longer has an
+   entry per fan-out CALL — only per real FEED source
+   (`` `${networkId}:bridgesOrigin` ``/`` `${networkId}:bridgesL1` ``; claims
+   are no longer part of the pagination contract at all, see `types.ts`'s
+   `AggkitSourceCursorState` doc). The value is still fully opaque — round-trip
+   `nextStartAfterCursor` verbatim — but any code that inspected or
+   hand-constructed a cursor must be updated. Cross-page ordering for
+   `order: 'desc'` (the default) is now also GENUINELY correct (a real k-way
+   merge with a per-source high-water cursor, replacing whole-page
+   concatenation) and pages are now exactly `pageSize` rows instead of up to
+   `2 x networks x pageSize`.
+3. **`AggkitFailedNetwork[]` can now contain more than one entry per
+   `networkId`.** Fan-out calls degrade `Promise.allSettled`-style PER CALL
+   now, not per network (a failing claims list, for instance, no longer
+   wipes that network's bridge rows out of `getActivity`) — code that assumed
+   at most one entry per `networkId` must be updated to expect several.
+4. **`getReadyToClaimCount` now returns an `AggkitReadyToClaimCountResult`
+   object (`{ count, failedNetworks }`), not a bare `number`.** Previously
+   every dropped per-row probe (a rate limit, a reset connection) silently
+   folded into "not ready," under-counting the badge with zero signal
+   anything went wrong; `failedNetworks` now surfaces those. Additionally
+   (issue #31), the per-row predicate now applies the same
+   destination-injected-GER gate `getActivity`'s `toTransaction` already
+   applied — previously the count could include a deposit the activity list
+   correctly reported as `LEAF_INCLUDED` (not yet claimable), and acting on
+   the badge could build a claim proof that reverts on-chain with
+   `GlobalExitRootInvalid`. Callers must switch from
+   `const n = await getReadyToClaimCount(...)` to
+   `const { count } = await getReadyToClaimCount(...)`.
+
 ## 📈 Roadmap & Future Development
 
 ### Upcoming Features

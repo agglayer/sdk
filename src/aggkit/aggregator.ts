@@ -22,6 +22,7 @@ import type {
   AggkitFailedNetwork,
   AggkitNotReadyReason,
   AggkitPageCursor,
+  AggkitReadyToClaimCountResult,
   AggkitTokenMetadata,
   AggkitTrackingData,
   AggkitTransaction,
@@ -31,12 +32,53 @@ import type {
 const DEFAULT_PAGE_SIZE = 20;
 const MAX_PAGE_SIZE = 200;
 
-/** Sentinel cursor value: this fan-out call is exhausted, never refetch it. */
-const EXHAUSTED = 0;
+/**
+ * Modest cap on concurrent per-row claim-readiness probes against ONE
+ * aggkit instance (issue #30 scope item 3, comment 3862897115): unbounded
+ * concurrency here could put ~1,600 requests in flight for a single
+ * `getReadyToClaimCount()` call at `MAX_PAGE_SIZE` (rows x probes x
+ * retries), and a struggling instance's rate-limited/reset responses would
+ * previously convert into "not ready" completely silently. Applied via
+ * `mapWithConcurrencyLimit` to both `getActivity`'s per-row status
+ * derivation and `getReadyToClaimCount`'s per-row predicate.
+ */
+const READY_PROBE_CONCURRENCY = 10;
 
 function clampPageSize(pageSize: number | undefined): number {
   const size = pageSize ?? DEFAULT_PAGE_SIZE;
   return Math.min(size, MAX_PAGE_SIZE);
+}
+
+/**
+ * Runs `fn` over `items` allowing at most `limit` concurrent in-flight
+ * calls, preserving output order (`results[i]` corresponds to `items[i]`
+ * regardless of completion order). A small work-stealing pool: `limit`
+ * workers each pull the next unclaimed index until none remain, rather than
+ * chunking `items` into fixed-size batches (a batch would leave the pool
+ * idle while a single slow request in that batch finishes before starting
+ * the next batch).
+ */
+async function mapWithConcurrencyLimit<T, R>(
+  items: T[],
+  limit: number,
+  fn: (item: T, index: number) => Promise<R>
+): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  let nextIndex = 0;
+
+  async function worker(): Promise<void> {
+    for (;;) {
+      const i = nextIndex++;
+      if (i >= items.length) {
+        return;
+      }
+      results[i] = await fn(items[i] as T, i);
+    }
+  }
+
+  const workerCount = Math.max(1, Math.min(limit, items.length));
+  await Promise.all(Array.from({ length: workerCount }, () => worker()));
+  return results;
 }
 
 /**
@@ -53,9 +95,9 @@ function clampPageSize(pageSize: number | undefined): number {
  * is deliberately NOT used here: `Number(null)`, `Number("")`,
  * `Number([])`, and `Number(false)` all evaluate to `0`, and `Number(true)`
  * evaluates to `1` -- silently accepting those as legitimate cursor state
- * (0 = EXHAUSTED, 1 = page 1) instead of rejecting them as junk.
+ * instead of rejecting them as junk.
  */
-function isValidCursorPageNumber(value: unknown): boolean {
+function isSafeNonNegativeInteger(value: unknown): boolean {
   if (typeof value === 'number') {
     return Number.isSafeInteger(value) && value >= 0;
   }
@@ -66,17 +108,51 @@ function isValidCursorPageNumber(value: unknown): boolean {
   return false;
 }
 
+function coerceSafeNonNegativeInteger(value: unknown): number {
+  return typeof value === 'number' ? value : Number(value);
+}
+
 /**
- * Decodes a `nextStartAfterCursor` string into per-call page-number state.
- * Coerces every entry and drops anything that isn't a non-negative integer
- * (0 is `EXHAUSTED`, a legitimate sentinel -- not junk, but a junk value
- * that merely COERCES to 0, e.g. `null`/`""`/`[]`/`false`, must NOT be
- * accepted as that sentinel -- see `isValidCursorPageNumber`) -- e.g.
- * `{"1:bridgesOrigin": "abc"}` would otherwise survive the
- * `typeof === 'object'` check (so would an array) and `stored ?? 1` would
- * pass "abc" straight through to `runPaginatedCall`, reaching aggkit as
- * `page_number=abc`, which 400s and fails the whole network's fan-out
- * (comment 3862897288).
+ * Validates one decoded cursor entry against `AggkitSourceCursorState`'s
+ * exact shape: `page`/`offset` must each independently pass
+ * `isSafeNonNegativeInteger`, an `exhausted` key (if present at all) must be
+ * a genuine `boolean`, and no OTHER key may be present — an object carrying
+ * an extra unrecognized key is rejected wholesale rather than silently
+ * stripped, matching the same junk-is-junk posture as the page-number
+ * validation above (comment 3862897288).
+ */
+function isValidSourceCursorState(
+  value: unknown
+): value is { page: unknown; offset: unknown; exhausted?: unknown } {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return false;
+  }
+  const obj = value as Record<string, unknown>;
+  const allowedKeys = new Set(['page', 'offset', 'exhausted']);
+  if (!Object.keys(obj).every((key) => allowedKeys.has(key))) {
+    return false;
+  }
+  if (!isSafeNonNegativeInteger(obj['page'])) {
+    return false;
+  }
+  if (!isSafeNonNegativeInteger(obj['offset'])) {
+    return false;
+  }
+  if ('exhausted' in obj && typeof obj['exhausted'] !== 'boolean') {
+    return false;
+  }
+  return true;
+}
+
+/**
+ * Decodes a `nextStartAfterCursor` string into per-SOURCE high-water
+ * pagination state (`AggkitSourceCursorState` — see `types.ts` for the full
+ * redesign rationale, issue #30 scope item 1). Coerces every entry and
+ * drops anything that isn't a well-formed `{ page, offset, exhausted? }`
+ * object -- e.g. `{"1:bridgesOrigin": "abc"}` or
+ * `{"1:bridgesOrigin": {"page": "abc", "offset": 0}}` would otherwise reach
+ * aggkit as `page_number=abc`, 400ing that source's fan-out
+ * (comment 3862897288, carried forward from the page-number-only design).
  */
 export function decodeCursor(cursor: string | undefined): AggkitPageCursor {
   if (!cursor) {
@@ -91,9 +167,16 @@ export function decodeCursor(cursor: string | undefined): AggkitPageCursor {
     for (const [key, value] of Object.entries(
       parsed as Record<string, unknown>
     )) {
-      if (isValidCursorPageNumber(value)) {
-        result[key] = typeof value === 'number' ? value : Number(value);
+      if (!isValidSourceCursorState(value)) {
+        continue;
       }
+      result[key] = {
+        page: coerceSafeNonNegativeInteger(value.page),
+        offset: coerceSafeNonNegativeInteger(value.offset),
+        ...(typeof value.exhausted === 'boolean'
+          ? { exhausted: value.exhausted }
+          : {}),
+      };
     }
     return result;
   } catch {
@@ -123,38 +206,6 @@ function globalIndexesMatch(
   } catch {
     return String(a) === String(b);
   }
-}
-
-/** One page of a single paginated fan-out call. */
-interface CallPageResult<T> {
-  items: T[];
-  count: number;
-  /** Next 1-based page number to request, or `undefined` if exhausted. */
-  nextPage: number | undefined;
-}
-
-/**
- * Runs one fan-out call honoring the composite cursor: if this call was
- * previously marked exhausted (`EXHAUSTED` sentinel), skip it entirely;
- * otherwise fetch the page recorded in the cursor (default 1) and compute
- * whether more pages remain.
- */
-async function runPaginatedCall<T>(
-  cursorState: AggkitPageCursor,
-  key: string,
-  pageSize: number,
-  fetchPage: (pageNumber: number) => Promise<{ items: T[]; count: number }>
-): Promise<CallPageResult<T>> {
-  const stored = cursorState[key];
-  if (stored === EXHAUSTED) {
-    return { items: [], count: 0, nextPage: undefined };
-  }
-
-  const pageNumber = stored ?? 1;
-  const { items, count } = await fetchPage(pageNumber);
-  const hasMore = pageNumber * pageSize < count;
-
-  return { items, count, nextPage: hasMore ? pageNumber + 1 : undefined };
 }
 
 function mergeClaimsMap(
@@ -192,19 +243,326 @@ interface FetchedBridgeRow {
   recordingNetworkId: number;
 }
 
-/** Result of fanning out the four calls (A-D) for one configured network. */
-interface NetworkFanoutResult {
+/**
+ * One of `getActivity`'s two real feed sources for a configured network
+ * (issue #30 scope item 1: claims are enrichment, not a co-equal paginated
+ * source — see `AggkitSourceCursorState`'s doc in `types.ts`). `key` is this
+ * source's slot in the opaque `AggkitPageCursor`.
+ */
+interface ActivitySource {
+  key: string;
+  /** The configured network whose client instance answers this call. */
   networkId: number;
-  bridgeRowsA: AggkitBridge[];
-  bridgeRowsB: AggkitBridge[];
-  /** Claims landed on this network (destination = networkId). */
+  /** The network whose local exit tree recorded rows from this source. */
+  recordingNetworkId: number;
+  fetchPage: (
+    pageNumber: number
+  ) => Promise<{ items: AggkitBridge[]; count: number }>;
+}
+
+/** Live merge state for one `ActivitySource`, across possibly several page fetches within one `getActivity` call. */
+interface SourceMergeState {
+  source: ActivitySource;
+  /** The currently loaded page's items; unconsumed ones start at `offset`. */
+  items: AggkitBridge[];
+  offset: number;
+  page: number;
+  count: number;
+  exhausted: boolean;
+  /** Set once this source has thrown DURING this call — stop pulling from it. */
+  failed?: { error: unknown };
+}
+
+function hasBufferedItem(state: SourceMergeState): boolean {
+  return state.offset < state.items.length;
+}
+
+function peekBufferedItem(state: SourceMergeState): AggkitBridge {
+  return state.items[state.offset] as AggkitBridge;
+}
+
+/**
+ * Whether a source has nothing left to give after this fetch: every item of
+ * the CURRENTLY loaded page has already been consumed (`offset >= itemsLength`
+ * — true for an empty page too, `0 >= 0`) AND aggkit itself reports no
+ * further page (`page * pageSize >= count`). Evaluated right after EVERY
+ * fetch (initial or refill) — not deferred to a later "pop" step — because a
+ * source whose very first fetched page comes back with ZERO items (already
+ * fully consumed upstream, or simply has no matching rows at all) never gets
+ * popped from at all, and would otherwise sit at its default `exhausted:
+ * false` forever, wrongly keeping the OVERALL page reported as "more
+ * available" with a cursor that just re-fetches the same empty page forever.
+ */
+function isSourcePageExhausted(
+  offset: number,
+  itemsLength: number,
+  page: number,
+  count: number,
+  pageSize: number
+): boolean {
+  return offset >= itemsLength && page * pageSize >= count;
+}
+
+/**
+ * Initializes one source's merge state from the incoming cursor: skip
+ * entirely if already marked `exhausted`, otherwise fetch the stored (or
+ * default first) page. A thrown fetch is caught HERE (not left to reject
+ * the whole `Promise.all` in `mergeActivitySources`) so one source's
+ * failure never prevents every other source's fetch from starting or
+ * completing — the `Promise.allSettled`-style degrade issue #30 scope item
+ * 2 asks for, generalized from "per network" to "per source".
+ */
+async function initSourceState(
+  source: ActivitySource,
+  cursorState: AggkitPageCursor,
+  pageSize: number
+): Promise<SourceMergeState> {
+  const stored = cursorState[source.key];
+  if (stored?.exhausted) {
+    return {
+      source,
+      items: [],
+      offset: 0,
+      page: stored.page,
+      count: 0,
+      exhausted: true,
+    };
+  }
+
+  const page = stored?.page ?? 1;
+  const offset = stored?.offset ?? 0;
+  try {
+    const { items, count } = await source.fetchPage(page);
+    return {
+      source,
+      items,
+      offset,
+      page,
+      count,
+      exhausted: isSourcePageExhausted(
+        offset,
+        items.length,
+        page,
+        count,
+        pageSize
+      ),
+    };
+  } catch (error) {
+    return {
+      source,
+      items: [],
+      offset,
+      page,
+      count: 0,
+      exhausted: false,
+      failed: { error },
+    };
+  }
+}
+
+/** Result of `mergeActivitySources`. */
+interface MergeActivityResult {
+  rows: FetchedBridgeRow[];
+  /** This call's updated cursor — pass straight through as the next `getActivity({ cursor })`. */
+  nextCursor: AggkitPageCursor;
+  failedNetworks: AggkitFailedNetwork[];
+  /** True iff every source across every configured network is now exhausted. */
+  exhausted: boolean;
+  /**
+   * Keys of every source that did NOT throw this round — includes sources
+   * that were already exhausted by a prior call (legitimately done, not a
+   * failure). Used by `getActivity`'s all-networks-failed guard: a fully
+   * paginated-through address (every source exhausted, zero new rows) must
+   * NOT be confused with a genuine outage (every source erroring).
+   */
+  succeededSourceKeys: Set<string>;
+}
+
+/**
+ * k-way merge across every configured network's two real feed sources
+ * (bridges-by-origin / bridges-by-L1-destination), honoring aggkit's own
+ * fixed newest-first per-source page order (confirmed against
+ * `__fixtures__/bridges_page1.json`/`bridges_page2.json` — aggkit accepts no
+ * sort/order query param, so every source's pages arrive in that one fixed
+ * order regardless of `getActivity`'s `order`). Emits AT MOST `pageSize`
+ * rows, by repeatedly taking whichever source's next buffered row is
+ * currently newest and, once a source's buffered page is exhausted,
+ * fetching that ONE source's next page to keep the merge going — never
+ * concatenating whole pages from every source and slicing after the fact
+ * (design comment 3862896800: that both over-returns, up to
+ * `sources.length * pageSize` rows, and can't guarantee true cross-page
+ * ordering).
+ *
+ * `getActivity`'s `order: 'asc'` is NOT implemented by walking sources
+ * backward from their last page — aggkit's pagination has no sort param at
+ * all, so true incremental ascending pagination would require locating and
+ * consuming each source's LAST page first (needing its total page count
+ * up front, itself unstable under concurrent inserts). That is out of
+ * scope for this redesign (the review comments this issue tracks named
+ * `desc`'s cross-page ordering specifically); `getActivity` instead reverses
+ * this method's newest-first output as a COSMETIC, page-local
+ * transformation, matching this SDK's pre-existing `asc` behavior exactly
+ * (a full local sort of one page's rows) rather than delivering true
+ * globally-ordered ascending pagination.
+ *
+ * A source that throws keeps its PRIOR cursor entry completely untouched —
+ * `nextCursor` for a failed source is whatever was already in `cursorState`
+ * (usually a proper subset of a fresh object, since a first-ever call has
+ * no incoming entry either) — so the next call retries it from exactly
+ * where it left off (comment 3862896964: previously a network failing on
+ * page 1 contributed no cursor keys at all, with no way to retry short of a
+ * full restart).
+ */
+async function mergeActivitySources(
+  sources: ActivitySource[],
+  cursorState: AggkitPageCursor,
+  pageSize: number
+): Promise<MergeActivityResult> {
+  const states = await Promise.all(
+    sources.map((source) => initSourceState(source, cursorState, pageSize))
+  );
+
+  const rows: FetchedBridgeRow[] = [];
+
+  while (rows.length < pageSize) {
+    // Tie-break: iteration order of `states` (deterministic — derived from
+    // `listNetworkIds()`'s stable insertion order), not a meaningful
+    // business rule. Ties only matter for reproducibility here.
+    let best: SourceMergeState | undefined;
+    for (const state of states) {
+      if (!hasBufferedItem(state)) {
+        continue;
+      }
+      if (
+        !best ||
+        peekBufferedItem(state).block_timestamp >
+          peekBufferedItem(best).block_timestamp
+      ) {
+        best = state;
+      }
+    }
+    if (!best) {
+      break; // Nothing buffered anywhere this round.
+    }
+
+    const bridge = peekBufferedItem(best);
+    rows.push({
+      bridge,
+      sourceInstanceNetworkId: best.source.networkId,
+      recordingNetworkId: best.source.recordingNetworkId,
+    });
+    best.offset += 1;
+
+    if (!hasBufferedItem(best) && !best.failed) {
+      const hasMore = best.page * pageSize < best.count;
+      if (!hasMore) {
+        best.exhausted = true;
+      } else {
+        try {
+          const { items, count } = await best.source.fetchPage(best.page + 1);
+          best.page += 1;
+          best.offset = 0;
+          best.items = items;
+          best.count = count;
+          // Re-evaluate immediately (see `isSourcePageExhausted`'s doc): the
+          // refilled page can itself be empty-with-no-further-pages.
+          best.exhausted = isSourcePageExhausted(
+            0,
+            items.length,
+            best.page,
+            count,
+            pageSize
+          );
+        } catch (error) {
+          best.failed = { error };
+        }
+      }
+    }
+  }
+
+  const failedNetworks: AggkitFailedNetwork[] = [];
+  const nextCursor: AggkitPageCursor = { ...cursorState };
+  const succeededSourceKeys = new Set<string>();
+  let anyMore = false;
+
+  for (const state of states) {
+    if (state.failed) {
+      failedNetworks.push(
+        toFailedNetwork(state.source.networkId, state.failed.error)
+      );
+      if (!nextCursor[state.source.key]?.exhausted) {
+        anyMore = true; // A failed, non-exhausted source still owes rows.
+      }
+      continue;
+    }
+    succeededSourceKeys.add(state.source.key);
+    if (state.exhausted) {
+      nextCursor[state.source.key] = {
+        page: state.page,
+        offset: state.offset,
+        exhausted: true,
+      };
+    } else {
+      nextCursor[state.source.key] = { page: state.page, offset: state.offset };
+      anyMore = true;
+    }
+  }
+
+  return {
+    rows,
+    nextCursor,
+    failedNetworks,
+    exhausted: !anyMore,
+    succeededSourceKeys,
+  };
+}
+
+/**
+ * Fetches one bounded (page 1 only, size `pageSize`), unpaginated snapshot
+ * of claims per network — the Tier-1 fast-path enrichment lookup that
+ * decorates bridge rows with claim status (issue #30 scope item 1: claims
+ * are NOT a co-equal paginated source; `confirmClaimed`'s targeted
+ * `global_index` probe remains the actual authority for any row this misses
+ * — see the "claims-pagination correctness" regression tests). Degrades
+ * PER CALL (`Promise.allSettled`, issue #30 scope item 2, comment
+ * 3847432202): a failing claims list no longer wipes this network's bridge
+ * rows out of the fan-out the way a single `Promise.all` used to.
+ */
+async function fetchClaimsEnrichment(
+  client: AggkitBridgeClient,
+  networkId: number,
+  pageSize: number
+): Promise<{
   claimsHere: Map<string, AggkitClaim>;
-  /** Claims landed on L1, as seen via this network's own L1 syncer. */
   claimsL1: Map<string, AggkitClaim>;
-  /** Sum of A.count + B.count, for `pagination.total`. */
-  totalBridgesCount: number;
-  /** Updated cursor entries for this network's 4 fan-out calls. */
-  nextCursorPatch: AggkitPageCursor;
+  failedNetworks: AggkitFailedNetwork[];
+}> {
+  const [hereResult, l1Result] = await Promise.allSettled([
+    client.getClaims({ networkId, pageNumber: 1, pageSize }),
+    client.getClaims({ networkId: 0, pageNumber: 1, pageSize }),
+  ]);
+
+  const claimsHere = new Map<string, AggkitClaim>();
+  const claimsL1 = new Map<string, AggkitClaim>();
+  const failedNetworks: AggkitFailedNetwork[] = [];
+
+  if (hereResult.status === 'fulfilled') {
+    for (const claim of hereResult.value.claims) {
+      claimsHere.set(claim.global_index, claim);
+    }
+  } else {
+    failedNetworks.push(toFailedNetwork(networkId, hereResult.reason));
+  }
+
+  if (l1Result.status === 'fulfilled') {
+    for (const claim of l1Result.value.claims) {
+      claimsL1.set(claim.global_index, claim);
+    }
+  } else {
+    failedNetworks.push(toFailedNetwork(networkId, l1Result.reason));
+  }
+
+  return { claimsHere, claimsL1, failedNetworks };
 }
 
 /**
@@ -354,9 +712,22 @@ export class AggkitBridgeAggregator {
   }
 
   /**
-   * Fan-out + join + status derivation. Never rejects if
-   * at least one configured network's fan-out succeeds; rejects only if ALL
-   * fan-outs fail (or no networks are configured).
+   * Fan-out + k-way merge + join + status derivation. Never rejects if at
+   * least one configured network's feed sources succeed; rejects only if
+   * EVERY configured network's feed sources fail (or no networks are
+   * configured) — a network that is simply fully paginated through
+   * (exhausted, contributing zero NEW rows) does not count as failed.
+   *
+   * REDESIGNED (issue #30): see `mergeActivitySources` for the k-way
+   * merge/high-water-cursor mechanics (scope item 1) and
+   * `fetchClaimsEnrichment` for why claims are no longer part of the
+   * pagination contract at all. `pagination.total` is GONE (see
+   * `AggkitActivityPage` in `types.ts`) and `AggkitPageCursor`'s shape
+   * changed — see the breaking-changes note in the README. Every fan-out
+   * call (both feed sources per network, both claims lists per network, and
+   * each row's Tier-2 probes) now degrades independently
+   * (`Promise.allSettled`, scope item 2) instead of one `Promise.all`
+   * failure wiping an entire network's contribution.
    */
   async getActivity(params: {
     fromAddress: string;
@@ -370,106 +741,114 @@ export class AggkitBridgeAggregator {
     const networkIds = this.listNetworkIds();
 
     // Doc/behavior parity (comment 3862897421): the JSDoc above promises a
-    // rejection when no networks are configured -- previously the
-    // `!anySucceeded && networkIds.length > 0` guard below was false in
-    // this case (networkIds.length === 0), so `getActivity({ networks: {} })`
-    // silently returned an empty page instead of rejecting.
+    // rejection when no networks are configured.
     if (networkIds.length === 0) {
       throw new Error(
         'AggkitBridgeAggregator.getActivity: no networks configured'
       );
     }
 
-    const settled = await Promise.allSettled(
-      networkIds.map((networkId) =>
-        this.fetchNetworkFanout(
+    const sources: ActivitySource[] = networkIds.flatMap((networkId) => {
+      const client = this.clientFor(networkId);
+      return [
+        {
+          key: `${networkId}:bridgesOrigin`,
           networkId,
-          params.fromAddress,
-          cursorState,
-          pageSize
-        )
-      )
-    );
-
-    const failedNetworks: AggkitFailedNetwork[] = [];
-    const claimsByNetwork = new Map<number, Map<string, AggkitClaim>>();
-    const rows: FetchedBridgeRow[] = [];
-    const nextCursor: AggkitPageCursor = { ...cursorState };
-    let total = 0;
-    let anySucceeded = false;
-
-    settled.forEach((result, index) => {
-      const networkId = networkIds[index] as number;
-
-      if (result.status === 'rejected') {
-        const error = result.reason;
-        failedNetworks.push({
-          networkId,
-          error: errorMessage(error),
-          ...(error instanceof AggkitApiError
-            ? { httpStatus: error.httpStatus }
-            : {}),
-        });
-        return;
-      }
-
-      anySucceeded = true;
-      const fanout = result.value;
-
-      for (const bridge of fanout.bridgeRowsA) {
-        rows.push({
-          bridge,
-          sourceInstanceNetworkId: networkId,
           recordingNetworkId: networkId,
-        });
-      }
-      for (const bridge of fanout.bridgeRowsB) {
-        rows.push({
-          bridge,
-          sourceInstanceNetworkId: networkId,
+          fetchPage: (pageNumber: number) =>
+            client
+              .getBridges({
+                networkId,
+                fromAddress: params.fromAddress,
+                pageNumber,
+                pageSize,
+              })
+              .then((r) => ({ items: r.bridges, count: r.count })),
+        },
+        {
+          key: `${networkId}:bridgesL1`,
+          networkId,
           recordingNetworkId: 0,
-        });
-      }
-
-      mergeClaimsMap(claimsByNetwork, networkId, fanout.claimsHere);
-      mergeClaimsMap(claimsByNetwork, 0, fanout.claimsL1);
-
-      total += fanout.totalBridgesCount;
-      Object.assign(nextCursor, fanout.nextCursorPatch);
+          fetchPage: (pageNumber: number) =>
+            client
+              .getBridges({
+                networkId: 0,
+                networkIds: [networkId],
+                fromAddress: params.fromAddress,
+                pageNumber,
+                pageSize,
+              })
+              .then((r) => ({ items: r.bridges, count: r.count })),
+        },
+      ];
     });
 
-    if (!anySucceeded && networkIds.length > 0) {
+    const merged = await mergeActivitySources(sources, cursorState, pageSize);
+
+    const claimsResults = await Promise.all(
+      networkIds.map((networkId) =>
+        fetchClaimsEnrichment(this.clientFor(networkId), networkId, pageSize)
+      )
+    );
+    const claimsByNetwork = new Map<number, Map<string, AggkitClaim>>();
+    const claimsFailedNetworks: AggkitFailedNetwork[] = [];
+    networkIds.forEach((networkId, index) => {
+      const result = claimsResults[index] as (typeof claimsResults)[number];
+      mergeClaimsMap(claimsByNetwork, networkId, result.claimsHere);
+      mergeClaimsMap(claimsByNetwork, 0, result.claimsL1);
+      claimsFailedNetworks.push(...result.failedNetworks);
+    });
+
+    // A network counts as "succeeded" for the all-failed guard iff at
+    // least one of its two REAL feed sources didn't throw — a claims
+    // failure alone contributes zero rows either way, so it must not save
+    // (or sink) this guard.
+    const anyNetworkSucceeded = networkIds.some(
+      (networkId) =>
+        merged.succeededSourceKeys.has(`${networkId}:bridgesOrigin`) ||
+        merged.succeededSourceKeys.has(`${networkId}:bridgesL1`)
+    );
+    if (!anyNetworkSucceeded) {
       throw new Error(
         `AggkitBridgeAggregator.getActivity: all configured networks failed: ` +
-          failedNetworks.map((f) => `${f.networkId}: ${f.error}`).join('; ')
+          merged.failedNetworks
+            .map((f) => `${f.networkId}: ${f.error}`)
+            .join('; ')
       );
     }
 
-    // Dedupe by bridge_hash (unique per event).
+    // Defensive dedupe by bridge_hash (unique per event): the merge's
+    // sources are structurally disjoint per network, but this stays as a
+    // safety net against any edge-case overlap, same as before.
     const dedupedByHash = new Map<string, FetchedBridgeRow>();
-    for (const row of rows) {
+    for (const row of merged.rows) {
       if (!dedupedByHash.has(row.bridge.bridge_hash)) {
         dedupedByHash.set(row.bridge.bridge_hash, row);
       }
     }
-    const deduped = Array.from(dedupedByHash.values());
+    // `mergeActivitySources` always walks aggkit's native newest-first
+    // per-source page order (see its JSDoc for why `asc` can't be a true
+    // backward-from-last-page traversal); `asc` here is a COSMETIC reversal
+    // of this page's own rows, matching this SDK's pre-existing `asc`
+    // behavior (a full local sort of one page) rather than delivering true
+    // globally-ordered ascending pagination.
+    const orderedRows = Array.from(dedupedByHash.values());
+    if (order === 'asc') {
+      orderedRows.reverse();
+    }
 
-    deduped.sort((a, b) =>
-      order === 'asc'
-        ? a.bridge.block_timestamp - b.bridge.block_timestamp
-        : b.bridge.block_timestamp - a.bridge.block_timestamp
-    );
-
-    // Per-row Tier-2 probe failures are collected separately from
-    // fan-out failures so a failing destination/recording network degrades
-    // this row to a conservative status instead of rejecting the whole call.
+    // Per-row Tier-2 probe failures are collected separately from fan-out
+    // failures so a failing destination/recording network degrades this
+    // row to a conservative status instead of rejecting the whole call.
     const probeFailures: AggkitFailedNetwork[] = [];
     const onNetworkError = (failure: AggkitFailedNetwork): void => {
       probeFailures.push(failure);
     };
 
-    const data = await Promise.all(
-      deduped.map((row) =>
+    const data = await mapWithConcurrencyLimit(
+      orderedRows,
+      READY_PROBE_CONCURRENCY,
+      (row) =>
         this.toTransaction(
           row.bridge,
           row.sourceInstanceNetworkId,
@@ -477,44 +856,79 @@ export class AggkitBridgeAggregator {
           claimsByNetwork,
           onNetworkError
         )
-      )
     );
 
-    // Merge probe failures into failedNetworks, deduped by networkId (keep
-    // the first message — fan-out failures, collected above, take priority
-    // over a later per-row probe failure for the same network).
+    const fanOutFailedNetworks = [
+      ...merged.failedNetworks,
+      ...claimsFailedNetworks,
+    ];
+
+    // Per-row Tier-2 probes are deduped by networkId (first-wins) BEFORE
+    // merging into the fan-out-level failures above — unlike the fan-out
+    // calls (bounded to at most 4 per network), a single failing endpoint
+    // can affect every row on a page, and reporting one entry per AFFECTED
+    // ROW rather than per DISTINCT FAILING CALL would balloon
+    // `failedNetworks` to page-size length instead of network-count length.
+    // A fan-out-level failure for the same network takes priority (it is
+    // usually the root cause a later per-row probe failure for that network
+    // is redundant with).
     const seenFailedNetworkIds = new Set(
-      failedNetworks.map((f) => f.networkId)
+      fanOutFailedNetworks.map((f) => f.networkId)
     );
+    const dedupedProbeFailures: AggkitFailedNetwork[] = [];
     for (const failure of probeFailures) {
       if (!seenFailedNetworkIds.has(failure.networkId)) {
         seenFailedNetworkIds.add(failure.networkId);
-        failedNetworks.push(failure);
+        dedupedProbeFailures.push(failure);
       }
     }
 
-    const anyMore = Object.values(nextCursor).some((v) => v !== EXHAUSTED);
+    const failedNetworks: AggkitFailedNetwork[] = [
+      ...fanOutFailedNetworks,
+      ...dedupedProbeFailures,
+    ];
 
     return {
       data,
       pagination: {
-        total,
         limit: pageSize,
-        ...(anyMore
-          ? { nextStartAfterCursor: JSON.stringify(nextCursor) }
-          : {}),
+        ...(merged.exhausted
+          ? {}
+          : { nextStartAfterCursor: JSON.stringify(merged.nextCursor) }),
       },
+      exhausted: merged.exhausted,
       failedNetworks,
     };
   }
 
   /**
-   * Cheap ready-to-claim count: one bounded (single, large)
-   * page of bridges+claims per configured network (Tier 1) to build the
-   * unclaimed set, then Tier-2 `/l1-info-tree-index` probes bounded to that
-   * unclaimed set only — never a full activity scan.
+   * Cheap ready-to-claim count: one bounded (single, large) page of
+   * bridges+claims per configured network (Tier 1) to build the unclaimed
+   * set, then Tier-2 `/l1-info-tree-index` + destination-injected-GER
+   * probes bounded to that unclaimed set only — never a full activity scan.
+   *
+   * FIXED (issue #31, folded into this redesign per its own "Relationship
+   * to #30" section): this predicate now calls `resolveInjectedLeafIndex`
+   * for an L2 destination, exactly like `toTransaction` does for
+   * `getActivity`. Previously it stopped at the source `/l1-info-tree-index`
+   * probe, counting a deposit as ready to claim before the destination had
+   * actually injected the covering GER — the badge (this method) and the
+   * activity list (`getActivity`, via `toTransaction`) disagreed on the
+   * exact same row, and acting on the badge built a claim proof that
+   * reverted on-chain with `GlobalExitRootInvalid`.
+   *
+   * FIXED (issue #30 scope item 3): per-row probes now run through
+   * `mapWithConcurrencyLimit` (bounded to `READY_PROBE_CONCURRENCY`) instead
+   * of an unbounded `Promise.all` — at `pageSize = MAX_PAGE_SIZE` that could
+   * put ~1,600 requests in flight against one aggkit instance
+   * (comment 3862897115). A genuine probe THROW (as opposed to a healthy
+   * "not ready yet" answer) is now surfaced via the returned
+   * `failedNetworks` instead of being silently folded into "not ready" —
+   * see `AggkitReadyToClaimCountResult` in `types.ts`.
    */
-  async getReadyToClaimCount(params: { fromAddress: string }): Promise<number> {
+  async getReadyToClaimCount(params: {
+    fromAddress: string;
+  }): Promise<AggkitReadyToClaimCountResult> {
     const networkIds = this.listNetworkIds();
     const pageSize = MAX_PAGE_SIZE;
 
@@ -530,44 +944,77 @@ export class AggkitBridgeAggregator {
       );
     }
 
-    const settled = await Promise.allSettled(
-      networkIds.map((networkId) =>
-        this.fetchNetworkFanout(networkId, params.fromAddress, {}, pageSize)
-      )
-    );
-
+    const fanOutFailedNetworks: AggkitFailedNetwork[] = [];
     const claimsByNetwork = new Map<number, Map<string, AggkitClaim>>();
     const allRows: FetchedBridgeRow[] = [];
-    let anySucceeded = false;
+    // Keyed to the two REAL feed calls only (mirrors `getActivity`'s
+    // all-failed guard) — a network whose only successful call was a
+    // claims list still contributes zero unclaimed rows.
+    let anyFeedSucceeded = false;
 
-    settled.forEach((result, index) => {
-      if (result.status === 'rejected') {
-        return;
-      }
-      anySucceeded = true;
-      const networkId = networkIds[index] as number;
-      const fanout = result.value;
+    await Promise.all(
+      networkIds.map(async (networkId) => {
+        const client = this.clientFor(networkId);
 
-      mergeClaimsMap(claimsByNetwork, networkId, fanout.claimsHere);
-      mergeClaimsMap(claimsByNetwork, 0, fanout.claimsL1);
+        // Bridges A/B and claims C/D each degrade independently
+        // (Promise.allSettled, issue #30 scope item 2) instead of one
+        // `Promise.all` failure wiping this network's whole contribution.
+        const [[originResult, l1Result], claims] = await Promise.all([
+          Promise.allSettled([
+            client.getBridges({
+              networkId,
+              fromAddress: params.fromAddress,
+              pageNumber: 1,
+              pageSize,
+            }),
+            client.getBridges({
+              networkId: 0,
+              networkIds: [networkId],
+              fromAddress: params.fromAddress,
+              pageNumber: 1,
+              pageSize,
+            }),
+          ]),
+          fetchClaimsEnrichment(client, networkId, pageSize),
+        ]);
 
-      for (const bridge of fanout.bridgeRowsA) {
-        allRows.push({
-          bridge,
-          sourceInstanceNetworkId: networkId,
-          recordingNetworkId: networkId,
-        });
-      }
-      for (const bridge of fanout.bridgeRowsB) {
-        allRows.push({
-          bridge,
-          sourceInstanceNetworkId: networkId,
-          recordingNetworkId: 0,
-        });
-      }
-    });
+        if (originResult.status === 'fulfilled') {
+          anyFeedSucceeded = true;
+          for (const bridge of originResult.value.bridges) {
+            allRows.push({
+              bridge,
+              sourceInstanceNetworkId: networkId,
+              recordingNetworkId: networkId,
+            });
+          }
+        } else {
+          fanOutFailedNetworks.push(
+            toFailedNetwork(networkId, originResult.reason)
+          );
+        }
 
-    if (!anySucceeded && networkIds.length > 0) {
+        if (l1Result.status === 'fulfilled') {
+          anyFeedSucceeded = true;
+          for (const bridge of l1Result.value.bridges) {
+            allRows.push({
+              bridge,
+              sourceInstanceNetworkId: networkId,
+              recordingNetworkId: 0,
+            });
+          }
+        } else {
+          fanOutFailedNetworks.push(
+            toFailedNetwork(networkId, l1Result.reason)
+          );
+        }
+
+        mergeClaimsMap(claimsByNetwork, networkId, claims.claimsHere);
+        mergeClaimsMap(claimsByNetwork, 0, claims.claimsL1);
+        fanOutFailedNetworks.push(...claims.failedNetworks);
+      })
+    );
+
+    if (!anyFeedSucceeded) {
       throw new Error(
         'AggkitBridgeAggregator.getReadyToClaimCount: all configured networks failed'
       );
@@ -584,12 +1031,27 @@ export class AggkitBridgeAggregator {
       return !claims?.has(row.bridge.global_index);
     });
 
-    const readyFlags = await Promise.all(
-      unclaimed.map(async (row) => {
-        // Guard the whole per-row probe: a failing
-        // network's probe must under-count the badge, not reject the whole
-        // count call. `useReadyToClaimCount` has no `failedNetworks` surface
-        // by design (`app/hooks/useReadyToClaimCount.ts`).
+    // Deduped by networkId (first-wins), same rationale as `getActivity`:
+    // a single failing endpoint can affect every candidate row, and
+    // reporting one entry per affected ROW rather than per DISTINCT FAILING
+    // CALL would balloon `failedNetworks` to candidate-count length. A
+    // fan-out-level failure for the same network takes priority.
+    const seenFailedNetworkIds = new Set(
+      fanOutFailedNetworks.map((f) => f.networkId)
+    );
+    const probeFailures: AggkitFailedNetwork[] = [];
+    const onProbeError = (failure: AggkitFailedNetwork): void => {
+      if (!seenFailedNetworkIds.has(failure.networkId)) {
+        seenFailedNetworkIds.add(failure.networkId);
+        probeFailures.push(failure);
+      }
+    };
+
+    const readyFlags = await mapWithConcurrencyLimit(
+      unclaimed,
+      READY_PROBE_CONCURRENCY,
+      async (row) => {
+        let sourceIndex: number | undefined;
         try {
           const probe = await this.clientFor(
             row.sourceInstanceNetworkId
@@ -597,31 +1059,62 @@ export class AggkitBridgeAggregator {
             networkId: row.recordingNetworkId,
             depositCount: row.bridge.deposit_count,
           });
-
           // Narrow on `ready`, never on the numeric value: L1-info-tree
           // leaf index 0 is valid and falsy.
-          if (!probe.ready) {
-            return false;
+          if (probe.ready) {
+            sourceIndex = probe.value;
           }
-
-          // Tier-1 membership only checked page 1 of /claims — bounded, cheap,
-          // and wrong once a network's total claims exceed one page (bug b,
-          // see the claims-pagination correctness regression test).
-          // For candidates that passed the leaf-included probe (i.e. that
-          // would otherwise be counted READY_TO_CLAIM), confirm with a
-          // targeted per-candidate query before counting them.
-          const confirmedClaim = await this.confirmClaimed(
-            row.bridge,
-            row.sourceInstanceNetworkId
-          );
-          return confirmedClaim === null;
-        } catch {
+        } catch (error) {
+          // Genuine Tier-2a throw (as opposed to a healthy "not ready yet"
+          // answer): surface it instead of silently under-counting.
+          onProbeError(toFailedNetwork(row.recordingNetworkId, error));
           return false;
         }
-      })
+        if (sourceIndex === undefined) {
+          return false; // Healthy "not yet" answer -- not a failure.
+        }
+
+        // Tier-1 membership only checked page 1 of /claims — bounded, cheap,
+        // and wrong once a network's total claims exceed one page (bug b,
+        // see the claims-pagination correctness regression test).
+        // For candidates that passed the leaf-included probe (i.e. that
+        // would otherwise be counted READY_TO_CLAIM), confirm with a
+        // targeted per-candidate query before counting them.
+        const confirmedClaim = await this.confirmClaimed(
+          row.bridge,
+          row.sourceInstanceNetworkId
+        );
+        if (confirmedClaim) {
+          return false;
+        }
+
+        if (row.bridge.destination_network === 0) {
+          // L2->L1: no injection step (mirrors `toTransaction`).
+          return true;
+        }
+
+        try {
+          const resolution = await this.resolveInjectedLeafIndex({
+            destinationNetworkId: row.bridge.destination_network,
+            sourceL1InfoTreeIndex: sourceIndex,
+          });
+          // `kind === 'not-ready'` mirrors `toTransaction`'s LEAF_INCLUDED
+          // derivation exactly (issue #31): the destination hasn't injected
+          // the covering GER yet, so this row is not actually claimable.
+          return resolution.kind !== 'not-ready';
+        } catch (error) {
+          // Genuine Tier-2b throw: surface it instead of silently
+          // under-counting (issue #30 scope item 3).
+          onProbeError(toFailedNetwork(row.bridge.destination_network, error));
+          return false;
+        }
+      }
     );
 
-    return readyFlags.filter(Boolean).length;
+    return {
+      count: readyFlags.filter(Boolean).length,
+      failedNetworks: [...fanOutFailedNetworks, ...probeFailures],
+    };
   }
 
   /**
@@ -983,84 +1476,6 @@ export class AggkitBridgeAggregator {
   ): Promise<AggkitTrackingData> {
     const client = this.clientForNetworkOrL1(networkId);
     return client.getBridgeTracking(txHash, networkId);
-  }
-
-  /** Runs the four fan-out calls (A-D) for a single configured network. */
-  private async fetchNetworkFanout(
-    networkId: number,
-    fromAddress: string,
-    cursorState: AggkitPageCursor,
-    pageSize: number
-  ): Promise<NetworkFanoutResult> {
-    const client = this.clientFor(networkId);
-
-    const keyA = `${networkId}:bridgesOrigin`;
-    const keyB = `${networkId}:bridgesL1`;
-    const keyC = `${networkId}:claimsHere`;
-    const keyD = `${networkId}:claimsL1`;
-
-    const [a, b, c, d] = await Promise.all([
-      // A. L2-origin bridges (n -> L1, n -> other L2).
-      runPaginatedCall(cursorState, keyA, pageSize, (pageNumber) =>
-        client
-          .getBridges({
-            networkId,
-            fromAddress,
-            pageNumber,
-            pageSize,
-          })
-          .then((r) => ({ items: r.bridges, count: r.count }))
-      ),
-      // B. L1-origin bridges destined to n.
-      runPaginatedCall(cursorState, keyB, pageSize, (pageNumber) =>
-        client
-          .getBridges({
-            networkId: 0,
-            networkIds: [networkId],
-            fromAddress,
-            pageNumber,
-            pageSize,
-          })
-          .then((r) => ({ items: r.bridges, count: r.count }))
-      ),
-      // C. Claims on n (settles L1->n and other->n).
-      runPaginatedCall(cursorState, keyC, pageSize, (pageNumber) =>
-        client
-          .getClaims({ networkId, pageNumber, pageSize })
-          .then((r) => ({ items: r.claims, count: r.count }))
-      ),
-      // D. Claims on L1, as recorded via n's own L1 syncer (settles n->L1).
-      runPaginatedCall(cursorState, keyD, pageSize, (pageNumber) =>
-        client
-          .getClaims({ networkId: 0, pageNumber, pageSize })
-          .then((r) => ({ items: r.claims, count: r.count }))
-      ),
-    ]);
-
-    const claimsHere = new Map<string, AggkitClaim>();
-    for (const claim of c.items) {
-      claimsHere.set(claim.global_index, claim);
-    }
-
-    const claimsL1 = new Map<string, AggkitClaim>();
-    for (const claim of d.items) {
-      claimsL1.set(claim.global_index, claim);
-    }
-
-    return {
-      networkId,
-      bridgeRowsA: a.items,
-      bridgeRowsB: b.items,
-      claimsHere,
-      claimsL1,
-      totalBridgesCount: a.count + b.count,
-      nextCursorPatch: {
-        [keyA]: a.nextPage ?? EXHAUSTED,
-        [keyB]: b.nextPage ?? EXHAUSTED,
-        [keyC]: c.nextPage ?? EXHAUSTED,
-        [keyD]: d.nextPage ?? EXHAUSTED,
-      },
-    };
   }
 
   /**

@@ -809,9 +809,13 @@ async function main(): Promise<void> {
       console.log(
         `degraded.failedNetworks=${JSON.stringify(degraded.failedNetworks)} degraded.data.length=${degraded.data.length}`
       );
+      // Post issue #30: fan-out calls degrade PER CALL, not per network — a
+      // fully-down backend can surface as several distinct failedNetworks
+      // entries (bridgesOrigin, bridgesL1, claimsHere, claimsL1 each fail
+      // independently), all naming the same network, not exactly one.
       assert(
-        degraded.failedNetworks.length === 1 &&
-          degraded.failedNetworks[0]?.networkId === downNetworkId,
+        degraded.failedNetworks.length > 0 &&
+          degraded.failedNetworks.every((f) => f.networkId === downNetworkId),
         `getActivity degrades with failedNetworks naming ONLY network ${downNetworkId}`
       );
       const otherNetworkId = L2_NETWORK_IDS.find((id) => id !== downNetworkId);

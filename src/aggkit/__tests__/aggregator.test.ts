@@ -216,7 +216,7 @@ describe('AggkitBridgeAggregator', () => {
   });
 
   describe('getActivity — merge across networks', () => {
-    it('merges bridges from 2 networks, sorted by block_timestamp desc, no duplicates', async () => {
+    it('merges bridges from 2 networks, sorted by block_timestamp desc, no duplicates, and reports exhausted (no more pages)', async () => {
       const rowNet1 = makeBridge({
         bridge_hash: '0xnet1row',
         block_timestamp: 100,
@@ -258,7 +258,108 @@ describe('AggkitBridgeAggregator', () => {
       expect(page.data[1]?.bridgeHash).toBe('0xnet1row');
       expect(page.data[0]?.status).toBe('CLAIMED');
       expect(page.data[1]?.status).toBe('CLAIMED');
-      expect(page.pagination.total).toBe(2);
+      // `total` was REMOVED from the contract (issue #30 scope item 1) --
+      // every source is fully consumed in one page, so the page is exhausted.
+      expect(page.pagination).not.toHaveProperty('total');
+      expect(page.exhausted).toBe(true);
+      expect(page.pagination.nextStartAfterCursor).toBeUndefined();
+    });
+
+    it('k-way merges ACROSS pages: a global page boundary can split a single source mid-page, resumed via offset (not re-fetched from page 1)', async () => {
+      // Network 1 has 3 rows (newest-first, matching aggkit's own fixed
+      // page order); network 2 has 1 row older than all of network 1's.
+      // pageSize=2 forces the merge to straddle network 1's own page
+      // boundary: page 1 of getActivity should return net1's 2 newest rows
+      // (both from network 1's OWN page 1, offset 0 then 1), and page 2
+      // should return net1's 3rd row (resuming network 1 at offset 2 --
+      // NOT re-fetching page 1) merged against network 2's single row.
+      const net1Rows = [
+        makeBridge({
+          bridge_hash: '0xn1a',
+          block_timestamp: 300,
+          deposit_count: 1,
+          global_index: 1,
+        }),
+        makeBridge({
+          bridge_hash: '0xn1b',
+          block_timestamp: 200,
+          deposit_count: 2,
+          global_index: 2,
+        }),
+        makeBridge({
+          bridge_hash: '0xn1c',
+          block_timestamp: 150,
+          deposit_count: 3,
+          global_index: 3,
+        }),
+      ];
+      const net2Row = makeBridge({
+        bridge_hash: '0xn2a',
+        block_timestamp: 100,
+        deposit_count: 1,
+        global_index: 1,
+      });
+
+      installRouter([
+        rule(
+          BASE_1,
+          ['/bridges', `network_id=1`, 'page_number=1'],
+          200,
+          bridgesBody(net1Rows.slice(0, 2), 3)
+        ),
+        rule(
+          BASE_1,
+          ['/bridges', `network_id=1`, 'page_number=2'],
+          200,
+          bridgesBody(net1Rows.slice(2), 3)
+        ),
+        rule(
+          BASE_1,
+          ['/bridges', 'network_id=0', 'network_ids=1'],
+          200,
+          bridgesBody([], 0)
+        ),
+        rule(BASE_1, ['/claims'], 200, claimsBody([], 0)),
+        // Status derivation is irrelevant to this test (pagination
+        // mechanics only) -- a catch-all ready probe keeps every row off
+        // the Tier-2 confirmClaimed/injected-leaf paths.
+        rule(BASE_1, ['/l1-info-tree-index'], 200, '1'),
+        ...networkRules(BASE_2, 2, {
+          a: { status: 200, body: bridgesBody([net2Row], 1) },
+        }),
+        rule(BASE_2, ['/l1-info-tree-index'], 200, '1'),
+      ]);
+
+      const aggregator = new AggkitBridgeAggregator({
+        networks: { 1: BASE_1, 2: BASE_2 },
+        // 0 retries: any accidentally-unrouted URL fails immediately with
+        // the router's own message instead of a multi-second retry storm
+        // (fetchRawText's retry heuristic treats any error message
+        // containing "network" as retryable, and an unrouted aggkit URL
+        // always contains `network_id`).
+        retries: 0,
+      });
+
+      const page1 = await aggregator.getActivity({
+        fromAddress: ADDRESS,
+        pageSize: 2,
+      });
+      expect(page1.failedNetworks).toEqual([]);
+      expect(page1.data.map((tx) => tx.bridgeHash)).toEqual(['0xn1a', '0xn1b']);
+      expect(page1.exhausted).toBe(false);
+      expect(page1.pagination.nextStartAfterCursor).toBeDefined();
+
+      const page2 = await aggregator.getActivity({
+        fromAddress: ADDRESS,
+        pageSize: 2,
+        cursor: page1.pagination.nextStartAfterCursor,
+      });
+      expect(page2.failedNetworks).toEqual([]);
+      // Network 1's 3rd row (offset-resumed, page NOT re-fetched from 1)
+      // outranks network 2's single (older) row.
+      expect(page2.data.map((tx) => tx.bridgeHash)).toEqual(['0xn1c', '0xn2a']);
+      expect(page2.exhausted).toBe(true);
+      expect(page2.pagination.nextStartAfterCursor).toBeUndefined();
     });
   });
 
@@ -300,9 +401,45 @@ describe('AggkitBridgeAggregator', () => {
       expect(page.data).toHaveLength(1);
       expect(page.data[0]?.bridgeHash).toBe('0xhealthy');
 
-      expect(page.failedNetworks).toHaveLength(1);
-      expect(page.failedNetworks[0]?.networkId).toBe(2);
-      expect(page.failedNetworks[0]?.httpStatus).toBe(503);
+      // Degrades PER CALL now (issue #30 scope item 2), not per network:
+      // network 2's 2 feed calls (bridgesOrigin/bridgesL1) AND its 2 claims
+      // calls (claimsHere/claimsL1) each fail independently, so all 4
+      // surface as distinct entries — every one of them naming network 2.
+      expect(page.failedNetworks).toHaveLength(4);
+      expect(page.failedNetworks.every((f) => f.networkId === 2)).toBe(true);
+      expect(page.failedNetworks.every((f) => f.httpStatus === 503)).toBe(true);
+    });
+
+    it("a failing claims list does NOT drop that network's bridge rows (issue #30 scope item 2, comment 3847432202)", async () => {
+      // Previously a single Promise.all() over all 4 calls meant a 502 on
+      // the LEAST important call (the unfiltered global claims list) wiped
+      // this network's bridge rows out of the fan-out entirely.
+      const row = makeBridge({
+        bridge_hash: '0xclaimsdown',
+        block_timestamp: 400,
+        deposit_count: 9,
+        global_index: 9,
+      });
+
+      installRouter([
+        ...networkRules(BASE_1, 1, {
+          a: { status: 200, body: bridgesBody([row], 1) },
+          c: { status: 502, body: errorBody('backend stopped') },
+          d: { status: 502, body: errorBody('backend stopped') },
+        }),
+        rule(BASE_1, ['/l1-info-tree-index'], 500, errorBody('not found')),
+      ]);
+
+      const aggregator = new AggkitBridgeAggregator({
+        networks: { 1: BASE_1 },
+      });
+      const page = await aggregator.getActivity({ fromAddress: ADDRESS });
+
+      expect(page.data).toHaveLength(1);
+      expect(page.data[0]?.bridgeHash).toBe('0xclaimsdown');
+      expect(
+        page.failedNetworks.some((f) => f.error.includes('backend stopped'))
+      ).toBe(true);
     });
 
     it('rejects when ALL configured networks fail', async () => {
@@ -323,126 +460,97 @@ describe('AggkitBridgeAggregator', () => {
     });
   });
 
-  describe('decodeCursor — junk-value coercion (comment 3862897288)', () => {
-    it('accepts ONLY a non-negative-integer number or a digits-only string, dropping every other value entirely (key absent from the result, not merely non-junk)', () => {
-      // Each entry is decoded independently (decodeCursor has no
-      // cross-key dependency), so a single object can exercise the full
-      // accept/reject matrix in one call.
+  describe('decodeCursor — junk-value coercion (comment 3862897288, redesigned for the per-source {page, offset, exhausted?} shape — issue #30)', () => {
+    it('accepts ONLY a well-formed { page, offset, exhausted? } object, dropping every other value entirely (key absent from the result, not merely non-junk)', () => {
       const cursor = JSON.stringify({
         'junk:null': null,
-        'junk:emptyString': '',
-        'junk:emptyArray': [],
-        'junk:false': false,
-        'junk:true': true,
-        'junk:trailingLetters': '3abc',
-        'junk:exponent': '1e3',
-        'junk:negativeNumber': -1,
-        'junk:negativeString': '-1',
-        'junk:fraction': 1.5,
-        'junk:hexPrefix': '0x3',
-        'junk:whitespacePadded': ' 3 ',
-        'junk:object': { nested: 1 },
-        // Audit finding C5: the number branch previously used
-        // `Number.isInteger`, which is true for `1e21` and for
-        // `9007199254740993` (both round-trip through `Number.isInteger`
-        // even though neither is a SAFE integer) -- so a numeric junk value
-        // survived where the equivalent STRING was already rejected below.
-        // `1e21` would reach aggkit as `page_number=1e%2B21` and 400 the
-        // whole fan-out for that network.
-        'junk:numericExponent': 1e21,
-        'junk:numericUnsafeInteger': Number.MAX_SAFE_INTEGER + 2,
-        'valid:zero': 0,
-        'valid:zeroString': '0',
-        'valid:three': '3',
-        'valid:threeNumber': 3,
+        'junk:string': 'abc',
+        'junk:number': 3,
+        'junk:array': [1, 2],
+        'junk:emptyObject': {},
+        'junk:missingOffset': { page: 1 },
+        'junk:missingPage': { offset: 0 },
+        'junk:extraKey': { page: 1, offset: 0, unknown: true },
+        'junk:negativePage': { page: -1, offset: 0 },
+        'junk:fractionOffset': { page: 1, offset: 1.5 },
+        'junk:stringPageTrailingLetters': { page: '3abc', offset: 0 },
+        'junk:exhaustedNotBoolean': { page: 1, offset: 0, exhausted: 'true' },
+        // Audit finding C5, carried forward to the new shape: a numeric
+        // literal outside Number.isSafeInteger must be rejected exactly
+        // like the equivalent string, on EITHER field.
+        'junk:numericExponentPage': { page: 1e21, offset: 0 },
+        'valid:pageOnly': { page: 3, offset: 0 },
+        'valid:withExhausted': { page: 5, offset: 2, exhausted: true },
+        'valid:stringDigits': { page: '3', offset: '0' },
       });
 
       const decoded = decodeCursor(cursor);
 
-      // Every junk key must be ABSENT -- not present-with-some-fallback.
       for (const junkKey of [
         'junk:null',
-        'junk:emptyString',
-        'junk:emptyArray',
-        'junk:false',
-        'junk:true',
-        'junk:trailingLetters',
-        'junk:exponent',
-        'junk:negativeNumber',
-        'junk:negativeString',
-        'junk:fraction',
-        'junk:hexPrefix',
-        'junk:whitespacePadded',
-        'junk:object',
-        'junk:numericExponent',
-        'junk:numericUnsafeInteger',
+        'junk:string',
+        'junk:number',
+        'junk:array',
+        'junk:emptyObject',
+        'junk:missingOffset',
+        'junk:missingPage',
+        'junk:extraKey',
+        'junk:negativePage',
+        'junk:fractionOffset',
+        'junk:stringPageTrailingLetters',
+        'junk:exhaustedNotBoolean',
+        'junk:numericExponentPage',
       ]) {
         expect(Object.prototype.hasOwnProperty.call(decoded, junkKey)).toBe(
           false
         );
       }
 
-      // Legitimate non-negative integers (including the 0 EXHAUSTED
-      // sentinel, both as a number and as a digits-only string) survive.
-      expect(decoded['valid:zero']).toBe(0);
-      expect(decoded['valid:zeroString']).toBe(0);
-      expect(decoded['valid:three']).toBe(3);
-      expect(decoded['valid:threeNumber']).toBe(3);
+      expect(decoded['valid:pageOnly']).toEqual({ page: 3, offset: 0 });
+      expect(decoded['valid:withExhausted']).toEqual({
+        page: 5,
+        offset: 2,
+        exhausted: true,
+      });
+      expect(decoded['valid:stringDigits']).toEqual({ page: 3, offset: 0 });
 
       expect(Object.keys(decoded).sort()).toEqual(
-        [
-          'valid:zero',
-          'valid:zeroString',
-          'valid:three',
-          'valid:threeNumber',
-        ].sort()
+        ['valid:pageOnly', 'valid:withExhausted', 'valid:stringDigits'].sort()
       );
     });
 
-    it('drops a value that is unsafe as an integer even though it is digits-only (beyond Number.isSafeInteger)', () => {
+    it('drops a page/offset value that is unsafe as an integer even though it is digits-only (beyond Number.isSafeInteger)', () => {
       const decoded = decodeCursor(
-        JSON.stringify({ 'huge:unsafe': '90071992547409910000' })
+        JSON.stringify({
+          'huge:unsafe': { page: '90071992547409910000', offset: 0 },
+        })
       );
       expect(Object.prototype.hasOwnProperty.call(decoded, 'huge:unsafe')).toBe(
         false
       );
     });
-
-    it('drops a NUMBER (not just an equivalent string) that fails Number.isSafeInteger, e.g. 1e21 (audit finding C5)', () => {
-      // `Number.isInteger(1e21) === true`, so a check that stopped at
-      // `Number.isInteger` (rather than `Number.isSafeInteger`) would let
-      // this numeric literal survive even though the digits-only STRING
-      // "1e21" is rejected earlier by regex alone (no exponent notation
-      // allowed) and the equivalent unsafe-integer string
-      // "90071992547409910000" is rejected above by the safe-integer check.
-      // The number branch must enforce the identical bound.
-      const decoded = decodeCursor(JSON.stringify({ 'huge:exponent': 1e21 }));
-      expect(
-        Object.prototype.hasOwnProperty.call(decoded, 'huge:exponent')
-      ).toBe(false);
-    });
   });
 
-  describe('getActivity — decodeCursor junk-value coercion, end-to-end (comment 3862897288)', () => {
-    it('drops a non-integer cursor entry (e.g. "abc") as junk, but preserves a legitimate EXHAUSTED (0) entry as a sentinel, not junk', async () => {
+  describe('getActivity — decodeCursor junk-value coercion, end-to-end (comment 3862897288, redesigned for issue #30)', () => {
+    it('drops a junk-shaped cursor entry, falling back to page 1 offset 0, but preserves a legitimate `exhausted: true` entry as a sentinel, not junk', async () => {
       installRouter([
         // Simulates aggkit 400ing on a junk page_number -- if the old code
-        // let the cursor's "abc" pass straight through as-is, this rule
-        // would be hit instead of the well-formed page_number=1 fallback.
+        // let the cursor's junk value pass straight through as-is, this
+        // rule would be hit instead of the well-formed page_number=1
+        // fallback.
         rule(
           BASE_1,
           ['/bridges', 'network_id=1', 'page_number=abc'],
           400,
           errorBody('page_number must be a number')
         ),
-        // If EXHAUSTED (0) were wrongly coerced away as "not a positive
-        // integer", this call would be wrongly re-requested at page 1 and
-        // 400 here.
+        // If `exhausted: true` were wrongly dropped as junk, this source
+        // would be wrongly re-fetched at page 1 and 400 here.
         rule(
           BASE_1,
-          ['/claims', 'network_id=1', 'page_number=1'],
+          ['/bridges', 'network_id=0', 'network_ids=1'],
           400,
-          errorBody('should not be re-requested: call is EXHAUSTED')
+          errorBody('should not be re-requested: source is exhausted')
         ),
         ...networkRules(BASE_1, 1, {}),
       ]);
@@ -452,8 +560,8 @@ describe('AggkitBridgeAggregator', () => {
       });
 
       const cursor = JSON.stringify({
-        '1:bridgesOrigin': 'abc', // junk -> dropped -> defaults to page 1
-        '1:claimsHere': 0, // EXHAUSTED sentinel -> preserved -> call skipped
+        '1:bridgesOrigin': { page: 'abc', offset: 0 }, // junk -> dropped -> defaults to page 1, offset 0
+        '1:bridgesL1': { page: 1, offset: 0, exhausted: true }, // preserved -> source skipped entirely
       });
       const page = await aggregator.getActivity({
         fromAddress: ADDRESS,
@@ -463,13 +571,13 @@ describe('AggkitBridgeAggregator', () => {
       expect(page.failedNetworks).toEqual([]);
       expect(page.data).toEqual([]);
 
-      // The EXHAUSTED claimsHere call was skipped entirely -- no request to
-      // /claims?network_id=1 was made at all.
+      // The exhausted bridgesL1 source was skipped entirely -- no request
+      // to /bridges?network_id=0&network_ids=1 was made at all.
       const calls = (global.fetch as Mock).mock.calls as [string][];
-      const claimsHereCalls = calls.filter(
-        ([url]) => url.includes('/claims') && url.includes('network_id=1')
+      const bridgesL1Calls = calls.filter(
+        ([url]) => url.includes('network_id=0') && url.includes('network_ids=1')
       );
-      expect(claimsHereCalls).toHaveLength(0);
+      expect(bridgesL1Calls).toHaveLength(0);
     });
   });
 
@@ -1205,7 +1313,7 @@ describe('AggkitBridgeAggregator', () => {
   });
 
   describe('getReadyToClaimCount', () => {
-    it('counts only the unclaimed rows whose l1-info-tree-index probe succeeds, bounded to the unclaimed set', async () => {
+    it('counts only the unclaimed rows whose l1-info-tree-index probe succeeds, bounded to the unclaimed set, and SURFACES a genuine probe throw instead of silently under-counting (issue #30 scope item 3)', async () => {
       const readyRow = makeBridge({
         bridge_hash: '0xready',
         deposit_count: 1,
@@ -1237,6 +1345,10 @@ describe('AggkitBridgeAggregator', () => {
           c: { status: 200, body: claimsBody([{ global_index: '3' }], 1) },
         }),
         rule(BASE_1, ['/l1-info-tree-index', 'deposit_count=1'], 200, '1'),
+        // On this SDK's supported floor (aggkit v0.11.0-rc6+) a 500 on this
+        // endpoint is UNCONDITIONALLY a genuine fault (only 404 carries a
+        // not-ready state) — so this is a genuine THROW, not a healthy
+        // "not yet" answer, even though its prose reads that way.
         rule(
           BASE_1,
           ['/l1-info-tree-index', 'deposit_count=2'],
@@ -1248,13 +1360,21 @@ describe('AggkitBridgeAggregator', () => {
       const aggregator = new AggkitBridgeAggregator({
         networks: { 1: BASE_1 },
       });
-      const count = await aggregator.getReadyToClaimCount({
+      const result = await aggregator.getReadyToClaimCount({
         fromAddress: ADDRESS,
       });
 
-      // Only 0xready resolves READY_TO_CLAIM; 0xbridged probes not-ready;
-      // 0xclaimed is excluded from the unclaimed set entirely (never probed).
-      expect(count).toBe(1);
+      // Only 0xready resolves READY_TO_CLAIM; 0xbridged's probe THROWS
+      // (surfaced below, not silently folded into "not ready"); 0xclaimed
+      // is excluded from the unclaimed set entirely (never probed).
+      expect(result.count).toBe(1);
+      expect(result.failedNetworks).toEqual([
+        {
+          networkId: 1,
+          error: 'this bridge has not been included on the L1 Info Tree yet',
+          httpStatus: 500,
+        },
+      ]);
     });
 
     it('regression: native-gas-token withdrawal (origin_network=0, recorded on network 1) is NOT counted ready when only the origin_network=0 probe would coincidentally succeed', async () => {
@@ -1291,11 +1411,15 @@ describe('AggkitBridgeAggregator', () => {
       const aggregator = new AggkitBridgeAggregator({
         networks: { 1: BASE_1 },
       });
-      const count = await aggregator.getReadyToClaimCount({
+      const result = await aggregator.getReadyToClaimCount({
         fromAddress: ADDRESS,
       });
 
-      expect(count).toBe(0);
+      // The correctly-routed probe (network_id=1) genuinely throws (500 on
+      // the rc6+ floor is always a fault) -- surfaced, not silently eaten.
+      expect(result.count).toBe(0);
+      expect(result.failedNetworks).toHaveLength(1);
+      expect(result.failedNetworks[0]?.networkId).toBe(1);
     });
   });
 
@@ -1382,10 +1506,11 @@ describe('AggkitBridgeAggregator', () => {
       const countAggregator = new AggkitBridgeAggregator({
         networks: { 1: BASE_1 },
       });
-      const count = await countAggregator.getReadyToClaimCount({
+      const result = await countAggregator.getReadyToClaimCount({
         fromAddress: ADDRESS,
       });
-      expect(count).toBe(0);
+      expect(result.count).toBe(0);
+      expect(result.failedNetworks).toEqual([]);
     });
   });
 
