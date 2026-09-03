@@ -19,6 +19,62 @@ export { TransactionStatus } from './types';
 // Re-export error classes
 export { ApiError } from './core/utils/apiError';
 
+// Re-export the standalone aggkit bridge-service module: S4's single-network
+// `AggkitBridgeClient`, plus S5's multi-network `AggkitBridgeAggregator`
+// (cross-network activity, claim-input orchestration, token-metadata
+// composition, and bridge tracking; see src/aggkit/index.ts).
+export {
+  AggkitBridgeClient,
+  AggkitBridgeAggregator,
+  AggkitApiError,
+} from './aggkit';
+export type {
+  AggkitApiErrorArgs,
+  AggkitBridgeClientConfig,
+  AggkitBridgesResult,
+  AggkitClaimsResult,
+  AggkitTokenMappingsResult,
+  AggkitBridge,
+  AggkitClaim,
+  AggkitClaimProof,
+  AggkitL1InfoTreeLeaf,
+  AggkitTokenMapping,
+  AggkitSyncStatus,
+  AggkitSyncStatusInfo,
+  AggkitHealthResponse,
+  AggkitErrorBody,
+  AggkitAggregatorConfig,
+  AggkitActivityBridge,
+  AggkitActivityClaim,
+  AggkitActivityItem,
+  AggkitActivityWarning,
+  AggkitActivityResult,
+  AggkitTokenMetadata,
+  AggkitTrackingStatus,
+  AggkitBridgeType,
+  AggkitBridgeLeafType,
+  AggkitBridgeStep,
+  AggkitStepStatus,
+  AggkitTrackerErrorType,
+  AggkitTrackerErrorTypeString,
+  AggkitCertificateStatus,
+  AggkitCertificateStatusString,
+  AggkitBridgeStatusEvent,
+  AggkitBridgeStatus,
+  AggkitTrackerErrorStep,
+  AggkitCertificateData,
+  AggkitWaitingGERUpdateResult,
+  AggkitWaitingLERUpdateResult,
+  AggkitPendingInclusionResult,
+  AggkitWaitL1SettledGERResult,
+  AggkitWaitingGERInjectionResult,
+  AggkitWaitingClaimResult,
+  AggkitBridgeStepResult,
+  AggkitBridgeStepPath,
+  AggkitTrackingData,
+  AggkitTrackerErrorData,
+} from './aggkit';
+
 const defaultConfig: SDKConfig = {
   mode: [SDK_MODES.CORE],
 };
