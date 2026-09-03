@@ -4,14 +4,15 @@
  * Integration smoke test for the aggkit SDK code (`src/aggkit/*`) against a
  * LIVE aggkit-proxy (or haproxy `/aggkitapi`) REST endpoint fronting the
  * 2-L2 (L2-1/L2-2) devnet — an integration script, NOT a fixture-driven unit
- * test. Exercises: per-network sync-status across {0,1,2}, a real
- * address's multi-network activity fan-out (via the aggregator), a
- * known-ground-truth CLAIMED check, an L2->L2 row's derived status, a LIVE
+ * test. Exercises: per-network sync-status across {0,1,2}, a real address's
+ * cross-network activity (via the aggregator's `getActivity`, a passthrough
+ * to aggkit's bridgetracker `/tracker/v1/activity`), a known-ground-truth
+ * claimed=true check, an L2->L2 row's claimed/tracking state, a LIVE
  * native-gas-token bridge proving the not-ready union (no throw) and
  * recording-network routing (comments 3847422009 / 3847523270 / 3847600104),
  * the destination-injected `getClaimInputs` roundtrip for both a sampled
  * L2->L2 and L2->L1 deposit, token-mappings, and (optionally) the proxy-502
- * partial-failure path.
+ * partial-failure path (surfaced by the tracker as a `warnings` entry).
  *
  * Run:
  *
@@ -81,7 +82,7 @@
  *                             via `kurtosis service stop cdk
  *                             aggkit-002-bridge`, asserts `getActivity`
  *                             resolves with the dead network reported in
- *                             failedNetworks instead of rejecting, then restarts it. Off by default
+ *                             `warnings` instead of rejecting, then restarts it. Off by default
  *                             because it mutates the live enclave.
  */
 
@@ -202,22 +203,19 @@ async function main(): Promise<void> {
   }
 
   console.log(
-    `\n=== 3. Full fan-out activity across {${L2_NETWORK_IDS.join(', ')}} (via AggkitBridgeAggregator.getActivity) ===`
+    `\n=== 3. Cross-network activity for ${FROM_ADDRESS} (via AggkitBridgeAggregator.getActivity -> aggkit tracker/v1/activity, server-side fan-out) ===`
   );
   const activity = await aggregator.getActivity({
     fromAddress: FROM_ADDRESS,
-    pageSize: 50,
   });
   console.log(
-    `activity.data.length=${activity.data.length} pagination=${JSON.stringify(
-      activity.pagination
-    )} failedNetworks=${JSON.stringify(activity.failedNetworks)}`
+    `activity.bridges.length=${activity.bridges.length} warnings=${JSON.stringify(activity.warnings)}`
   );
   assert(
-    activity.failedNetworks.length === 0,
-    'no failed networks in the getActivity fan-out (healthy enclave)'
+    activity.warnings.length === 0,
+    "no warnings from the tracker's own fan-out (healthy enclave)"
   );
-  if (activity.data.length === 0) {
+  if (activity.bridges.length === 0) {
     // The default FROM_ADDRESS is the EOA that sent one specific past round's
     // lifecycle deposits. Enclave state does NOT survive `kurtosis enclave rm`,
     // so on any freshly recreated enclave that address has zero traffic and
@@ -235,25 +233,23 @@ async function main(): Promise<void> {
     );
   }
   assert(
-    activity.data.length > 0,
-    'getActivity returned at least one transaction for the real from_address'
+    activity.bridges.length > 0,
+    'getActivity returned at least one activity item for the real from_address'
   );
 
-  const knownStatuses = [
-    'BRIDGED',
-    'LEAF_INCLUDED',
-    'READY_TO_CLAIM',
-    'CLAIMED',
-  ];
-  const statusCounts: Record<string, number> = {};
-  for (const tx of activity.data) {
-    statusCounts[tx.status] = (statusCounts[tx.status] ?? 0) + 1;
+  const knownClaimedStates = ['true', 'false', 'error'];
+  const claimedCounts: Record<string, number> = {};
+  for (const item of activity.bridges) {
+    claimedCounts[item.claimed] = (claimedCounts[item.claimed] ?? 0) + 1;
     assert(
-      knownStatuses.includes(tx.status),
-      `tx bridgeHash=${tx.bridgeHash} status "${tx.status}" is one of the 4 known statuses`
+      knownClaimedStates.includes(item.claimed),
+      `bridge_hash=${item.bridge.bridge_hash} claimed "${item.claimed}" is one of the 3 known tri-states`
     );
   }
-  console.log('status distribution across fetched page:', statusCounts);
+  console.log(
+    'claimed-state distribution across the full history:',
+    claimedCounts
+  );
 
   console.log(
     `\n=== 4. Full status derivation for a known-ground-truth deposit ===`
@@ -282,26 +278,26 @@ async function main(): Promise<void> {
     console.log(
       `ground truth: bridge_hash=${knownClaimedBridge.bridge_hash} deposit_count=${knownClaimedBridge.deposit_count} global_index=${knownClaimedBridge.global_index}`
     );
-    const txForBridge = activity.data.find(
-      (tx) => tx.bridgeHash === knownClaimedBridge.bridge_hash
+    const itemForBridge = activity.bridges.find(
+      (item) => item.bridge.bridge_hash === knownClaimedBridge.bridge_hash
     );
-    if (txForBridge) {
+    if (itemForBridge) {
       assert(
-        txForBridge.status === 'CLAIMED',
-        `known-claimed bridge (deposit_count=${knownClaimedBridge.deposit_count}) derived as CLAIMED via getActivity`
+        itemForBridge.claimed === 'true',
+        `known-claimed bridge (deposit_count=${knownClaimedBridge.deposit_count}) derived claimed=true via getActivity`
       );
       assert(
-        txForBridge.claimTransactionHash !== undefined,
-        'CLAIMED tx carries a claimTransactionHash'
+        itemForBridge.claim?.tx_hash !== undefined,
+        'a claimed=true item carries a joined claim.tx_hash'
       );
     } else {
       console.log(
-        `(bridge_hash=${knownClaimedBridge.bridge_hash} not present on the fetched activity page due to pagination/ordering — ` +
+        `(bridge_hash=${knownClaimedBridge.bridge_hash} not present in the fetched activity — ` +
           `falling back to a direct claims-map consistency check instead of the getActivity-level assertion)`
       );
       assert(
         claimedGlobalIndexes.has(knownClaimedBridge.global_index),
-        'raw claims data confirms this global_index is claimed (independent of getActivity pagination)'
+        'raw claims data confirms this global_index is claimed (independent of getActivity)'
       );
     }
   } else {
@@ -310,35 +306,35 @@ async function main(): Promise<void> {
     );
   }
 
-  console.log(`\n=== 5. L2->L2 row's derived status ===`);
-  const l2l2Row = activity.data.find(
-    (tx) =>
-      L2_NETWORK_IDS.includes(tx.sourceNetwork) &&
-      L2_NETWORK_IDS.includes(tx.destinationNetwork) &&
-      tx.sourceNetwork !== tx.destinationNetwork
+  console.log(`\n=== 5. L2->L2 row's claimed/tracking state ===`);
+  const l2l2Row = activity.bridges.find(
+    (item) =>
+      L2_NETWORK_IDS.includes(item.bridge_network_id) &&
+      L2_NETWORK_IDS.includes(item.bridge.destination_network) &&
+      item.bridge_network_id !== item.bridge.destination_network
   );
   assert(
     l2l2Row !== undefined,
-    'found at least one L2->L2 row in the fetched activity page'
+    'found at least one L2->L2 row in the fetched activity'
   );
   if (l2l2Row) {
     console.log(
-      `L2->L2 row: bridgeHash=${l2l2Row.bridgeHash} sourceNetwork=${l2l2Row.sourceNetwork} ` +
-        `destinationNetwork=${l2l2Row.destinationNetwork} depositCount=${l2l2Row.depositCount} ` +
-        `status=${l2l2Row.status} leafIndexForProof=${l2l2Row.leafIndexForProof}`
+      `L2->L2 row: bridgeHash=${l2l2Row.bridge.bridge_hash} bridge_network_id=${l2l2Row.bridge_network_id} ` +
+        `destination_network=${l2l2Row.bridge.destination_network} deposit_count=${l2l2Row.bridge.deposit_count} ` +
+        `claimed=${l2l2Row.claimed}`
     );
     // This round's known-autoclaimed L2-1->L2-2 deposit (also captured in the
     // unit-test lifecycle fixtures): tx 0xac862504..., deposit_count=2.
-    // Autoclaim landed well before this smoke run, so the derived status
-    // should be the terminal CLAIMED, not the transient LEAF_INCLUDED window.
-    if (l2l2Row.depositCount === 2 && l2l2Row.sourceNetwork === 1) {
+    // Autoclaim landed well before this smoke run, so the derived state
+    // should be the terminal claimed=true, not still unclaimed.
+    if (l2l2Row.bridge.deposit_count === 2 && l2l2Row.bridge_network_id === 1) {
       assert(
-        l2l2Row.status === 'CLAIMED',
-        'the known-autoclaimed L2-1->L2-2 deposit (deposit_count=2) derives CLAIMED'
+        l2l2Row.claimed === 'true',
+        'the known-autoclaimed L2-1->L2-2 deposit (deposit_count=2) derives claimed=true'
       );
       assert(
-        l2l2Row.claimTransactionHash !== undefined,
-        'CLAIMED L2->L2 row carries a claimTransactionHash'
+        l2l2Row.claim?.tx_hash !== undefined,
+        'claimed=true L2->L2 row carries a joined claim.tx_hash'
       );
     }
   }
@@ -800,26 +796,26 @@ async function main(): Promise<void> {
     });
     try {
       // The proxy's own port stays open (it's a distinct service) — only the
-      // backend it routes network 2 to is down, so network 2's calls 502
-      // while network 1's fan-out keeps succeeding.
+      // backend it routes network 2 to is down. The tracker itself (not this
+      // SDK) fans out to every bridge service server-side, so a dead network
+      // 2 now surfaces as a `warnings` entry from the ONE tracker request,
+      // not as a client-side per-network fetch failure.
       const degraded = await aggregator.getActivity({
         fromAddress: FROM_ADDRESS,
-        pageSize: 50,
       });
       console.log(
-        `degraded.failedNetworks=${JSON.stringify(degraded.failedNetworks)} degraded.data.length=${degraded.data.length}`
+        `degraded.warnings=${JSON.stringify(degraded.warnings)} degraded.bridges.length=${degraded.bridges.length}`
       );
       assert(
-        degraded.failedNetworks.length === 1 &&
-          degraded.failedNetworks[0]?.networkId === downNetworkId,
-        `getActivity degrades with failedNetworks naming ONLY network ${downNetworkId}`
+        degraded.warnings.some((w) => w.network_id === downNetworkId),
+        `getActivity's warnings name the down network ${downNetworkId}`
       );
       const otherNetworkId = L2_NETWORK_IDS.find((id) => id !== downNetworkId);
       if (otherNetworkId !== undefined) {
-        const otherNetworkRowsPresent = degraded.data.some(
-          (tx) =>
-            tx.sourceNetwork === otherNetworkId ||
-            tx.destinationNetwork === otherNetworkId
+        const otherNetworkRowsPresent = degraded.bridges.some(
+          (item) =>
+            item.bridge_network_id === otherNetworkId ||
+            item.bridge.destination_network === otherNetworkId
         );
         assert(
           otherNetworkRowsPresent,

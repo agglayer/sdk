@@ -251,9 +251,9 @@ export interface AggkitClaimInputsParams {
    * transfers of an L2-origin token (`origin_network === <that L2>`, recorded
    * on L1's tree).
    *
-   * From `getActivity`/`getReadyToClaimCount` rows this is
-   * `AggkitTransaction.sourceNetwork`. Raw from aggkit it is the `network_id`
-   * the `/bridges` call that produced the row was made with.
+   * From `getActivity` rows this is `AggkitActivityItem.bridge_network_id`.
+   * Raw from aggkit it is the `network_id` the bridge service that reported
+   * the row serves.
    *
    * Keys `/l1-info-tree-index`'s `network_id` and `/claim-proof`'s
    * `network_id` unconditionally. Also keys which aggkit instance answers,
@@ -371,10 +371,10 @@ export interface AggkitErrorBody {
 }
 
 /**
- * ---- Aggregator (S5): multi-network fan-out + status derivation ----
+ * ---- Aggregator (S5): multi-network composition ----
  *
- * See `aggregator.ts` for the fan-out/join/status-derivation/
- * token-metadata implementation these types support.
+ * See `aggregator.ts` for the claim-input-orchestration/token-metadata/
+ * activity-passthrough implementation these types support.
  */
 
 /** Config for the multi-network aggregator: one aggkit base URL per L2 networkId. */
@@ -387,88 +387,131 @@ export interface AggkitAggregatorConfig {
 }
 
 /**
- * UI transaction status (`app/types/transaction.ts` `TransactionStatus`).
+ * ---- Bridge Tracker Activity (aggkit `tracker/v1/activity`) ----
  *
- * State machine:
- * - **BRIDGED**: Deposit emitted on source, not yet included in L1 info tree.
- * - **LEAF_INCLUDED**: Deposit included in L1 info tree on source; for L2 destinations
- *   only: the source leaf exists but the destination's GER injection lags (common in
- *   fresh enclaves where L2 block height exceeds L1). Destination's injected leaf will
- *   eventually catch up. For L1 destinations, this state never occurs (L1 has no "injection"
- *   concept — leaf inclusion suffices).
- * - **READY_TO_CLAIM**: Claim proof available; user can call `claimAsset` on destination.
- *   For L1 destinations: source leaf included. For L2 destinations: both source included
- *   AND destination injected.
- * - **CLAIMED**: Claim completed on destination; balance received.
+ * `AggkitBridgeClient.getActivity` / `AggkitBridgeAggregator.getActivity`
+ * wrap aggkit's bridgetracker `GET /tracker/v1/activity/from/{from_address}`
+ * (docs/bridgetracker/API.md) — a single request that fans out server-side
+ * across every bridge service the tracker is configured with and returns
+ * one unified, deduped, already-claim-checked list for the address.
+ *
+ * REPLACES the client-side `/bridge/v1` fan-out (`getBridges` x2 +
+ * `getClaims` x2 per configured network, plus per-row `/l1-info-tree-index`
+ * / `/injected-l1-info-leaf` probes) `AggkitBridgeAggregator.getActivity`
+ * used before this redesign, and the now-REMOVED
+ * `AggkitBridgeAggregator.getReadyToClaimCount` — a consumer can derive a
+ * ready-to-claim count itself by filtering `claimed !== 'true'` and
+ * inspecting `tracking`, the same interpretation it already needs for
+ * status display.
+ *
+ * Trade-offs versus the old fan-out (accepted product decision, ported here
+ * from agglayer-dev-ui's own `app/services/activity.ts`, S-review
+ * 2026-08-28):
+ *  - No pagination: `bridges` is the address's ENTIRE history in one
+ *    response. Paginate client-side over the returned array if needed.
+ *  - Per-network partial failure is a `warnings` array (one entry per
+ *    upstream bridge-service call that failed the tracker's own fan-out),
+ *    not `AggkitFailedNetwork[]`.
+ *  - Status is a `claimed` tri-state (`'true'` / `'false'` / `'error'`) plus,
+ *    with `includeTracking: true`, the same step-based `AggkitTrackingData`
+ *    `getBridgeTracking` returns for a single tx — NOT the 4-value
+ *    BRIDGED/LEAF_INCLUDED/READY_TO_CLAIM/CLAIMED state machine the old
+ *    fan-out derived. Deriving a coarser or richer UI status from this pair
+ *    is left to the consumer (agglayer-dev-ui's own `deriveStatus` is one
+ *    worked example: it collapses to PENDING/READY_TO_CLAIM/CLAIMED/ERROR,
+ *    treating "the current tracker step is WaitingClaim and not yet done" as
+ *    the READY_TO_CLAIM signal).
  */
-export type AggkitTransactionStatus =
-  'BRIDGED' | 'LEAF_INCLUDED' | 'READY_TO_CLAIM' | 'CLAIMED';
 
-/**
- * UI-shaped transaction row (mirrors `app/types/transaction.ts` `Transaction`
- * field-for-field). Produced by `AggkitBridgeAggregator`
- * from a joined + status-derived `AggkitBridge` row.
- */
-export interface AggkitTransaction {
-  hubUID: string;
-  txSender: string;
-  fromAddress: string;
-  receiverAddress: string;
-  /**
-   * The RECORDING network — whose local exit tree holds this deposit's leaf.
-   * Pass this as `getClaimInputs`'s `recordingNetworkId`. NOT the asset's
-   * origin (`originTokenNetwork`), which diverges for native-gas-token
-   * withdrawals and for L1->L2 transfers of an L2-origin token.
-   */
-  sourceNetwork: number;
-  destinationNetwork: number;
-  amount: string;
-  status: AggkitTransactionStatus;
-  lastUpdatedAt: number;
-  bridgeHash: string;
+/** One bridge event, as reported by the bridge service the tracker fanned out to. */
+export interface AggkitActivityBridge {
+  block_num: number;
+  block_pos: number;
+  block_timestamp: number;
+  bridge_hash: string;
+  /** The bridge transaction's own hash — NOT the claim's (see `AggkitActivityClaim.tx_hash`). */
+  tx_hash: string;
+  deposit_count: number;
+  destination_address: string;
+  destination_network: number;
+  /** May be absent; do not trust for identity beyond sender display. */
+  from_address?: string;
+  /** Already a JSON string on this endpoint (unlike `/bridges`' bare-number `global_index` — see `AggkitBridge`). */
+  global_index: string;
+  /** 0 = asset, 1 = message. */
+  leaf_type: number;
   metadata: string;
-  leafType: string;
-  depositCount: number;
-  transactionIndex: number;
-  transactionHash: string;
-  claimTransactionHash?: string;
-  claimTimestamp?: number;
-  claimBlockNumber?: number;
-  blockNumber: number;
-  globalIndex: string;
-  originTokenAddress: string;
-  originTokenNetwork: number;
-  timestamp: number;
-  /** For `Bridge.isClaimed` — equals `deposit_count`, NOT the L1-info-tree index. */
-  leafIndex: number;
-  /** The L1-info-tree index (for `/claim-proof`'s `leaf_index`); only set once probed (Tier 2). */
-  leafIndexForProof?: number;
+  origin_address: string;
+  origin_network: number;
+  to_address: string;
+  txn_sender: string;
+  amount: string;
 }
 
-/** One configured network's fan-out failed; its rows are simply absent from the page. */
-export interface AggkitFailedNetwork {
-  networkId: number;
-  error: string;
-  httpStatus?: number;
+/** The claim event that settled `AggkitActivityItem.bridge`, if any. */
+export interface AggkitActivityClaim {
+  tx_hash: string;
+  amount: string;
+  block_num: number;
+  block_timestamp: number;
+  destination_address: string;
+  destination_network: number;
+  /** ALWAYS "" on this endpoint — never use for identity (matches `/claims`, see `AggkitClaim`). */
+  from_address: string;
+  global_exit_root: string;
+  global_index: string;
+  is_message: boolean;
+  mainnet_exit_root: string;
+  metadata: string;
+  origin_address: string;
+  origin_network: number;
+  proof_local_exit_root: string[];
+  proof_rollup_exit_root: string[];
+  rollup_exit_root: string;
 }
 
-/** Result of `AggkitBridgeAggregator.getActivity`. */
-export interface AggkitActivityPage {
-  data: AggkitTransaction[];
-  pagination: {
-    total: number;
-    limit: number;
-    nextStartAfterCursor?: string;
-  };
-  failedNetworks: AggkitFailedNetwork[];
+/** One activity row: a bridge event, optionally joined with its claim and/or tracking data. */
+export interface AggkitActivityItem {
+  bridge: AggkitActivityBridge;
+  /**
+   * The network whose bridge service reported this row — i.e. the deposit's
+   * RECORDING network (distinct from `bridge.origin_network`, the asset's
+   * origin, which diverges for native-gas-token withdrawals and for L1->L2
+   * transfers of an L2-origin token). Pass this as `getClaimInputs`'s
+   * `recordingNetworkId`.
+   */
+  bridge_network_id: number;
+  claim?: AggkitActivityClaim;
+  claim_network_id?: number;
+  /**
+   * Tri-state result of the destination bridge contract's `isClaimed()`
+   * call: `'false'` (confirmed unclaimed), `'true'` (claimed), or `'error'`
+   * if the check itself failed — `'error'` must NOT be read as `'false'`.
+   */
+  claimed: 'true' | 'false' | 'error';
+  creation_timestamp: number;
+  last_updated_timestamp: number;
+  /** Present when `claimed === 'error'` (and possibly other failure modes); keyed by failure kind (e.g. `claim`). */
+  errors?: Record<string, string>;
+  /**
+   * Only present when the request set `includeTracking: true` AND the
+   * bridge is still unclaimed. Same shape `getBridgeTracking` returns for a
+   * single tx (both are the bridgetracker service's `TrackingData` DTO).
+   */
+  tracking?: AggkitTrackingData;
 }
 
-/**
- * Opaque composite cursor: one 1-based page counter per fan-out call.
- * A stored value of `0` is a sentinel meaning "this call
- * is exhausted — do not refetch it" (see aggregator.ts).
- */
-export type AggkitPageCursor = Record<string, number>;
+/** One upstream bridge-service call the tracker fanned out to failed to respond — `bridges` may be an incomplete picture for `network_id`. */
+export interface AggkitActivityWarning {
+  network_id: number;
+  message: string;
+}
+
+/** Result of `AggkitBridgeAggregator.getActivity` / `AggkitBridgeClient.getActivity`. */
+export interface AggkitActivityResult {
+  bridges: AggkitActivityItem[];
+  warnings: AggkitActivityWarning[];
+}
 
 /**
  * Token metadata output shape = UI's existing `TokenMetadata`

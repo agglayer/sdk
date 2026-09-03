@@ -308,13 +308,12 @@ documented next, is exactly that check.
 ```typescript
 // Resolve the proof inputs needed to claim a single bridge deposit.
 // `recordingNetworkId` is the network whose LOCAL EXIT TREE recorded the
-// deposit — from an `AggkitTransaction` row (e.g. from `getActivity` /
-// `getReadyToClaimCount`) this is `transaction.sourceNetwork`, NOT the
-// asset's `origin_network`.
+// deposit — from an `AggkitActivityItem` row (`getActivity`) this is
+// `item.bridge_network_id`, NOT the asset's `origin_network`.
 const result = await aggregator.getClaimInputs({
-  recordingNetworkId: transaction.sourceNetwork,
-  destinationNetworkId: transaction.destinationNetwork,
-  depositCount: transaction.depositCount,
+  recordingNetworkId: item.bridge_network_id,
+  destinationNetworkId: item.bridge.destination_network,
+  depositCount: item.bridge.deposit_count,
 });
 
 if (!result.claimable) {
@@ -806,8 +805,8 @@ Two related breaking changes to this method:
    `never` rather than deprecated, so a stale call site is a compile error;
    a JS caller that still passes it gets a thrown migration `Error` at
    runtime. Replace `originNetworkId` with `recordingNetworkId` —
-   `AggkitTransaction.sourceNetwork` from `getActivity`/`getReadyToClaimCount`
-   rows — never the asset's `origin_network`.
+   `AggkitActivityItem.bridge_network_id` from `getActivity` rows — never
+   the asset's `origin_network`.
 2. **"Not yet claimable" changed from a thrown, fabricated `AggkitApiError`
    to a returned result union.** Previously a not-ready source or
    destination state was reported as a thrown `AggkitApiError` with an
@@ -820,6 +819,46 @@ Two related breaking changes to this method:
    switch to checking `result.claimable` instead; genuine failures (a real
    non-2xx response, a transport failure, or a config/contract violation)
    still throw.
+
+### `AggkitBridgeAggregator.getActivity` now wraps aggkit's bridgetracker `/tracker/v1/activity`, not a client-side `/bridge/v1` fan-out; `getReadyToClaimCount` is REMOVED (issues #30, #31)
+
+`getActivity` previously fanned out client-side across every configured
+network's `/bridge/v1` instance (`getBridges` x2 + `getClaims` x2 per
+network, plus per-row `/l1-info-tree-index` / `/injected-l1-info-leaf`
+probes), paginated with an opaque cursor. It now does none of that: it is a
+thin passthrough to aggkit's bridgetracker
+`GET /tracker/v1/activity/from/{from_address}`, which already fans out
+server-side across every bridge service it is configured with and returns
+one unified, deduped, already-claim-checked list in a single request. Only
+ONE configured network's client is used (any one answers identically — the
+tracker component owns the cross-network view, not any single bridge
+service).
+
+- **New signature and return shape.** `getActivity(params: { fromAddress:
+string; includeTracking?: boolean })` (no more `pageSize`/`cursor`/`order`)
+  returns `AggkitActivityResult = { bridges: AggkitActivityItem[]; warnings:
+AggkitActivityWarning[] }` — see its module doc in `types.ts` for the full
+  contract and trade-offs versus the old fan-out (no pagination; `claimed`
+  tri-state + optional `tracking` instead of the old
+  BRIDGED/LEAF_INCLUDED/READY_TO_CLAIM/CLAIMED derivation; `warnings` instead
+  of `failedNetworks`).
+- **Removed types**: `AggkitTransaction`, `AggkitTransactionStatus`,
+  `AggkitFailedNetwork`, `AggkitActivityPage`, `AggkitPageCursor`,
+  `AggkitSourceCursorState`, `AggkitReadyToClaimCountResult`, and the
+  `decodeCursor` export. Replaced by `AggkitActivityBridge`,
+  `AggkitActivityClaim`, `AggkitActivityItem`, `AggkitActivityWarning`,
+  `AggkitActivityResult`.
+- **`AggkitBridgeAggregator.getReadyToClaimCount` is REMOVED entirely**
+  (it can no longer disagree with `getActivity` on the same row the way
+  issue #31 described, because there is no separate fan-out left to
+  disagree). Derive a ready-to-claim count yourself from `getActivity`'s
+  result: filter `claimed !== 'true'` and inspect `tracking` (mirrors how a
+  consumer already has to interpret this result for status display —
+  agglayer-dev-ui's own `app/services/activity.ts` `deriveStatus` is one
+  worked example).
+- **New**: `AggkitBridgeClient.getActivity` (single-network client method
+  the aggregator delegates to) is available directly for callers that want
+  to pick their own network explicitly instead of "any configured one."
 
 ## 📈 Roadmap & Future Development
 

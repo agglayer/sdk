@@ -21,7 +21,8 @@ export { ApiError } from './core/utils/apiError';
 
 // Re-export the standalone aggkit bridge-service module: S4's single-network
 // `AggkitBridgeClient`, plus S5's multi-network `AggkitBridgeAggregator`
-// (fan-out/join/status-derivation/token-metadata; see src/aggkit/index.ts).
+// (cross-network activity, claim-input orchestration, token-metadata
+// composition, and bridge tracking; see src/aggkit/index.ts).
 export {
   AggkitBridgeClient,
   AggkitBridgeAggregator,
@@ -43,11 +44,11 @@ export type {
   AggkitHealthResponse,
   AggkitErrorBody,
   AggkitAggregatorConfig,
-  AggkitTransactionStatus,
-  AggkitTransaction,
-  AggkitFailedNetwork,
-  AggkitActivityPage,
-  AggkitPageCursor,
+  AggkitActivityBridge,
+  AggkitActivityClaim,
+  AggkitActivityItem,
+  AggkitActivityWarning,
+  AggkitActivityResult,
   AggkitTokenMetadata,
   AggkitTrackingStatus,
   AggkitBridgeType,

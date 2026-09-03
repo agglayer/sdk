@@ -12,6 +12,7 @@ import { AggkitApiError } from './errors';
 import { fetchRawText, type RawFetchConfig } from './httpRaw';
 import { quoteGlobalIndex } from './parsing';
 import type {
+  AggkitActivityResult,
   AggkitBridgeClientConfig,
   AggkitBridgesResult,
   AggkitClaimsResult,
@@ -702,6 +703,56 @@ export class AggkitBridgeClient {
     }
 
     return JSON.parse(text) as AggkitTrackingData;
+  }
+
+  /**
+   * Cross-network activity for `fromAddress` (aggkit `tracker/v1`,
+   * `GET /tracker/v1/activity/from/{from_address}`, `docs/bridgetracker/API.md`).
+   * The tracker service already scans every bridge service it is configured
+   * with server-side, so this ONE request returns a unified, deduped,
+   * already-claim-checked list across every configured network — unlike
+   * `getBridges`/`getClaims` above (which only ever answer for THIS client's
+   * own single network), this method is not network-scoped: any configured
+   * network's client answers identically (`AggkitBridgeAggregator.getActivity`
+   * relies on exactly this to pick just one).
+   *
+   * `includeTracking` defaults to `true` — almost every consumer needs the
+   * per-row `AggkitTrackingData` to tell a merely-pending deposit apart from
+   * one that is actually ready to claim (see `AggkitActivityItem.tracking`'s
+   * doc). Pass `false` for a lighter response when tracking detail isn't
+   * needed.
+   *
+   * See `AggkitActivityResult`'s module doc in `types.ts` for the full
+   * contract (no pagination — `bridges` is the address's entire history in
+   * one response — and the trade-offs versus the older `/bridge/v1`
+   * client-side fan-out this replaces).
+   */
+  async getActivity(params: {
+    fromAddress: string;
+    includeTracking?: boolean;
+  }): Promise<AggkitActivityResult> {
+    const includeTracking = params.includeTracking ?? true;
+    const query = this.buildQuery({ includeTracking });
+    const url = `${this.trackerApiUrl}/activity/from/${encodeURIComponent(params.fromAddress)}?${query}`;
+    const { status, text } = await fetchRawText(url, this.fetchConfig);
+
+    if (status < 200 || status >= 300) {
+      throw new AggkitApiError({
+        message: this.parseTrackerErrorMessage(text),
+        httpStatus: status,
+        endpoint: '/tracker/v1/activity/from/{from_address}',
+        body: text,
+      });
+    }
+
+    // `from_address` on the wire is a byte-array echo of the requested
+    // address (swagger: `type: array, items: integer`), not the hex string
+    // the caller already has — deliberately dropped from the return value,
+    // it is redundant with `params.fromAddress` and useless as returned.
+    const raw = JSON.parse(text) as AggkitActivityResult & {
+      from_address: number[];
+    };
+    return { bridges: raw.bridges, warnings: raw.warnings ?? [] };
   }
 
   private async requestRaw(
