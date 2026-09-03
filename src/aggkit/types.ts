@@ -251,9 +251,9 @@ export interface AggkitClaimInputsParams {
    * transfers of an L2-origin token (`origin_network === <that L2>`, recorded
    * on L1's tree).
    *
-   * From `getActivity`/`getReadyToClaimCount` rows this is
-   * `AggkitTransaction.sourceNetwork`. Raw from aggkit it is the `network_id`
-   * the `/bridges` call that produced the row was made with.
+   * From `getActivity` rows this is `AggkitActivityItem.bridge_network_id`.
+   * Raw from aggkit it is the `network_id` the bridge service that reported
+   * the row serves.
    *
    * Keys `/l1-info-tree-index`'s `network_id` and `/claim-proof`'s
    * `network_id` unconditionally. Also keys which aggkit instance answers,
@@ -371,10 +371,10 @@ export interface AggkitErrorBody {
 }
 
 /**
- * ---- Aggregator (S5): multi-network fan-out + status derivation ----
+ * ---- Aggregator (S5): multi-network composition ----
  *
- * See `aggregator.ts` for the fan-out/join/status-derivation/
- * token-metadata implementation these types support.
+ * See `aggregator.ts` for the claim-input-orchestration/token-metadata/
+ * activity-passthrough implementation these types support.
  */
 
 /** Config for the multi-network aggregator: one aggkit base URL per L2 networkId. */
@@ -387,169 +387,129 @@ export interface AggkitAggregatorConfig {
 }
 
 /**
- * UI transaction status (`app/types/transaction.ts` `TransactionStatus`).
+ * ---- Bridge Tracker Activity (aggkit `tracker/v1/activity`) ----
  *
- * State machine:
- * - **BRIDGED**: Deposit emitted on source, not yet included in L1 info tree.
- * - **LEAF_INCLUDED**: Deposit included in L1 info tree on source; for L2 destinations
- *   only: the source leaf exists but the destination's GER injection lags (common in
- *   fresh enclaves where L2 block height exceeds L1). Destination's injected leaf will
- *   eventually catch up. For L1 destinations, this state never occurs (L1 has no "injection"
- *   concept — leaf inclusion suffices).
- * - **READY_TO_CLAIM**: Claim proof available; user can call `claimAsset` on destination.
- *   For L1 destinations: source leaf included. For L2 destinations: both source included
- *   AND destination injected.
- * - **CLAIMED**: Claim completed on destination; balance received.
+ * `AggkitBridgeClient.getActivity` / `AggkitBridgeAggregator.getActivity`
+ * wrap aggkit's bridgetracker `GET /tracker/v1/activity/from/{from_address}`
+ * (docs/bridgetracker/API.md) — a single request that fans out server-side
+ * across every bridge service the tracker is configured with and returns
+ * one unified, deduped, already-claim-checked list for the address.
+ *
+ * REPLACES the client-side `/bridge/v1` fan-out (`getBridges` x2 +
+ * `getClaims` x2 per configured network, plus per-row `/l1-info-tree-index`
+ * / `/injected-l1-info-leaf` probes) `AggkitBridgeAggregator.getActivity`
+ * used before this redesign, and the now-REMOVED
+ * `AggkitBridgeAggregator.getReadyToClaimCount` — a consumer can derive a
+ * ready-to-claim count itself by filtering `claimed !== 'true'` and
+ * inspecting `tracking`, the same interpretation it already needs for
+ * status display.
+ *
+ * Trade-offs versus the old fan-out (accepted product decision, ported here
+ * from agglayer-dev-ui's own `app/services/activity.ts`, S-review
+ * 2026-08-28):
+ *  - No pagination: `bridges` is the address's ENTIRE history in one
+ *    response. Paginate client-side over the returned array if needed.
+ *  - Per-network partial failure is a `warnings` array (one entry per
+ *    upstream bridge-service call that failed the tracker's own fan-out),
+ *    not `AggkitFailedNetwork[]`.
+ *  - Status is a `claimed` tri-state (`'true'` / `'false'` / `'error'`) plus,
+ *    with `includeTracking: true`, the same step-based `AggkitTrackingData`
+ *    `getBridgeTracking` returns for a single tx — NOT the 4-value
+ *    BRIDGED/LEAF_INCLUDED/READY_TO_CLAIM/CLAIMED state machine the old
+ *    fan-out derived. Deriving a coarser or richer UI status from this pair
+ *    is left to the consumer (agglayer-dev-ui's own `deriveStatus` is one
+ *    worked example: it collapses to PENDING/READY_TO_CLAIM/CLAIMED/ERROR,
+ *    treating "the current tracker step is WaitingClaim and not yet done" as
+ *    the READY_TO_CLAIM signal).
  */
-export type AggkitTransactionStatus =
-  'BRIDGED' | 'LEAF_INCLUDED' | 'READY_TO_CLAIM' | 'CLAIMED';
 
-/**
- * UI-shaped transaction row (mirrors `app/types/transaction.ts` `Transaction`
- * field-for-field). Produced by `AggkitBridgeAggregator`
- * from a joined + status-derived `AggkitBridge` row.
- */
-export interface AggkitTransaction {
-  hubUID: string;
-  txSender: string;
-  fromAddress: string;
-  receiverAddress: string;
-  /**
-   * The RECORDING network — whose local exit tree holds this deposit's leaf.
-   * Pass this as `getClaimInputs`'s `recordingNetworkId`. NOT the asset's
-   * origin (`originTokenNetwork`), which diverges for native-gas-token
-   * withdrawals and for L1->L2 transfers of an L2-origin token.
-   */
-  sourceNetwork: number;
-  destinationNetwork: number;
-  amount: string;
-  status: AggkitTransactionStatus;
-  lastUpdatedAt: number;
-  bridgeHash: string;
+/** One bridge event, as reported by the bridge service the tracker fanned out to. */
+export interface AggkitActivityBridge {
+  block_num: number;
+  block_pos: number;
+  block_timestamp: number;
+  bridge_hash: string;
+  deposit_count: number;
+  destination_address: string;
+  destination_network: number;
+  /** May be absent; do not trust for identity beyond sender display. */
+  from_address?: string;
+  /** Already a JSON string on this endpoint (unlike `/bridges`' bare-number `global_index` — see `AggkitBridge`). */
+  global_index: string;
+  /** 0 = asset, 1 = message. */
+  leaf_type: number;
   metadata: string;
-  leafType: string;
-  depositCount: number;
-  transactionIndex: number;
-  transactionHash: string;
-  claimTransactionHash?: string;
-  claimTimestamp?: number;
-  claimBlockNumber?: number;
-  blockNumber: number;
-  globalIndex: string;
-  originTokenAddress: string;
-  originTokenNetwork: number;
-  timestamp: number;
-  /** For `Bridge.isClaimed` — equals `deposit_count`, NOT the L1-info-tree index. */
-  leafIndex: number;
-  /** The L1-info-tree index (for `/claim-proof`'s `leaf_index`); only set once probed (Tier 2). */
-  leafIndexForProof?: number;
+  origin_address: string;
+  origin_network: number;
+  to_address: string;
+  txn_sender: string;
+  amount: string;
 }
 
-/**
- * One fan-out CALL failed — not necessarily this call's whole network
- * (issue #30 scope item 2): `getActivity`/`getReadyToClaimCount` degrade
- * `Promise.allSettled`-style PER CALL now (bridges-by-origin,
- * bridges-by-L1-destination, claims enrichment, and the per-row
- * claim-readiness probes are each independent failure points), so a single
- * `networkId` CAN appear more than once in this array — one entry per
- * distinct call that failed for it, not one entry per network. Consumers
- * that assumed at most one entry per `networkId` (true of every SDK version
- * before this redesign) must not rely on that any more.
- */
-export interface AggkitFailedNetwork {
-  networkId: number;
-  error: string;
-  httpStatus?: number;
+/** The claim event that settled `AggkitActivityItem.bridge`, if any. */
+export interface AggkitActivityClaim {
+  tx_hash: string;
+  amount: string;
+  block_num: number;
+  block_timestamp: number;
+  destination_address: string;
+  destination_network: number;
+  /** ALWAYS "" on this endpoint — never use for identity (matches `/claims`, see `AggkitClaim`). */
+  from_address: string;
+  global_exit_root: string;
+  global_index: string;
+  is_message: boolean;
+  mainnet_exit_root: string;
+  metadata: string;
+  origin_address: string;
+  origin_network: number;
+  proof_local_exit_root: string[];
+  proof_rollup_exit_root: string[];
+  rollup_exit_root: string;
 }
 
-/** Result of `AggkitBridgeAggregator.getActivity`. */
-export interface AggkitActivityPage {
-  data: AggkitTransaction[];
-  pagination: {
-    limit: number;
-    /** Absent iff `exhausted` — pass straight back as `getActivity`'s `cursor` for the next page. */
-    nextStartAfterCursor?: string;
-  };
+/** One activity row: a bridge event, optionally joined with its claim and/or tracking data. */
+export interface AggkitActivityItem {
+  bridge: AggkitActivityBridge;
   /**
-   * True iff every configured feed source (bridges-by-origin and
-   * bridges-by-L1-destination, per configured network) has no more pages
-   * left — i.e. `pagination.nextStartAfterCursor` is absent. `total` was
-   * REMOVED from this contract (issue #30 scope item 1, design comment
-   * 3862896800): it is unknowable across federated, per-network-filtered
-   * sources without fetching everything, and the previous value (a sum of
-   * each network's UNFILTERED `/bridges` `count`) never actually reflected
-   * `fromAddress`-filtered rows in the first place. An infinite-scroll
-   * consumer needs `exhausted`/`nextStartAfterCursor`, not a total.
+   * The network whose bridge service reported this row — i.e. the deposit's
+   * RECORDING network (distinct from `bridge.origin_network`, the asset's
+   * origin, which diverges for native-gas-token withdrawals and for L1->L2
+   * transfers of an L2-origin token). Pass this as `getClaimInputs`'s
+   * `recordingNetworkId`.
    */
-  exhausted: boolean;
-  failedNetworks: AggkitFailedNetwork[];
-}
-
-/**
- * Result of `AggkitBridgeAggregator.getReadyToClaimCount` (issue #30 scope
- * item 3): previously a bare `number` with, by design, no failure surface
- * at all — every dropped per-row probe (a rate limit, a reset connection,
- * an instance struggling under load) silently folded into "not ready",
- * under-counting the badge with no signal that anything went wrong.
- * `failedNetworks` now carries every genuine probe/fetch failure the count
- * absorbed, so a consumer can distinguish "nothing is ready yet" from
- * "some networks/probes could not be checked" instead of the two looking
- * identical.
- */
-export interface AggkitReadyToClaimCountResult {
-  count: number;
-  failedNetworks: AggkitFailedNetwork[];
-}
-
-/**
- * Per-source high-water pagination state for one fan-out feed call — keyed
- * in `AggkitPageCursor` by `` `${networkId}:bridgesOrigin` `` /
- * `` `${networkId}:bridgesL1` `` (see aggregator.ts's `mergeActivitySources`).
- *
- * REDESIGNED (issue #30 scope item 1, design comments 3862896800/3862896964):
- * previously a bare 1-based page number (with `0` as an EXHAUSTED sentinel),
- * shared by all 4 fan-out calls including the two `/claims` lists. That
- * conflated an *enrichment lookup* (claims) with the *paginated feed*
- * (bridges), and page-number-only state gave a k-way merge nowhere to
- * record how far it had consumed INTO a fetched page — so a page could only
- * be taken whole or not at all, making exact `pageSize` slicing across
- * multiple sources impossible. Claims are no longer part of this cursor at
- * all (they're re-fetched fresh, unpaginated, every call — see
- * `AggkitBridgeAggregator`'s claims-enrichment fetch). `offset` is what
- * makes exact-`pageSize` output possible: a source that contributed only
- * some of its fetched page's rows to the last response resumes mid-page,
- * not from a re-fetch of page 1.
- */
-export interface AggkitSourceCursorState {
-  /** 1-based page number of aggkit's OWN fixed (newest-first) pagination currently loaded for this source. */
-  page: number;
-  /** Rows of `page` already emitted by a PRIOR `getActivity` call. */
-  offset: number;
+  bridge_network_id: number;
+  claim?: AggkitActivityClaim;
+  claim_network_id?: number;
   /**
-   * True once this source has no further pages — do not refetch it. Absent
-   * (not `false`) when there may be more; a source that THREW rather than
-   * exhausting keeps its prior `page`/`offset` untouched and this key
-   * un-set, so the next call retries it from exactly where it left off
-   * (design comment 3862896964: a network failing on page 1 used to
-   * contribute no cursor keys at all, with no way to retry short of a full
-   * restart).
+   * Tri-state result of the destination bridge contract's `isClaimed()`
+   * call: `'false'` (confirmed unclaimed), `'true'` (claimed), or `'error'`
+   * if the check itself failed — `'error'` must NOT be read as `'false'`.
    */
-  exhausted?: boolean;
+  claimed: 'true' | 'false' | 'error';
+  creation_timestamp: number;
+  last_updated_timestamp: number;
+  /** Present when `claimed === 'error'` (and possibly other failure modes); keyed by failure kind (e.g. `claim`). */
+  errors?: Record<string, string>;
+  /**
+   * Only present when the request set `includeTracking: true` AND the
+   * bridge is still unclaimed. Same shape `getBridgeTracking` returns for a
+   * single tx (both are the bridgetracker service's `TrackingData` DTO).
+   */
+  tracking?: AggkitTrackingData;
 }
 
-/**
- * Opaque composite cursor: one `AggkitSourceCursorState` per real feed
- * source (`` `${networkId}:bridgesOrigin` `` / `` `${networkId}:bridgesL1` ``
- * — NOT per claims call; see `AggkitSourceCursorState`'s doc for what
- * changed and why). Round-trip this value verbatim
- * (`getActivity(...).pagination.nextStartAfterCursor` back into the next
- * call's `cursor`) — never construct or inspect it by hand. Only valid for
- * a stable `pageSize` across one pagination session, same constraint as any
- * page-number-based cursor (changing `pageSize` mid-pagination makes a
- * stored `page`/`offset` pair refer to a different slice of data than
- * intended — pre-existing, unchanged by this redesign).
- */
-export type AggkitPageCursor = Record<string, AggkitSourceCursorState>;
+/** One upstream bridge-service call the tracker fanned out to failed to respond — `bridges` may be an incomplete picture for `network_id`. */
+export interface AggkitActivityWarning {
+  network_id: number;
+  message: string;
+}
+
+/** Result of `AggkitBridgeAggregator.getActivity` / `AggkitBridgeClient.getActivity`. */
+export interface AggkitActivityResult {
+  bridges: AggkitActivityItem[];
+  warnings: AggkitActivityWarning[];
+}
 
 /**
  * Token metadata output shape = UI's existing `TokenMetadata`

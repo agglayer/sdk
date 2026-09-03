@@ -4,7 +4,8 @@
  * Standalone module for talking to the aggkit `bridge/v1` REST service.
  * Kept separate from NATIVE/core so neither is touched by this integration.
  * Provides the single-network `AggkitBridgeClient` and the multi-network
- * `AggkitBridgeAggregator` (fan-out/join/status-derivation/token-metadata).
+ * `AggkitBridgeAggregator` (cross-network activity, claim-input
+ * orchestration, token-metadata composition, and bridge tracking).
  *
  * ## Multi-Network Proxy Configuration
  *
@@ -25,6 +26,19 @@
  * The proxy multiplexes networks via `?network_id=` query parameter; the URL
  * is the same for all networks. This is the correct configuration for devnets
  * with an aggkit-proxy service fronting multiple L2s.
+ *
+ * ## Cross-Network Activity
+ *
+ * `AggkitBridgeClient.getActivity` / `AggkitBridgeAggregator.getActivity`
+ * wrap aggkit's bridgetracker `GET /tracker/v1/activity/from/{from_address}`
+ * — a single request that fans out server-side across every configured
+ * bridge service and returns one unified, deduped, already-claim-checked
+ * list for an address. There is no pagination (`bridges` is the address's
+ * entire history) and no `getReadyToClaimCount` — derive a ready-to-claim
+ * count client-side by filtering `claimed !== 'true'` and inspecting
+ * `tracking`. See `AggkitActivityResult`'s module doc in `types.ts` for the
+ * full contract and its trade-offs versus the older `/bridge/v1`
+ * client-side fan-out this replaced.
  *
  * ## Bridge Tracking
  *
@@ -82,8 +96,8 @@
  * of a token whose origin differs from the network the transfer executed
  * on; passing `origin_network` there silently builds a well-formed claim
  * proof for a different, unrelated deposit, with no error raised anywhere.
- * From `getActivity` / `getReadyToClaimCount` rows the correct value is
- * `AggkitTransaction.sourceNetwork`. There is no `originNetworkId`
+ * From `getActivity` rows the correct value is
+ * `AggkitActivityItem.bridge_network_id`. There is no `originNetworkId`
  * parameter -- it was removed, not deprecated, so a stale call site is a
  * compile error rather than a silently wrong proof.
  *
@@ -128,11 +142,11 @@ export type {
   AggkitHealthResponse,
   AggkitErrorBody,
   AggkitAggregatorConfig,
-  AggkitTransactionStatus,
-  AggkitTransaction,
-  AggkitFailedNetwork,
-  AggkitActivityPage,
-  AggkitPageCursor,
+  AggkitActivityBridge,
+  AggkitActivityClaim,
+  AggkitActivityItem,
+  AggkitActivityWarning,
+  AggkitActivityResult,
   AggkitTokenMetadata,
   AggkitTrackingStatus,
   AggkitBridgeType,
