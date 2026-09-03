@@ -102,6 +102,15 @@ describe('AggkitBridgeClient.getActivity', () => {
         `${BASE_URL}/tracker/v1/activity/from/${ADDRESS}?includeTracking=false`
       );
     });
+
+    it('URL-encodes fromAddress instead of interpolating it raw into the path (PR #33 review)', async () => {
+      mockFetchOnce(activityBody([]), 200);
+      const unexpected = '../etc/passwd?x=1&y=2';
+      await client.getActivity({ fromAddress: unexpected });
+      expect(lastFetchUrl()).toBe(
+        `${BASE_URL}/tracker/v1/activity/from/${encodeURIComponent(unexpected)}?includeTracking=true`
+      );
+    });
   });
 
   describe('response parsing', () => {
@@ -216,6 +225,36 @@ describe('AggkitBridgeAggregator.getActivity', () => {
     expect(lastFetchUrl()).toBe(
       `${L2_1_URL}/tracker/v1/activity/from/${ADDRESS}?includeTracking=true`
     );
+  });
+
+  it('falls back to the next configured network when the first is unreachable (PR #33 review)', async () => {
+    const aggregator = new AggkitBridgeAggregator({
+      networks: { 1: L2_1_URL, 2: L2_2_URL },
+    });
+    const item = makeActivityItem();
+    // Network 1's instance is temporarily unreachable; network 2's instance
+    // answers the identical tracker request just fine.
+    mockFetchOnce(JSON.stringify({ code: 500, message: 'unreachable' }), 500);
+    mockFetchOnce(activityBody([item]), 200);
+
+    const result = await aggregator.getActivity({ fromAddress: ADDRESS });
+
+    expect(result.bridges).toEqual([item]);
+    expect(lastFetchUrl()).toBe(
+      `${L2_2_URL}/tracker/v1/activity/from/${ADDRESS}?includeTracking=true`
+    );
+  });
+
+  it('rejects with an aggregated message once every configured network has failed', async () => {
+    const aggregator = new AggkitBridgeAggregator({
+      networks: { 1: L2_1_URL, 2: L2_2_URL },
+    });
+    mockFetchOnce(JSON.stringify({ code: 500, message: 'boom one' }), 500);
+    mockFetchOnce(JSON.stringify({ code: 503, message: 'boom two' }), 503);
+
+    await expect(
+      aggregator.getActivity({ fromAddress: ADDRESS })
+    ).rejects.toThrow(/all configured networks failed.*boom one.*boom two/s);
   });
 
   it('passes includeTracking through unchanged', async () => {

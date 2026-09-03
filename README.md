@@ -311,9 +311,9 @@ documented next, is exactly that check.
 // deposit — from an `AggkitActivityItem` row (`getActivity`) this is
 // `item.bridge_network_id`, NOT the asset's `origin_network`.
 const result = await aggregator.getClaimInputs({
-  recordingNetworkId: transaction.sourceNetwork,
-  destinationNetworkId: transaction.destinationNetwork,
-  depositCount: transaction.depositCount,
+  recordingNetworkId: item.bridge_network_id,
+  destinationNetworkId: item.bridge.destination_network,
+  depositCount: item.bridge.deposit_count,
 });
 
 if (!result.claimable) {

@@ -732,7 +732,8 @@ export class AggkitBridgeClient {
     includeTracking?: boolean;
   }): Promise<AggkitActivityResult> {
     const includeTracking = params.includeTracking ?? true;
-    const url = `${this.trackerApiUrl}/activity/from/${params.fromAddress}?includeTracking=${includeTracking}`;
+    const query = this.buildQuery({ includeTracking });
+    const url = `${this.trackerApiUrl}/activity/from/${encodeURIComponent(params.fromAddress)}?${query}`;
     const { status, text } = await fetchRawText(url, this.fetchConfig);
 
     if (status < 200 || status >= 300) {

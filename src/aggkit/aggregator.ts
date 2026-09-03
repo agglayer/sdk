@@ -139,11 +139,13 @@ export class AggkitBridgeAggregator {
    * `AggkitBridgeClient.getActivity`, i.e. aggkit's bridgetracker
    * `GET /tracker/v1/activity/from/{from_address}`. That endpoint already
    * fans out server-side across every bridge service the tracker is
-   * configured with, so this method only needs to pick ONE configured
-   * network's client to ask (mirrors `clientForNetworkOrL1`'s "any
-   * configured instance" fallback — every configured network's instance
-   * answers this identically, since the tracker component itself, not any
-   * one bridge-service, owns the cross-network view).
+   * configured with, so any ONE configured network's client answers this
+   * identically — the tracker component itself, not any one bridge-service,
+   * owns the cross-network view. Every configured client is tried in order
+   * (PR #33 review) until one succeeds, so a single temporarily-unreachable
+   * instance doesn't fail the call when another configured instance could
+   * have answered the identical tracker request; this rejects only once
+   * every configured client has failed (or none are configured).
    *
    * REPLACES the client-side `/bridge/v1` fan-out (`getBridges` x2 +
    * `getClaims` x2 per configured network, plus per-row `/l1-info-tree-index`
@@ -161,13 +163,40 @@ export class AggkitBridgeAggregator {
     fromAddress: string;
     includeTracking?: boolean;
   }): Promise<AggkitActivityResult> {
-    const [firstConfigured] = this.listNetworkIds();
-    if (firstConfigured === undefined) {
+    const networkIds = this.listNetworkIds();
+    if (networkIds.length === 0) {
       throw new Error(
         'AggkitBridgeAggregator.getActivity: no networks configured'
       );
     }
-    return this.clientFor(firstConfigured).getActivity(params);
+
+    const failures: Array<{ networkId: number; error: unknown }> = [];
+    for (const networkId of networkIds) {
+      try {
+        return await this.clientFor(networkId).getActivity(params);
+      } catch (error) {
+        failures.push({ networkId, error });
+      }
+    }
+
+    // A single configured network propagates its failure as-is (preserving
+    // `instanceof AggkitApiError` etc. for callers) — the "all networks
+    // failed" summary below only kicks in once there is more than one
+    // failure to summarize, since no single error type could represent it.
+    const [onlyFailure] = failures;
+    if (onlyFailure !== undefined && failures.length === 1) {
+      throw onlyFailure.error;
+    }
+
+    throw new Error(
+      `AggkitBridgeAggregator.getActivity: all configured networks failed: ` +
+        failures
+          .map(
+            ({ networkId, error }) =>
+              `${networkId}: ${error instanceof Error ? error.message : String(error)}`
+          )
+          .join('; ')
+    );
   }
 
   /**
