@@ -39,6 +39,7 @@ function makeActivityItem(
       block_pos: 0,
       block_timestamp: 1000,
       bridge_hash: '0xbridgehash',
+      tx_hash: '0xtxhash',
       deposit_count: 1,
       destination_address: '0x3C4d3AAB4356120117E88225e649f0A7ae0401DE',
       destination_network: 2,

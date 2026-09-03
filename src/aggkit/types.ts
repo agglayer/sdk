@@ -429,6 +429,8 @@ export interface AggkitActivityBridge {
   block_pos: number;
   block_timestamp: number;
   bridge_hash: string;
+  /** The bridge transaction's own hash — NOT the claim's (see `AggkitActivityClaim.tx_hash`). */
+  tx_hash: string;
   deposit_count: number;
   destination_address: string;
   destination_network: number;
