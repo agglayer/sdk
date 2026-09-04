@@ -12,8 +12,8 @@ on:
           - alpha
           - beta
           - latest
-      branch:
-        description: 'Branch to release from'
+      ref:
+        description: 'Branch, tag, or commit SHA to release from (any ref for dev/alpha/beta; must be main for latest)'
         required: false
         default: 'main'
       force:
@@ -33,36 +33,24 @@ jobs:
         run: |
           echo "🔍 Validating release inputs..."
 
-          # Validate branch - only main and develop allowed
-          if [[ "${{ github.event.inputs.branch }}" != "main" && "${{ github.event.inputs.branch }}" != "develop" ]]; then
-              echo "❌ Error: Can only release from 'main' or 'develop' branches"
-              echo "Current branch: ${{ github.event.inputs.branch }}"
-              exit 1
-          fi
-
-          # Validate channel-branch combination
-          if [[ "${{ github.event.inputs.channel }}" == "latest" && "${{ github.event.inputs.branch }}" != "main" ]]; then
-              echo "❌ Error: 'latest' channel can ONLY be released from 'main' branch"
-              echo "🚫 Stable releases are restricted to main branch only"
-              exit 1
-          fi
-
-          # Validate develop branch restrictions
-          if [[ "${{ github.event.inputs.branch }}" == "develop" && "${{ github.event.inputs.channel }}" == "latest" ]]; then
-              echo "❌ Error: 'develop' branch cannot make stable releases"
-              echo "💡 Use 'alpha', 'dev', or 'beta' channels for develop branch"
+          # Only the 'latest' (stable) channel is restricted to main. Pre-release
+          # channels (dev/alpha/beta) can be published from any branch, tag, or
+          # commit SHA, so development versions don't require merging to main.
+          if [[ "${{ github.event.inputs.channel }}" == "latest" && "${{ github.event.inputs.ref }}" != "main" ]]; then
+              echo "❌ Error: 'latest' channel can ONLY be released from 'main'"
+              echo "🚫 Stable releases are restricted to main only"
               exit 1
           fi
 
           echo "✅ Input validation passed"
           echo "📦 Channel: ${{ github.event.inputs.channel }}"
-          echo "🌿 Branch: ${{ github.event.inputs.branch }}"
+          echo "🌿 Ref: ${{ github.event.inputs.ref }}"
           echo "💪 Force: ${{ github.event.inputs.force }}"
 
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          ref: ${{ github.event.inputs.branch || 'main' }}
+          ref: ${{ github.event.inputs.ref || 'main' }}
 
       # Bun runs install, quality checks, build and tests.
       - uses: oven-sh/setup-bun@v1
@@ -131,8 +119,26 @@ jobs:
 
           echo "✅ All tests passed"
 
+      - name: Compute Pre-release Version
+        if: ${{ github.event.inputs.channel != 'latest' }}
+        run: |
+          echo "🏷️ Computing a unique version for this pre-release build..."
+
+          # Dev/alpha/beta builds are published ad hoc from arbitrary branches,
+          # tags, or commits, often multiple times without anyone bumping
+          # package.json. Suffix the base version with the channel, a timestamp,
+          # and the short SHA so every dispatch gets its own installable version
+          # and never collides with a previous staged build on the same channel.
+          BASE_VERSION=$(node -p "require('./package.json').version.split('-')[0]")
+          SHORT_SHA=$(git rev-parse --short HEAD)
+          TIMESTAMP=$(date -u +%Y%m%d%H%M%S)
+          NEW_VERSION="${BASE_VERSION}-${{ github.event.inputs.channel }}.${TIMESTAMP}.${SHORT_SHA}"
+
+          npm version "$NEW_VERSION" --no-git-tag-version --allow-same-version
+          echo "✅ Computed version: $NEW_VERSION"
+
       - name: Check Existing Version
-        if: ${{ github.event.inputs.force != 'true' }}
+        if: ${{ github.event.inputs.channel == 'latest' && github.event.inputs.force != 'true' }}
         run: |
           echo "🔍 Checking if version already exists on NPM..."
 
@@ -194,10 +200,21 @@ jobs:
                   ;;
           esac
 
+          PRERELEASE_FLAG=()
+          if [[ "$DIST_TAG" != "latest" ]]; then
+              PRERELEASE_FLAG=(--prerelease)
+          fi
+
+          # --target needs a branch name or full commit SHA (a tag name isn't
+          # accepted), so resolve whatever ref was checked out to its SHA.
+          TARGET_SHA=$(git rev-parse HEAD)
+
           echo "📝 Creating GitHub release..."
           gh release create "v$CURRENT_VERSION" \
             --title "Release v$CURRENT_VERSION" \
-            --notes "$RELEASE_NOTES"
+            --notes "$RELEASE_NOTES" \
+            --target "$TARGET_SHA" \
+            "${PRERELEASE_FLAG[@]}"
 
           echo "✅ GitHub release created"
 
@@ -224,7 +241,7 @@ jobs:
           echo "📋 Release Summary"
           echo "=================="
           echo "Channel: ${{ github.event.inputs.channel }}"
-          echo "Branch: ${{ github.event.inputs.branch }}"
+          echo "Ref: ${{ github.event.inputs.ref }}"
           echo "Force: ${{ github.event.inputs.force }}"
           echo "=================="
 
