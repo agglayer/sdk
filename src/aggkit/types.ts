@@ -401,9 +401,9 @@ export interface AggkitAggregatorConfig {
  * / `/injected-l1-info-leaf` probes) `AggkitBridgeAggregator.getActivity`
  * used before this redesign, and the now-REMOVED
  * `AggkitBridgeAggregator.getReadyToClaimCount` — a consumer can derive a
- * ready-to-claim count itself by filtering `claimed !== 'true'` and
- * inspecting `tracking`, the same interpretation it already needs for
- * status display.
+ * ready-to-claim count itself by filtering
+ * `claim_status === 'readyToClaim'`, no `tracking` inspection required
+ * anymore (see the `claim_status` bullet below).
  *
  * Trade-offs versus the old fan-out (accepted product decision, ported here
  * from agglayer-dev-ui's own `app/services/activity.ts`, S-review
@@ -413,17 +413,30 @@ export interface AggkitAggregatorConfig {
  *  - Per-network partial failure is a `warnings` array (one entry per
  *    upstream bridge-service call that failed the tracker's own fan-out),
  *    not `AggkitFailedNetwork[]`.
- *  - Status is a `claimed` tri-state (`'true'` / `'false'` / `'error'`) plus,
+ *  - Status is `claim_status: AggkitClaimStatus` (`'pending'` /
+ *    `'readyToClaim'` / `'claimed'` / `'error'`, agglayer/aggkit#1830, PR
+ *    [#1831](https://github.com/agglayer/aggkit/pull/1831)) — the same
+ *    vocabulary and field name as `AggkitTrackingData.claim_status` — plus,
  *    with `includeTracking: true`, the same step-based `AggkitTrackingData`
  *    `getBridgeTracking` returns for a single tx — NOT the 4-value
  *    BRIDGED/LEAF_INCLUDED/READY_TO_CLAIM/CLAIMED state machine the old
  *    fan-out derived. Deriving a coarser or richer UI status from this pair
  *    is left to the consumer (agglayer-dev-ui's own `deriveStatus` is one
  *    worked example: it collapses to PENDING/READY_TO_CLAIM/CLAIMED/ERROR).
- *    As of agglayer/aggkit#1823 (PR #1829), `tracking.claim_status` gives
- *    the READY_TO_CLAIM/CLAIMED/error signal directly — prefer it over
- *    hand-inspecting "the current tracker step is WaitingClaim and not yet
- *    done", which is what a consumer had to do before this field existed.
+ *    `claim_status` already gives that signal directly — prefer it over
+ *    hand-inspecting `tracking.step_index`/`all_steps`, which is what a
+ *    consumer had to do before this field existed (and, before PR #1831,
+ *    before `claim_status` covered the unclaimed-but-not-tracked case too —
+ *    see `AggkitActivityItem.claim_status`'s own doc for the exact
+ *    pending/readyToClaim precedence rules, resolved server-side even
+ *    without `includeTracking`).
+ *
+ *    BREAKING (PR #1831): this field was named `claimed` and was a plain
+ *    tri-state (`'true'` / `'false'` / `'error'`) mirroring only the
+ *    destination bridge contract's `isClaimed()` call — a client filtering
+ *    on `claimed !== 'true'` to find claimable bridges must switch to
+ *    `claim_status === 'readyToClaim'` (an unclaimed bridge not yet ready to
+ *    claim now reports `'pending'`, not `'false'`).
  */
 
 /** One bridge event, as reported by the bridge service the tracker fanned out to. */
@@ -487,14 +500,37 @@ export interface AggkitActivityItem {
   claim?: AggkitActivityClaim;
   claim_network_id?: number;
   /**
-   * Tri-state result of the destination bridge contract's `isClaimed()`
-   * call: `'false'` (confirmed unclaimed), `'true'` (claimed), or `'error'`
-   * if the check itself failed — `'error'` must NOT be read as `'false'`.
+   * Simplified claim-readiness summary — the same vocabulary and field name
+   * as `AggkitTrackingData.claim_status` (agglayer/aggkit#1830, PR
+   * [#1831](https://github.com/agglayer/aggkit/pull/1831)). `'error'`
+   * reports the destination bridge contract's `isClaimed()` call itself
+   * failing (e.g. no bridge contract address configured for the
+   * destination network) — must NOT be read as `'pending'`. While
+   * unclaimed, `'readyToClaim'` vs `'pending'` is resolved from `tracking`
+   * when `includeTracking: true` was requested and the tracker already has
+   * a snapshot for this bridge, or otherwise resolved directly server-side
+   * against the bridge-service `/l1-info-tree-index` +
+   * `/injected-l1-info-leaf` endpoints WITHOUT registering the bridge with
+   * the tracker — i.e. `claim_status` can already read `'readyToClaim'`
+   * even with `includeTracking: false` / no `tracking` on this item. A
+   * failed readiness check never surfaces as `claim_status: 'error'`: it
+   * conservatively stays `'pending'`, with the failure reported under
+   * `errors.readiness` instead.
+   *
+   * BREAKING (PR #1831): this field was named `claimed` and was a plain
+   * tri-state (`'true'` / `'false'` / `'error'`) mirroring only the
+   * destination bridge contract's `isClaimed()` call.
    */
-  claimed: 'true' | 'false' | 'error';
+  claim_status: AggkitClaimStatus;
   creation_timestamp: number;
   last_updated_timestamp: number;
-  /** Present when `claimed === 'error'` (and possibly other failure modes); keyed by failure kind (e.g. `claim`). */
+  /**
+   * Present when the last refresh had something to report; keyed by which
+   * check it was — `claim` when `claim_status === 'error'` (the
+   * `isClaimed()` check itself failed), `readiness` when the direct
+   * ready-to-claim probe failed while still unclaimed (`claim_status` then
+   * conservatively stays `'pending'`).
+   */
   errors?: Record<string, string>;
   /**
    * Only present when the request set `includeTracking: true` AND the

@@ -306,6 +306,16 @@ origin is mainnet) syncing its L1 Info Tree far enough to include this
 deposit's leaf, a prerequisite for the claim proof. See `AggkitClaimStatus`
 and `AggkitBridgeStep` in `src/aggkit/types.ts`.
 
+The activity endpoint's `AggkitActivityItem.claim_status`
+([agglayer/aggkit#1830](https://github.com/agglayer/aggkit/issues/1830), PR
+[#1831](https://github.com/agglayer/aggkit/pull/1831)) now reports this same
+`'pending' | 'readyToClaim' | 'claimed' | 'error'` vocabulary, replacing the
+old `claimed: 'true' | 'false' | 'error'` tri-state — **breaking**: a
+consumer filtering on `claimed !== 'true'` to find claimable bridges must
+switch to `claim_status === 'readyToClaim'`. `'readyToClaim'` vs `'pending'`
+is resolved server-side even without `includeTracking: true` — no `tracking`
+snapshot required on the item to tell them apart.
+
 **Caveat ([agglayer/aggkit#1786](https://github.com/agglayer/aggkit/issues/1786), OPEN)**:
 the tracker's `WaitingClaim` step routinely precedes actual claimability by
 seconds to tens of seconds — it reflects only the tracker's own fast-path
@@ -854,8 +864,8 @@ service).
 string; includeTracking?: boolean })` (no more `pageSize`/`cursor`/`order`)
   returns `AggkitActivityResult = { bridges: AggkitActivityItem[]; warnings:
 AggkitActivityWarning[] }` — see its module doc in `types.ts` for the full
-  contract and trade-offs versus the old fan-out (no pagination; `claimed`
-  tri-state + optional `tracking` instead of the old
+  contract and trade-offs versus the old fan-out (no pagination;
+  `claim_status: AggkitClaimStatus` + optional `tracking` instead of the old
   BRIDGED/LEAF_INCLUDED/READY_TO_CLAIM/CLAIMED derivation; `warnings` instead
   of `failedNetworks`).
 - **Removed types**: `AggkitTransaction`, `AggkitTransactionStatus`,
@@ -868,13 +878,37 @@ AggkitActivityWarning[] }` — see its module doc in `types.ts` for the full
   (it can no longer disagree with `getActivity` on the same row the way
   issue #31 described, because there is no separate fan-out left to
   disagree). Derive a ready-to-claim count yourself from `getActivity`'s
-  result: filter `claimed !== 'true'` and inspect `tracking` (mirrors how a
-  consumer already has to interpret this result for status display —
+  result: filter `claim_status === 'readyToClaim'` (mirrors how a consumer
+  already has to interpret this result for status display —
   agglayer-dev-ui's own `app/services/activity.ts` `deriveStatus` is one
   worked example).
 - **New**: `AggkitBridgeClient.getActivity` (single-network client method
   the aggregator delegates to) is available directly for callers that want
   to pick their own network explicitly instead of "any configured one."
+
+### `AggkitActivityItem.claimed` renamed to `claim_status`, revalued to the tracker's own vocabulary (agglayer/aggkit#1830, PR [#1831](https://github.com/agglayer/aggkit/pull/1831))
+
+`GET /tracker/v1/activity/from/{from_address}`'s per-bridge claim field used
+to be a plain tri-state mirroring only the destination bridge contract's
+`isClaimed()` call. It is now `claim_status: AggkitClaimStatus` — the same
+`'pending' | 'readyToClaim' | 'claimed' | 'error'` vocabulary
+`AggkitTrackingData.claim_status` already used (PR #1829) — so a consumer no
+longer needs `includeTracking: true` and a `tracking` inspection just to
+tell "still pending" apart from "ready to claim": the tracker resolves
+`readyToClaim` directly against the bridge-service `/l1-info-tree-index` +
+`/injected-l1-info-leaf` endpoints server-side either way.
+
+- **Breaking**: `claimed: 'true' | 'false' | 'error'` is GONE. Replace
+  `claimed !== 'true'` with `claim_status === 'readyToClaim'` (not
+  `!== 'claimed'` — that would still include `'pending'`) to find claimable
+  bridges; replace `claimed === 'error'` with `claim_status === 'error'`
+  unchanged.
+- `errors` may now carry a `readiness` key (in addition to the existing
+  `claim` key) when the direct readiness probe itself failed while the
+  bridge was still unclaimed — `claim_status` conservatively stays
+  `'pending'` in that case rather than surfacing as `'error'`.
+- No fixture yet captures this field (all `__fixtures__/tracker_*.json`
+  predate #1831).
 
 ## 📈 Roadmap & Future Development
 

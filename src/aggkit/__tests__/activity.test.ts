@@ -54,7 +54,7 @@ function makeActivityItem(
       amount: '1000000000000000000',
     },
     bridge_network_id: 1,
-    claimed: 'false',
+    claim_status: 'pending',
     creation_timestamp: 1000,
     last_updated_timestamp: 1000,
     ...overrides,
@@ -115,7 +115,7 @@ describe('AggkitBridgeClient.getActivity', () => {
 
   describe('response parsing', () => {
     it('returns bridges + warnings, and drops the useless from_address byte-array echo', async () => {
-      const item = makeActivityItem({ claimed: 'true' });
+      const item = makeActivityItem({ claim_status: 'claimed' });
       mockFetchOnce(
         activityBody([item], {
           warnings: [{ network_id: 2, message: 'bridge service unreachable' }],
@@ -138,9 +138,9 @@ describe('AggkitBridgeClient.getActivity', () => {
       expect(result.warnings).toEqual([]);
     });
 
-    it('preserves the claimed tri-state and an optional joined claim/tracking', async () => {
+    it('preserves claim_status and an optional joined claim/tracking', async () => {
       const claimedItem = makeActivityItem({
-        claimed: 'true',
+        claim_status: 'claimed',
         claim: {
           tx_hash: '0xclaimtx',
           amount: '1000000000000000000',
@@ -165,22 +165,52 @@ describe('AggkitBridgeClient.getActivity', () => {
 
       const result = await client.getActivity({ fromAddress: ADDRESS });
 
-      expect(result.bridges[0]?.claimed).toBe('true');
+      expect(result.bridges[0]?.claim_status).toBe('claimed');
       expect(result.bridges[0]?.claim?.tx_hash).toBe('0xclaimtx');
     });
 
-    it('surfaces claimed: "error" with a per-kind errors map, never coerced to "false"', async () => {
+    it('surfaces claim_status: "error" with a per-kind errors map, never coerced to "pending"', async () => {
       const erroredItem = makeActivityItem({
-        claimed: 'error',
+        claim_status: 'error',
         errors: { claim: 'isClaimed() call reverted' },
       });
       mockFetchOnce(activityBody([erroredItem]), 200);
 
       const result = await client.getActivity({ fromAddress: ADDRESS });
 
-      expect(result.bridges[0]?.claimed).toBe('error');
+      expect(result.bridges[0]?.claim_status).toBe('error');
       expect(result.bridges[0]?.errors).toEqual({
         claim: 'isClaimed() call reverted',
+      });
+    });
+
+    it('surfaces claim_status: "readyToClaim", resolved without a tracking snapshot on the item (agglayer/aggkit#1830, PR #1831)', async () => {
+      const readyItem = makeActivityItem({ claim_status: 'readyToClaim' });
+      mockFetchOnce(activityBody([readyItem]), 200);
+
+      const result = await client.getActivity({
+        fromAddress: ADDRESS,
+        includeTracking: false,
+      });
+
+      expect(result.bridges[0]?.claim_status).toBe('readyToClaim');
+      expect(result.bridges[0]?.tracking).toBeUndefined();
+    });
+
+    it('reports a failed readiness probe under errors.readiness while staying claim_status: "pending"', async () => {
+      const item = makeActivityItem({
+        claim_status: 'pending',
+        errors: {
+          readiness: 'fetching l1 info tree index: context deadline exceeded',
+        },
+      });
+      mockFetchOnce(activityBody([item]), 200);
+
+      const result = await client.getActivity({ fromAddress: ADDRESS });
+
+      expect(result.bridges[0]?.claim_status).toBe('pending');
+      expect(result.bridges[0]?.errors).toEqual({
+        readiness: 'fetching l1 info tree index: context deadline exceeded',
       });
     });
   });
