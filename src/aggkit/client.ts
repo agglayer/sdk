@@ -685,6 +685,11 @@ export class AggkitBridgeClient {
    * re-registers it from scratch (`'registered'`, `all_steps: null` again)
    * rather than erroring — callers should treat this the same as the
    * original registration, not as a regression to be surfaced to the user.
+   *
+   * **Claim readiness**: `claim_status` (agglayer/aggkit#1823, PR #1829)
+   * gives `'readyToClaim'`/`'claimed'`/`'error'`/`'pending'` directly —
+   * prefer it over inspecting `step_index`/`all_steps` by hand to decide
+   * whether to show a claim button. See `AggkitClaimStatus` in `types.ts`.
    */
   async getBridgeTracking(
     txHash: string,

@@ -68,9 +68,11 @@ export type {
   AggkitPendingInclusionResult,
   AggkitWaitL1SettledGERResult,
   AggkitWaitingGERInjectionResult,
+  AggkitWaitingL1InfoLeafAvailableResult,
   AggkitWaitingClaimResult,
   AggkitBridgeStepResult,
   AggkitBridgeStepPath,
+  AggkitClaimStatus,
   AggkitTrackingData,
   AggkitTrackerErrorData,
 } from './aggkit';
