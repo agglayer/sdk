@@ -419,9 +419,11 @@ export interface AggkitAggregatorConfig {
  *    BRIDGED/LEAF_INCLUDED/READY_TO_CLAIM/CLAIMED state machine the old
  *    fan-out derived. Deriving a coarser or richer UI status from this pair
  *    is left to the consumer (agglayer-dev-ui's own `deriveStatus` is one
- *    worked example: it collapses to PENDING/READY_TO_CLAIM/CLAIMED/ERROR,
- *    treating "the current tracker step is WaitingClaim and not yet done" as
- *    the READY_TO_CLAIM signal).
+ *    worked example: it collapses to PENDING/READY_TO_CLAIM/CLAIMED/ERROR).
+ *    As of agglayer/aggkit#1823 (PR #1829), `tracking.claim_status` gives
+ *    the READY_TO_CLAIM/CLAIMED/error signal directly — prefer it over
+ *    hand-inspecting "the current tracker step is WaitingClaim and not yet
+ *    done", which is what a consumer had to do before this field existed.
  */
 
 /** One bridge event, as reported by the bridge service the tracker fanned out to. */
@@ -618,6 +620,16 @@ export type AggkitBridgeLeafType = 'Asset' | 'Message';
  * `BridgeStepPath.step_name`: bare string on the wire (fixture-confirmed,
  * matches aggkit's rc5-corrected API.md) — the field isn't named `step`,
  * and there is no numeric value or `step_string` companion.
+ *
+ * `WaitingL1InfoLeafAvailable` (agglayer/aggkit#1823, PR #1829) is added
+ * immediately before `WaitingClaim` on ALL THREE routes (L1->L2, L2->L1,
+ * L2->L2) — it is never skipped. It covers the origin bridge-service (or,
+ * when the origin is mainnet, the destination bridge-service) syncing its
+ * L1 Info Tree far enough to include this deposit's leaf, which is a
+ * prerequisite for building the claim proof. No fixture yet captures it
+ * (all `__fixtures__/tracker_*.json` predate #1829); the existing
+ * fixtures' step lists are correct for the aggkit version they were
+ * captured against, not stale.
  */
 export type AggkitBridgeStep =
   | 'WaitingGERUpdate'
@@ -626,6 +638,7 @@ export type AggkitBridgeStep =
   | 'CertificatePending'
   | 'WaitL1SettledGER'
   | 'WaitingGERInjection'
+  | 'WaitingL1InfoLeafAvailable'
   | 'WaitingClaim'
   | 'Claimed';
 
@@ -647,6 +660,35 @@ export type AggkitTrackerErrorTypeString =
   | 'transient'
   | 'permanent'
   | 'exhausted';
+
+/**
+ * `TrackingData.claim_status` (agglayer/aggkit#1823, PR #1829): a derived
+ * top-level field that replaces having to inspect `step_index`/`all_steps`
+ * yourself to decide "is this bridge ready to claim":
+ *
+ * - `'error'` — takes priority over everything else; set whenever
+ *   `tracking_status === 'error'` (whether that's a step-level error or the
+ *   tracker giving up on the bridge entirely — see `AggkitTrackingData.error`).
+ * - `'claimed'` — the current step (`all_steps[step_index]`) is `Claimed`.
+ * - `'readyToClaim'` — the current step is `WaitingClaim`. This is the same
+ *   condition the SDK's own docs previously told consumers to derive by hand
+ *   (see the `AggkitActivityItem`/`getBridgeTracking` JSDoc above) — prefer
+ *   this field over that manual inspection now that aggkit provides it
+ *   directly. Note the existing `WaitingClaim`-precedes-claimability caveat
+ *   in the README (agglayer/aggkit#1786) still applies: this value reflects
+ *   the tracker's step machine, not `getClaimInputs`'s own proof-availability
+ *   check.
+ * - `'pending'` — every other case, including before the bridge resolves at
+ *   all (`tracking_status: 'registered'`).
+ *
+ * No fixture yet captures this field (all `__fixtures__/tracker_*.json`
+ * predate #1829).
+ */
+export type AggkitClaimStatus =
+  | 'pending'
+  | 'readyToClaim'
+  | 'claimed'
+  | 'error';
 
 /**
  * `CertificateData.status`: mapped from the agglayer proto (aggkit
@@ -790,6 +832,15 @@ export interface AggkitWaitingGERInjectionResult {
   ger: string;
 }
 
+/**
+ * `WaitingL1InfoLeafAvailable` step result (agglayer/aggkit#1823, PR #1829):
+ * the L1 Info Tree index the deposit's leaf landed at, once the resolving
+ * bridge-service's syncer has indexed it.
+ */
+export interface AggkitWaitingL1InfoLeafAvailableResult {
+  l1_info_tree_index: number;
+}
+
 /** `WaitingClaim` step result: the claim transaction on the destination network. */
 export interface AggkitWaitingClaimResult {
   claim_tx: string;
@@ -809,6 +860,7 @@ export type AggkitBridgeStepResult =
   | AggkitCertificateData
   | AggkitWaitL1SettledGERResult
   | AggkitWaitingGERInjectionResult
+  | AggkitWaitingL1InfoLeafAvailableResult
   | AggkitWaitingClaimResult;
 
 /**
@@ -843,6 +895,15 @@ export interface AggkitBridgeStepPath {
  */
 export interface AggkitTrackingData {
   tracking_status: AggkitTrackingStatus;
+  /**
+   * Derived ready-to-claim signal (agglayer/aggkit#1823, PR #1829) — see
+   * `AggkitClaimStatus` for the exact precedence rules. Present on both the
+   * REST response and every WebSocket `status` message; supersedes deriving
+   * this by hand from `step_index`/`all_steps`, which the JSDoc above this
+   * interface's callers (`AggkitActivityItem`, `getBridgeTracking`) used to
+   * recommend.
+   */
+  claim_status: AggkitClaimStatus;
   network_id: number;
   tx_hash: string;
   /** `null` under the same conditions as `step_index`/`all_steps` — see `error`. */

@@ -294,14 +294,30 @@ keep the int + `_string` pair. See the `AggkitTrackingData` /
 `AggkitBridgeStepPath` JSDoc in `src/aggkit/types.ts` for the full
 wire-format reference.
 
+`TrackingData` also carries `claim_status`
+(`'pending' | 'readyToClaim' | 'claimed' | 'error'`,
+[agglayer/aggkit#1823](https://github.com/agglayer/aggkit/issues/1823), PR
+[#1829](https://github.com/agglayer/aggkit/pull/1829)) — use it instead of
+inspecting `step_index`/`all_steps` by hand to decide whether to show a claim
+button. Same PR adds a `WaitingL1InfoLeafAvailable` step, inserted
+immediately before `WaitingClaim` on all three routes (L1->L2, L2->L1,
+L2->L2): the resolving bridge-service (origin's, or destination's when the
+origin is mainnet) syncing its L1 Info Tree far enough to include this
+deposit's leaf, a prerequisite for the claim proof. See `AggkitClaimStatus`
+and `AggkitBridgeStep` in `src/aggkit/types.ts`.
+
 **Caveat ([agglayer/aggkit#1786](https://github.com/agglayer/aggkit/issues/1786), OPEN)**:
 the tracker's `WaitingClaim` step routinely precedes actual claimability by
 seconds to tens of seconds — it reflects only the tracker's own fast-path
 read of the settlement tx's L1 receipt, not aggkit's separate bridge-service
 L1-info-tree sync that a claim's proof fetch depends on. Gate claim-readiness
 UX on your own check (e.g. the bridge-service's own status/proof
-availability), not on the tracker reaching `WaitingClaim`. `getClaimInputs`,
-documented next, is exactly that check.
+availability), not on the tracker reaching `WaitingClaim` (nor on
+`claim_status === 'readyToClaim'`, which is derived from the same step
+machine). `getClaimInputs`, documented next, is exactly that check. Whether
+`WaitingL1InfoLeafAvailable` narrows this gap is not yet confirmed — it's a
+new step, not a stated fix for #1786; treat the caveat as still in force
+until #1786 itself closes.
 
 #### Claim Readiness & Claim Inputs
 
