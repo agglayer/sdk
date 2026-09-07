@@ -152,12 +152,14 @@ export class AggkitBridgeAggregator {
    * / `/injected-l1-info-leaf` probes) this method used before — see
    * `AggkitActivityResult` in `types.ts` for the full rationale and the
    * resulting contract differences (no pagination, `warnings` instead of
-   * `failedNetworks`, a `claimed` tri-state + optional `tracking` instead of
-   * the old BRIDGED/LEAF_INCLUDED/READY_TO_CLAIM/CLAIMED derivation). The
-   * former ready-to-claim badge (`getReadyToClaimCount`, REMOVED) is now a
+   * `failedNetworks`, a `claim_status: AggkitClaimStatus` — `'pending'` /
+   * `'readyToClaim'` / `'claimed'` / `'error'`, agglayer/aggkit#1830, PR #1831
+   * — plus optional `tracking` instead of the old
+   * BRIDGED/LEAF_INCLUDED/READY_TO_CLAIM/CLAIMED derivation). The former
+   * ready-to-claim badge (`getReadyToClaimCount`, REMOVED) is now a
    * consumer-side derivation over this same result — filter
-   * `claimed !== 'true'` and inspect `tracking`, exactly as this result's
-   * `bridges` already has to be interpreted for status display.
+   * `claim_status === 'readyToClaim'`, exactly as this result's `bridges`
+   * already has to be interpreted for status display.
    */
   async getActivity(params: {
     fromAddress: string;

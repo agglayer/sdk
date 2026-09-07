@@ -35,10 +35,11 @@
  * bridge service and returns one unified, deduped, already-claim-checked
  * list for an address. There is no pagination (`bridges` is the address's
  * entire history) and no `getReadyToClaimCount` — derive a ready-to-claim
- * count client-side by filtering `claimed !== 'true'` and inspecting
- * `tracking`. See `AggkitActivityResult`'s module doc in `types.ts` for the
- * full contract and its trade-offs versus the older `/bridge/v1`
- * client-side fan-out this replaced.
+ * count client-side by filtering `claim_status === 'readyToClaim'`
+ * (`AggkitActivityItem.claim_status`, agglayer/aggkit#1830, PR #1831). See
+ * `AggkitActivityResult`'s module doc in `types.ts` for the full contract
+ * and its trade-offs versus the older `/bridge/v1` client-side fan-out this
+ * replaced.
  *
  * ## Bridge Tracking
  *
