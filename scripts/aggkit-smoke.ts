@@ -7,7 +7,7 @@
  * test. Exercises: per-network sync-status across {0,1,2}, a real address's
  * cross-network activity (via the aggregator's `getActivity`, a passthrough
  * to aggkit's bridgetracker `/tracker/v1/activity`), a known-ground-truth
- * claimed=true check, an L2->L2 row's claimed/tracking state, a LIVE
+ * claim_status=claimed check, an L2->L2 row's claim_status/tracking state, a LIVE
  * native-gas-token bridge proving the not-ready union (no throw) and
  * recording-network routing (comments 3847422009 / 3847523270 / 3847600104),
  * the destination-injected `getClaimInputs` roundtrip for both a sampled
@@ -237,18 +237,19 @@ async function main(): Promise<void> {
     'getActivity returned at least one activity item for the real from_address'
   );
 
-  const knownClaimedStates = ['true', 'false', 'error'];
-  const claimedCounts: Record<string, number> = {};
+  const knownClaimStatuses = ['pending', 'readyToClaim', 'claimed', 'error'];
+  const claimStatusCounts: Record<string, number> = {};
   for (const item of activity.bridges) {
-    claimedCounts[item.claimed] = (claimedCounts[item.claimed] ?? 0) + 1;
+    claimStatusCounts[item.claim_status] =
+      (claimStatusCounts[item.claim_status] ?? 0) + 1;
     assert(
-      knownClaimedStates.includes(item.claimed),
-      `bridge_hash=${item.bridge.bridge_hash} claimed "${item.claimed}" is one of the 3 known tri-states`
+      knownClaimStatuses.includes(item.claim_status),
+      `bridge_hash=${item.bridge.bridge_hash} claim_status "${item.claim_status}" is one of the 4 known states`
     );
   }
   console.log(
-    'claimed-state distribution across the full history:',
-    claimedCounts
+    'claim_status distribution across the full history:',
+    claimStatusCounts
   );
 
   console.log(
@@ -283,12 +284,12 @@ async function main(): Promise<void> {
     );
     if (itemForBridge) {
       assert(
-        itemForBridge.claimed === 'true',
-        `known-claimed bridge (deposit_count=${knownClaimedBridge.deposit_count}) derived claimed=true via getActivity`
+        itemForBridge.claim_status === 'claimed',
+        `known-claimed bridge (deposit_count=${knownClaimedBridge.deposit_count}) derived claim_status=claimed via getActivity`
       );
       assert(
         itemForBridge.claim?.tx_hash !== undefined,
-        'a claimed=true item carries a joined claim.tx_hash'
+        'a claim_status=claimed item carries a joined claim.tx_hash'
       );
     } else {
       console.log(
@@ -321,20 +322,20 @@ async function main(): Promise<void> {
     console.log(
       `L2->L2 row: bridgeHash=${l2l2Row.bridge.bridge_hash} bridge_network_id=${l2l2Row.bridge_network_id} ` +
         `destination_network=${l2l2Row.bridge.destination_network} deposit_count=${l2l2Row.bridge.deposit_count} ` +
-        `claimed=${l2l2Row.claimed}`
+        `claim_status=${l2l2Row.claim_status}`
     );
     // This round's known-autoclaimed L2-1->L2-2 deposit (also captured in the
     // unit-test lifecycle fixtures): tx 0xac862504..., deposit_count=2.
     // Autoclaim landed well before this smoke run, so the derived state
-    // should be the terminal claimed=true, not still unclaimed.
+    // should be the terminal claim_status=claimed, not still unclaimed.
     if (l2l2Row.bridge.deposit_count === 2 && l2l2Row.bridge_network_id === 1) {
       assert(
-        l2l2Row.claimed === 'true',
-        'the known-autoclaimed L2-1->L2-2 deposit (deposit_count=2) derives claimed=true'
+        l2l2Row.claim_status === 'claimed',
+        'the known-autoclaimed L2-1->L2-2 deposit (deposit_count=2) derives claim_status=claimed'
       );
       assert(
         l2l2Row.claim?.tx_hash !== undefined,
-        'claimed=true L2->L2 row carries a joined claim.tx_hash'
+        'claim_status=claimed L2->L2 row carries a joined claim.tx_hash'
       );
     }
   }
