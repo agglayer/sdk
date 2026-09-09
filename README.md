@@ -257,6 +257,71 @@ const claimMessageTx = await bridge.buildClaimMessageFromHash(
 );
 ```
 
+### aggkit Module - Bridge Tracking & Activity
+
+The `AggkitBridgeAggregator` talks to two distinct aggkit services, each
+with its own root URL:
+
+- **Bridge service** (`/bridge/v1`) — one instance per L2 network.
+  `AggkitAggregatorConfig.networks` maps networkId -> that network's
+  bridge-service base URL. It answers per-network bridge/claim/token-mapping/
+  proof queries and has no cross-network view of its own.
+- **Bridge tracker** (`/tracker/v1`) — a **different aggkit service**: its
+  own binary on its own port unless an aggkit-proxy fronts both alongside
+  every bridge service. It already holds the cross-network view: it fans
+  out server-side across every bridge service it is itself configured with
+  and answers for all of them from ONE endpoint, so it is addressed by a
+  single URL, not a per-network map — `AggkitAggregatorConfig.aggkitProxyUrl`.
+  This field is **required** because it cannot be derived from `networks`
+  (a bridge-service root does not serve `/tracker/v1`). Its
+  `/tracker/v1/activity` route is also opt-in server-side: an aggkit
+  deployment that has not configured/enabled the tracker for a network
+  returns a plain 404 for it.
+
+```typescript
+import { AggkitBridgeAggregator } from '@agglayer/sdk';
+
+const aggregator = new AggkitBridgeAggregator({
+  networks: {
+    1101: 'https://zkevm-bridge-service.example.com', // per-network bridge service
+    1: 'https://ethereum-bridge-service.example.com',
+  },
+  // The bridge TRACKER — a separate aggkit service, not one of the URLs above.
+  aggkitProxyUrl: 'https://aggkit-tracker.example.com',
+});
+```
+
+Behind a single aggkit-proxy fronting everything, `aggkitProxyUrl` is simply
+the same origin as every `networks` value — see the "Multi-Network Proxy
+Configuration" example in `src/aggkit/index.ts`'s module doc for that
+topology.
+
+#### Cross-Network Activity
+
+```typescript
+// One request: the tracker fans out server-side across every configured
+// bridge service and returns the address's ENTIRE bridge history (no
+// pagination) in one unified, deduped, already-claim-checked list.
+const { bridges, warnings } = await aggregator.getActivity({
+  fromAddress: '0xFromAddress12345678901234567890123456789012345',
+});
+
+// Ready-to-claim bridges: filter on `claim_status`. This is resolved
+// server-side even without `includeTracking: true`.
+const readyToClaim = bridges.filter(
+  (item) => item.claim_status === 'readyToClaim'
+);
+```
+
+`includeTracking` defaults to **`false`**, matching the tracker's own
+server-side default. Passing `includeTracking: true` is not simply a richer
+read — it **registers every still-unclaimed bridge in the result with the
+tracker's supervised list**, i.e. it is a server-side write triggered by
+what looks like a read. `claim_status` already resolves `'pending'` vs.
+`'readyToClaim'` without it, so reserve `includeTracking: true` for callers
+that specifically need the per-row step detail (`item.tracking`) that
+requires it.
+
 #### Bridge Transaction Tracking
 
 ```typescript
