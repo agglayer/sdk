@@ -108,6 +108,18 @@ function injectedLeafBody(l1InfoTreeIndex: number): string {
 const BASE_1 = 'http://127.0.0.1:30001';
 const BASE_2 = 'http://127.0.0.1:30002';
 const BASE_3 = 'http://127.0.0.1:30003';
+/**
+ * The bridge TRACKER root (`AggkitAggregatorConfig.aggkitProxyUrl`) — a
+ * required field, and a DIFFERENT aggkit service from the bridge services at
+ * `BASE_*` above. Nothing in this file calls a `/tracker/v1` route
+ * (`getActivity` lives in `activity.test.ts`, `getBridgeTracking` in
+ * `tracker.test.ts`), but every aggregator here must still be constructed
+ * with it: vitest does not typecheck, so omitting a now-required field would
+ * go unnoticed here while breaking real callers. Deliberately a distinct
+ * host:port so any bridge-service URL that accidentally picked it up shows
+ * up in an asserted URL.
+ */
+const PROXY_URL = 'http://127.0.0.1:30009';
 
 describe('AggkitBridgeAggregator', () => {
   beforeEach(() => {
@@ -118,6 +130,7 @@ describe('AggkitBridgeAggregator', () => {
     it('exposes configured network ids and clients', () => {
       const aggregator = new AggkitBridgeAggregator({
         networks: { 1: BASE_1, 2: BASE_2 },
+        aggkitProxyUrl: PROXY_URL,
       });
       expect(aggregator.listNetworkIds().sort()).toEqual([1, 2]);
       expect(aggregator.clientFor(1).networkId).toBe(1);
@@ -126,6 +139,7 @@ describe('AggkitBridgeAggregator', () => {
     it('throws when asked for an unconfigured network', () => {
       const aggregator = new AggkitBridgeAggregator({
         networks: { 1: BASE_1 },
+        aggkitProxyUrl: PROXY_URL,
       });
       expect(() => aggregator.clientFor(99)).toThrow(/no client configured/);
     });
@@ -158,6 +172,7 @@ describe('AggkitBridgeAggregator', () => {
 
       const aggregator = new AggkitBridgeAggregator({
         networks: { 1: BASE_1 },
+        aggkitProxyUrl: PROXY_URL,
       });
       const result = await aggregator.getClaimInputs({
         recordingNetworkId: 0,
@@ -203,6 +218,7 @@ describe('AggkitBridgeAggregator', () => {
 
       const aggregator = new AggkitBridgeAggregator({
         networks: { 1: BASE_1 },
+        aggkitProxyUrl: PROXY_URL,
       });
       const result = await aggregator.getClaimInputs({
         recordingNetworkId: 0,
@@ -238,6 +254,7 @@ describe('AggkitBridgeAggregator', () => {
 
       const aggregator = new AggkitBridgeAggregator({
         networks: { 1: BASE_1, 2: BASE_2 },
+        aggkitProxyUrl: PROXY_URL,
       });
 
       const result = await aggregator.getClaimInputs({
@@ -273,6 +290,7 @@ describe('AggkitBridgeAggregator', () => {
 
       const aggregator = new AggkitBridgeAggregator({
         networks: { 1: BASE_1 },
+        aggkitProxyUrl: PROXY_URL,
       });
 
       const result = await aggregator.getClaimInputs({
@@ -316,6 +334,7 @@ describe('AggkitBridgeAggregator', () => {
 
       const aggregator = new AggkitBridgeAggregator({
         networks: { 1: BASE_1 },
+        aggkitProxyUrl: PROXY_URL,
       });
 
       const result = await aggregator.getClaimInputs({
@@ -343,6 +362,7 @@ describe('AggkitBridgeAggregator', () => {
 
       const aggregator = new AggkitBridgeAggregator({
         networks: { 1: BASE_1 },
+        aggkitProxyUrl: PROXY_URL,
       });
 
       await expect(
@@ -369,6 +389,7 @@ describe('AggkitBridgeAggregator', () => {
 
       const aggregator = new AggkitBridgeAggregator({
         networks: { 1: BASE_1 },
+        aggkitProxyUrl: PROXY_URL,
       });
 
       const result = await aggregator.getClaimInputs({
@@ -384,7 +405,7 @@ describe('AggkitBridgeAggregator', () => {
       });
     });
 
-    it('L2 -> L1: rc4/rc5\'s bare "not found" 500 carrier THROWS AggkitApiError end-to-end — rc4/rc5 are NOT a supported aggkit target, so this rc4/rc5-shaped body is a genuine fault on the supported v0.11.0-rc6+ floor (l1_info_tree_index_network1_error.json, live-captured; supersedes audit finding C1 / commit 60d7407)', async () => {
+    it('L2 -> L1: rc4/rc5\'s bare "not found" 500 carrier THROWS AggkitApiError end-to-end — rc4/rc5 are NOT a supported aggkit target, so this rc4/rc5-shaped body is a genuine fault on the supported v0.11.0-rc6+ floor (l1_info_tree_index_network1_error.json, live-captured; supersedes the rc4/rc5 bare-not-found-as-not-ready fix, commit 60d7407)', async () => {
       installRouter([
         rule(
           BASE_1,
@@ -396,6 +417,7 @@ describe('AggkitBridgeAggregator', () => {
 
       const aggregator = new AggkitBridgeAggregator({
         networks: { 1: BASE_1 },
+        aggkitProxyUrl: PROXY_URL,
       });
 
       await expect(
@@ -410,7 +432,7 @@ describe('AggkitBridgeAggregator', () => {
       });
     });
 
-    it("L2 -> L2: rc6's /injected-l1-info-leaf 404 \"l1infotreesync has not indexed l1 info tree leaf index N yet (already injected on L2 per l2gersync)\" returns { claimable: false, reason: 'L1_INFO_LEAF_NOT_INDEXED' } — NOT a throw (audit finding C2)", async () => {
+    it("L2 -> L2: rc6's /injected-l1-info-leaf 404 \"l1infotreesync has not indexed l1 info tree leaf index N yet (already injected on L2 per l2gersync)\" returns { claimable: false, reason: 'L1_INFO_LEAF_NOT_INDEXED' } — NOT a throw", async () => {
       installRouter([
         rule(
           BASE_1,
@@ -428,6 +450,7 @@ describe('AggkitBridgeAggregator', () => {
 
       const aggregator = new AggkitBridgeAggregator({
         networks: { 1: BASE_1, 2: BASE_2 },
+        aggkitProxyUrl: PROXY_URL,
       });
 
       const result = await aggregator.getClaimInputs({
@@ -448,7 +471,7 @@ describe('AggkitBridgeAggregator', () => {
       });
     });
 
-    it("L2 -> L2: rc6's /injected-l1-info-leaf 503 returns { claimable: false, reason: 'SYNCER_INCONSISTENT' } — NOT a throw — so an ordinary destination-side reorg does not flood failedNetworks (audit finding C2)", async () => {
+    it("L2 -> L2: rc6's /injected-l1-info-leaf 503 returns { claimable: false, reason: 'SYNCER_INCONSISTENT' } — NOT a throw — so an ordinary destination-side reorg does not flood failedNetworks", async () => {
       installRouter([
         rule(
           BASE_1,
@@ -466,6 +489,7 @@ describe('AggkitBridgeAggregator', () => {
 
       const aggregator = new AggkitBridgeAggregator({
         networks: { 1: BASE_1, 2: BASE_2 },
+        aggkitProxyUrl: PROXY_URL,
       });
 
       const result = await aggregator.getClaimInputs({
@@ -502,6 +526,7 @@ describe('AggkitBridgeAggregator', () => {
 
       const aggregator = new AggkitBridgeAggregator({
         networks: { 1: BASE_1, 2: BASE_2 },
+        aggkitProxyUrl: PROXY_URL,
       });
 
       await expect(
@@ -513,7 +538,7 @@ describe('AggkitBridgeAggregator', () => {
       ).rejects.toMatchObject({ httpStatus: 500 });
     });
 
-    it("L2 -> L2: rc6's /claim-proof 404 (source settled, destination injected, a syncer a few blocks behind on the leaf) returns { claimable: false, reason: 'CLAIM_PROOF_NOT_AVAILABLE', sourceL1InfoTreeIndex } — NOT a throw. Activates the not-ready arm design 2.2/2.6 reserved (audit finding C3)", async () => {
+    it("L2 -> L2: rc6's /claim-proof 404 (source settled, destination injected, a syncer a few blocks behind on the leaf) returns { claimable: false, reason: 'CLAIM_PROOF_NOT_AVAILABLE', sourceL1InfoTreeIndex } — NOT a throw. Activates the not-ready arm design 2.2/2.6 reserved", async () => {
       installRouter([
         rule(
           BASE_1,
@@ -537,6 +562,7 @@ describe('AggkitBridgeAggregator', () => {
 
       const aggregator = new AggkitBridgeAggregator({
         networks: { 1: BASE_1, 2: BASE_2 },
+        aggkitProxyUrl: PROXY_URL,
       });
 
       const result = await aggregator.getClaimInputs({
@@ -553,7 +579,7 @@ describe('AggkitBridgeAggregator', () => {
       });
     });
 
-    it("L2 -> L1: rc6's /claim-proof 503 returns { claimable: false, reason: 'SYNCER_INCONSISTENT' } — NOT a throw (audit finding C3)", async () => {
+    it("L2 -> L1: rc6's /claim-proof 503 returns { claimable: false, reason: 'SYNCER_INCONSISTENT' } — NOT a throw", async () => {
       installRouter([
         rule(
           BASE_1,
@@ -571,6 +597,7 @@ describe('AggkitBridgeAggregator', () => {
 
       const aggregator = new AggkitBridgeAggregator({
         networks: { 1: BASE_1 },
+        aggkitProxyUrl: PROXY_URL,
       });
 
       const result = await aggregator.getClaimInputs({
@@ -599,7 +626,7 @@ describe('AggkitBridgeAggregator', () => {
         'claim_proof_l2_bridge_syncer_unavailable_503.json',
       ],
     ])(
-      'L2 -> L1: /claim-proof\'s GENUINE-FAULT 503 "%s" still throws AggkitApiError — a misconfigured aggkit must never be read as "keep polling forever" (audit finding C3)',
+      'L2 -> L1: /claim-proof\'s GENUINE-FAULT 503 "%s" still throws AggkitApiError — a misconfigured aggkit must never be read as "keep polling forever"',
       async (message, fixture) => {
         installRouter([
           rule(
@@ -618,6 +645,7 @@ describe('AggkitBridgeAggregator', () => {
 
         const aggregator = new AggkitBridgeAggregator({
           networks: { 1: BASE_1 },
+          aggkitProxyUrl: PROXY_URL,
         });
 
         await expect(
@@ -648,6 +676,7 @@ describe('AggkitBridgeAggregator', () => {
 
       const aggregator = new AggkitBridgeAggregator({
         networks: { 1: BASE_1 },
+        aggkitProxyUrl: PROXY_URL,
       });
 
       await expect(
@@ -683,6 +712,7 @@ describe('AggkitBridgeAggregator', () => {
 
       const aggregator = new AggkitBridgeAggregator({
         networks: { 1: BASE_1 },
+        aggkitProxyUrl: PROXY_URL,
       });
 
       const result = await aggregator.getClaimInputs({
@@ -746,6 +776,7 @@ describe('AggkitBridgeAggregator', () => {
         // treats any error message containing "network" as retryable, and the
         // unrouted URL contains `network_id`).
         networks: { 1: BASE_1, 2: BASE_2 },
+        aggkitProxyUrl: PROXY_URL,
         retries: 0,
       });
 
@@ -787,7 +818,7 @@ describe('AggkitBridgeAggregator', () => {
       ).toHaveLength(1);
     });
 
-    it('L2-1 -> L2-2 of a THIRD-NETWORK-ORIGIN token (origin_network=3, recorded on L2-1): builds the proof from the RECORDING network (1), never from network 3 (audit finding P2 — Case C)', async () => {
+    it('L2-1 -> L2-2 of a THIRD-NETWORK-ORIGIN token (origin_network=3, recorded on L2-1): builds the proof from the RECORDING network (1), never from network 3 (Case C)', async () => {
       // Case C from the design/audit's four-routing-cases table: a token
       // whose origin is a THIRD network (3), distinct from both the
       // recording network (1, where the bridging tx executed) and the
@@ -825,6 +856,7 @@ describe('AggkitBridgeAggregator', () => {
         // retries: 0 — see the case-D test above: a routing regression must
         // surface immediately as "no rule matched", not a 5s vitest timeout.
         networks: { 1: BASE_1, 2: BASE_2, 3: BASE_3 },
+        aggkitProxyUrl: PROXY_URL,
         retries: 0,
       });
 
@@ -887,6 +919,7 @@ describe('AggkitBridgeAggregator', () => {
 
       const aggregator = new AggkitBridgeAggregator({
         networks: { 1: BASE_1 },
+        aggkitProxyUrl: PROXY_URL,
       });
 
       const result = await aggregator.getClaimInputs({
@@ -933,6 +966,7 @@ describe('AggkitBridgeAggregator', () => {
       const aggregator = new AggkitBridgeAggregator({
         // retries: 0 — see the case-D test above.
         networks: { 1: BASE_1, 2: BASE_2 },
+        aggkitProxyUrl: PROXY_URL,
         retries: 0,
       });
 
@@ -971,6 +1005,7 @@ describe('AggkitBridgeAggregator', () => {
 
       const aggregator = new AggkitBridgeAggregator({
         networks: { 1: BASE_1 },
+        aggkitProxyUrl: PROXY_URL,
       });
 
       // destination 7 is unconfigured -> resolveInjectedLeafIndex returns
@@ -995,6 +1030,7 @@ describe('AggkitBridgeAggregator', () => {
       installRouter([]);
       const aggregator = new AggkitBridgeAggregator({
         networks: { 1: BASE_1 },
+        aggkitProxyUrl: PROXY_URL,
       });
 
       await expect(
@@ -1020,6 +1056,7 @@ describe('AggkitBridgeAggregator', () => {
 
       const aggregator = new AggkitBridgeAggregator({
         networks: { 1: BASE_1 },
+        aggkitProxyUrl: PROXY_URL,
       });
 
       let caught: unknown;
@@ -1056,6 +1093,7 @@ describe('AggkitBridgeAggregator', () => {
 
       const aggregator = new AggkitBridgeAggregator({
         networks: { 1: BASE_1 },
+        aggkitProxyUrl: PROXY_URL,
       });
 
       await expect(
@@ -1088,6 +1126,7 @@ describe('AggkitBridgeAggregator', () => {
 
       const aggregator = new AggkitBridgeAggregator({
         networks: { 1: BASE_1, 2: BASE_2 },
+        aggkitProxyUrl: PROXY_URL,
       });
 
       let caught: unknown;
@@ -1129,6 +1168,7 @@ describe('AggkitBridgeAggregator', () => {
     it('native branch: returns the chain nativeCurrency for the zero address', async () => {
       const aggregator = new AggkitBridgeAggregator({
         networks: { [NATIVE_NETWORK_ID]: BASE_1 },
+        aggkitProxyUrl: PROXY_URL,
       });
 
       const metadata = await aggregator.getTokenMetadata(
@@ -1203,6 +1243,7 @@ describe('AggkitBridgeAggregator', () => {
 
       const aggregator = new AggkitBridgeAggregator({
         networks: { [ERC20_NETWORK_ID]: BASE_1 },
+        aggkitProxyUrl: PROXY_URL,
       });
 
       const metadata = await aggregator.getTokenMetadata(
@@ -1263,6 +1304,7 @@ describe('AggkitBridgeAggregator', () => {
       // L1 data is always served via an L2 instance's embedded L1 syncer.
       const aggregator = new AggkitBridgeAggregator({
         networks: { 1: BASE_1 },
+        aggkitProxyUrl: PROXY_URL,
       });
 
       const metadata = await aggregator.getTokenMetadata(TOKEN_ADDRESS, 0);
@@ -1334,6 +1376,7 @@ describe('AggkitBridgeAggregator', () => {
       // configured client, same as the L1-origin test above.
       const aggregator = new AggkitBridgeAggregator({
         networks: { 1: BASE_1 },
+        aggkitProxyUrl: PROXY_URL,
       });
 
       const metadata = await aggregator.getTokenMetadata(TOKEN_ADDRESS, 0);

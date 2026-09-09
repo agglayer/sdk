@@ -72,6 +72,39 @@ describe('AggkitBridgeClient.getBridgeTracking', () => {
     });
   });
 
+  describe('trackerBaseUrl resolution', () => {
+    it('builds the tracking URL from trackerBaseUrl when given, leaving baseUrl for /bridge/v1 only', async () => {
+      const trackerUrl = 'http://127.0.0.1:33470';
+      const split = new AggkitBridgeClient({
+        baseUrl: BASE_URL,
+        trackerBaseUrl: trackerUrl,
+        networkId: 1,
+      });
+      mockFetchOnce(loadFixture('tracker_l1l2_finished.json'), 200);
+      const hash =
+        '0x64b65138996aae61811dac45f10c2baddbf0ab5aae9ef587766b92a23c85791e';
+
+      await split.getBridgeTracking(hash);
+
+      expect(lastFetchUrl()).toBe(
+        `${trackerUrl}/tracker/v1/network/1/tx/${hash}`
+      );
+      expect(lastFetchUrl()).not.toContain(BASE_URL);
+    });
+
+    it('falls back to baseUrl for the tracking URL when trackerBaseUrl is omitted', async () => {
+      mockFetchOnce(loadFixture('tracker_l1l2_finished.json'), 200);
+      const hash =
+        '0x64b65138996aae61811dac45f10c2baddbf0ab5aae9ef587766b92a23c85791e';
+
+      await client.getBridgeTracking(hash);
+
+      expect(lastFetchUrl()).toBe(
+        `${BASE_URL}/tracker/v1/network/1/tx/${hash}`
+      );
+    });
+  });
+
   describe('registered-only tracking data', () => {
     it('parses tracker_registered.json: bridge_status/step_index/all_steps null, error populated', async () => {
       mockFetchOnce(loadFixture('tracker_registered.json'), 200);
@@ -300,16 +333,25 @@ describe('AggkitBridgeClient.getBridgeTracking', () => {
 describe('AggkitBridgeAggregator.getBridgeTracking', () => {
   const L2_1_URL = 'http://127.0.0.1:40001';
   const L2_2_URL = 'http://127.0.0.1:40002';
+  /**
+   * The bridge TRACKER root (`AggkitAggregatorConfig.aggkitProxyUrl`) — the
+   * one service that answers `/tracker/v1`, and a different aggkit service
+   * from the bridge services at `L2_*_URL`. Deliberately a distinct
+   * host:port so a regression that derives the tracker URL from a `networks`
+   * entry (as this used to, per-network) is visible in the asserted URL.
+   */
+  const PROXY_URL = 'http://127.0.0.1:40009';
   let aggregator: AggkitBridgeAggregator;
 
   beforeEach(() => {
     global.fetch = vi.fn();
     aggregator = new AggkitBridgeAggregator({
       networks: { 1: L2_1_URL, 2: L2_2_URL },
+      aggkitProxyUrl: PROXY_URL,
     });
   });
 
-  it('routes network 0 (L1) through the first configured L2 client but puts network 0 in the URL path', async () => {
+  it('sends network 0 (L1) to the aggkitProxyUrl tracker root but puts network 0 in the URL path', async () => {
     mockFetchOnce(loadFixture('tracker_l1l2_finished.json'), 200);
     const hash =
       '0x64b65138996aae61811dac45f10c2baddbf0ab5aae9ef587766b92a23c85791e';
@@ -320,14 +362,20 @@ describe('AggkitBridgeAggregator.getBridgeTracking', () => {
     );
 
     expect(data.tracking_status).toBe('finished');
-    // Hits the network-1-configured client's base URL (first configured
-    // network — L1 has no dedicated instance)...
-    expect(lastFetchUrl()).toContain(L2_1_URL);
-    // ...but the URL path itself says network 0, not network 1.
-    expect(lastFetchUrl()).toBe(`${L2_1_URL}/tracker/v1/network/0/tx/${hash}`);
+    // The tracker root comes from `aggkitProxyUrl`. Network 0 is still
+    // ROUTED through a configured L2 client (L1 has no dedicated aggkit
+    // instance) — that client is picked for its fetch config, and it is
+    // handed the tracker root rather than its own bridge-service URL...
+    expect(lastFetchUrl()).toContain(PROXY_URL);
+    // ...so the request must NOT go to either bridge service.
+    expect(lastFetchUrl()).not.toContain(L2_1_URL);
+    expect(lastFetchUrl()).not.toContain(L2_2_URL);
+    // ...and the URL path itself says network 0, not the routed-through
+    // client's own networkId of 1.
+    expect(lastFetchUrl()).toBe(`${PROXY_URL}/tracker/v1/network/0/tx/${hash}`);
   });
 
-  it('routes a non-L1 network directly to its own configured client, with that networkId in the URL path', async () => {
+  it('sends a non-L1 network to the same aggkitProxyUrl tracker root, with that networkId in the URL path', async () => {
     mockFetchOnce(loadFixture('tracker_l2l2_finished.json'), 200);
     const hash =
       '0x66a20ab10e92748f7ee30f9a487e262a673b790df365bf3067a59c8b71fb2fe8';
@@ -335,6 +383,70 @@ describe('AggkitBridgeAggregator.getBridgeTracking', () => {
     const data = await aggregator.getBridgeTracking(1, hash);
 
     expect(data.bridge_status?.bridge_type).toBe('L2->L2');
+    // Network 1 HAS its own configured bridge service, and the tracker call
+    // still must not go there: there is one tracker, not one per network.
+    expect(lastFetchUrl()).toBe(`${PROXY_URL}/tracker/v1/network/1/tx/${hash}`);
+    expect(lastFetchUrl()).not.toContain(L2_1_URL);
+  });
+
+  it('sends every configured network to the one tracker root, differing only in the URL path', async () => {
+    const hash =
+      '0x66a20ab10e92748f7ee30f9a487e262a673b790df365bf3067a59c8b71fb2fe8';
+    const urls: string[] = [];
+
+    for (const networkId of [0, 1, 2]) {
+      mockFetchOnce(loadFixture('tracker_l2l2_finished.json'), 200);
+      await aggregator.getBridgeTracking(networkId, hash);
+      urls.push(lastFetchUrl());
+    }
+
+    expect(urls).toEqual([
+      `${PROXY_URL}/tracker/v1/network/0/tx/${hash}`,
+      `${PROXY_URL}/tracker/v1/network/1/tx/${hash}`,
+      `${PROXY_URL}/tracker/v1/network/2/tx/${hash}`,
+    ]);
+  });
+
+  // The tracker is one service that never routes through `networks`, so a
+  // tracker-only aggregator must be able to answer a tracker call. This used
+  // to borrow a per-network client purely for its fetch config, which made
+  // `networks` a hard precondition for a call that touches no bridge service
+  // — and, with no networks configured, threw "no client configured for
+  // network 0" while the tracker was reachable the whole time.
+  it('answers from the tracker root with no networks configured at all, and for a networkId absent from networks', async () => {
+    const trackerOnly = new AggkitBridgeAggregator({
+      networks: {},
+      aggkitProxyUrl: PROXY_URL,
+    });
+    const hash =
+      '0x66a20ab10e92748f7ee30f9a487e262a673b790df365bf3067a59c8b71fb2fe8';
+
+    mockFetchOnce(loadFixture('tracker_l2l2_finished.json'), 200);
+    await trackerOnly.getBridgeTracking(0, hash);
+    expect(lastFetchUrl()).toBe(`${PROXY_URL}/tracker/v1/network/0/tx/${hash}`);
+
+    // Also true for a network that is not in `networks`: the path segment is
+    // the caller's networkId, and the tracker resolves it server-side.
+    mockFetchOnce(loadFixture('tracker_l2l2_finished.json'), 200);
+    await aggregator.getBridgeTracking(7, hash);
+    expect(lastFetchUrl()).toBe(`${PROXY_URL}/tracker/v1/network/7/tx/${hash}`);
+  });
+
+  // The untyped-caller fallback: with no usable `aggkitProxyUrl` there is no
+  // tracker client, so the pre-`aggkitProxyUrl` behaviour is preserved
+  // exactly — borrow a configured network's client and derive
+  // `/tracker/v1` from its bridge-service URL.
+  it('falls back to a configured network client when aggkitProxyUrl is blank (untyped caller only)', async () => {
+    const noProxy = new AggkitBridgeAggregator({
+      networks: { 1: L2_1_URL, 2: L2_2_URL },
+      aggkitProxyUrl: '   ',
+    });
+    const hash =
+      '0x66a20ab10e92748f7ee30f9a487e262a673b790df365bf3067a59c8b71fb2fe8';
+
+    mockFetchOnce(loadFixture('tracker_l2l2_finished.json'), 200);
+    await noProxy.getBridgeTracking(1, hash);
+
     expect(lastFetchUrl()).toBe(`${L2_1_URL}/tracker/v1/network/1/tx/${hash}`);
   });
 });
