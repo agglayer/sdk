@@ -1,0 +1,68 @@
+{
+  "tracking_status": "finished",
+  "network_id": 0,
+  "tx_hash": "0x64b65138996aae61811dac45f10c2baddbf0ab5aae9ef587766b92a23c85791e",
+  "bridge_status": {
+    "bridge_type": "L1->L2",
+    "block_number": 519,
+    "log_index": 0,
+    "block_timestamp": 1786113909,
+    "event": {
+      "leaf_type": "Asset",
+      "origin_network": 0,
+      "origin_address": "0x0000000000000000000000000000000000000000",
+      "destination_network": 1,
+      "destination_address": "0xa0b4b0c6314b6b028adf7c787eca150add9e1ec0",
+      "amount": "1000000000000000000",
+      "deposit_count": 3
+    }
+  },
+  "step_index": 3,
+  "all_steps": [
+    {
+      "step_index": 0,
+      "step_name": "WaitingGERUpdate",
+      "status": "done",
+      "start_date": "2026-08-07T14:45:14.940426998Z",
+      "end_date": "2026-08-07T14:45:14.942687479Z",
+      "result": {
+        "l1_info_tree_index": 6,
+        "ger": "0x6c670cb382e5202b19eae5ae3d61491f38c5d4806a4d154410d5370816fbf090",
+        "mer": "0xaa7f2b3bcb3d6303a1af1d4b4322d197db525e63e4472ef50c352b316de9598b",
+        "rer": "0x226608c15eee1d684ad841ee83dc549bc9c3f25ccff4a102d8065aeb90bc6c1c",
+        "block_number": 519,
+        "block_timestamp": 1786113909,
+        "log_index": 2
+      }
+    },
+    {
+      "step_index": 1,
+      "step_name": "WaitingGERInjection",
+      "status": "done",
+      "start_date": "2026-08-07T14:45:14.942687479Z",
+      "end_date": "2026-08-07T14:45:56.844525693Z",
+      "result": {
+        "ger": "0x6c670cb382e5202b19eae5ae3d61491f38c5d4806a4d154410d5370816fbf090"
+      }
+    },
+    {
+      "step_index": 2,
+      "step_name": "WaitingClaim",
+      "status": "done",
+      "start_date": "2026-08-07T14:45:56.844525693Z",
+      "end_date": "2026-08-07T14:46:06.844712083Z",
+      "result": {
+        "claim_tx": "0x178eed25e7a70d088367b81879bffb7fa800e3f23789d8a11bd05ae78505e3f3",
+        "block_number": 909
+      }
+    },
+    {
+      "step_index": 3,
+      "step_name": "Claimed",
+      "status": "done",
+      "start_date": "2026-08-07T14:46:06.844712083Z",
+      "end_date": "2026-08-07T14:46:06.844712083Z"
+    }
+  ],
+  "error": null
+}
