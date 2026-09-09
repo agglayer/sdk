@@ -35,6 +35,20 @@
  *                             network ids configured on the aggregator, all
  *                             pointed at AGGKIT_URL (one aggkit-proxy fronts
  *                             every network, selected per-request by ?network_id=).
+ *   AGGKIT_TRACKER_URL         optional. Root URL of the bridge TRACKER
+ *                             service (backs `AggkitBridgeAggregator`'s
+ *                             `aggkitProxyUrl`, `getActivity` /
+ *                             `getBridgeTracking`) — a different aggkit
+ *                             service from the per-network bridge services in
+ *                             `networks`/AGGKIT_URL. When PROXY_MODE is "true"
+ *                             (the default), one aggkit-proxy fronts both
+ *                             services on the same origin, so this defaults to
+ *                             AGGKIT_URL when unset. In standalone mode
+ *                             (PROXY_MODE=false) the tracker is its own
+ *                             binary on its own host:port with no relation to
+ *                             AGGKIT_URL, so there is no safe default: this
+ *                             script exits with an error if AGGKIT_TRACKER_URL
+ *                             is unset in that mode.
  *   FROM_ADDRESS               optional, default the L2-1 test EOA
  *                             (`0x9BEE1d978DF451350fA93C69c4A1f6fFca12d107`)
  *                             that sent one past round's L2-1->L2-2 and
@@ -114,6 +128,21 @@ const PROXY_MODE = (process.env['PROXY_MODE'] ?? 'true') !== 'false';
 const L2_NETWORK_IDS = (process.env['L2_NETWORK_IDS'] ?? '1,2')
   .split(',')
   .map((s) => Number(s.trim()));
+// The bridge tracker (`/tracker/v1`) is its own aggkit service, distinct
+// from the per-network bridge services (`/bridge/v1`) AGGKIT_URL addresses.
+// Behind aggkit-proxy (PROXY_MODE=true) one origin serves both, so default
+// to AGGKIT_URL; standalone (PROXY_MODE=false) there is no such relation, so
+// require it explicitly rather than guessing.
+const AGGKIT_TRACKER_URL =
+  process.env['AGGKIT_TRACKER_URL'] ?? (PROXY_MODE ? AGGKIT_URL : undefined);
+if (!AGGKIT_TRACKER_URL) {
+  console.error(
+    'AGGKIT_TRACKER_URL env var is required when PROXY_MODE=false ' +
+      '(the standalone bridge tracker is its own service on its own ' +
+      'host:port; it cannot be inferred from AGGKIT_URL).'
+  );
+  process.exit(1);
+}
 const FROM_ADDRESS =
   process.env['FROM_ADDRESS'] ?? '0x9BEE1d978DF451350fA93C69c4A1f6fFca12d107';
 const L1_RPC_URL = process.env['L1_RPC_URL'];
@@ -150,6 +179,10 @@ async function main(): Promise<void> {
     networks: Object.fromEntries(
       L2_NETWORK_IDS.map((id) => [id, AGGKIT_URL as string])
     ),
+    // The bridge tracker (`/tracker/v1`) is its own service, resolved from
+    // AGGKIT_TRACKER_URL (see the env-var doc block above) — NOT assumed to
+    // share AGGKIT_URL's origin, since that only holds in PROXY_MODE.
+    aggkitProxyUrl: AGGKIT_TRACKER_URL as string,
   });
 
   function mustGetClient(networkId: number): AggkitBridgeClient {
@@ -163,7 +196,7 @@ async function main(): Promise<void> {
   }
 
   console.log(
-    `\naggkit-smoke: base=${AGGKIT_URL} proxyMode=${PROXY_MODE} networks=${JSON.stringify(
+    `\naggkit-smoke: base=${AGGKIT_URL} trackerUrl=${AGGKIT_TRACKER_URL} proxyMode=${PROXY_MODE} networks=${JSON.stringify(
       L2_NETWORK_IDS
     )} fromAddress=${FROM_ADDRESS}`
   );
@@ -250,6 +283,87 @@ async function main(): Promise<void> {
   console.log(
     'claim_status distribution across the full history:',
     claimStatusCounts
+  );
+
+  console.log(
+    `\n=== 3b. L1-origin global_index precision (agglayer/aggkit#1835) + default includeTracking=false ===`
+  );
+  // The `activity` request above passed only `{ fromAddress }` -- it did NOT
+  // set `includeTracking`, so this whole run (including the assertions
+  // below) exercises `getActivity`'s DEFAULT `includeTracking: false` path,
+  // not the opt-in tracking-registration path.
+  //
+  // IMPORTANT CAVEAT ON THIS ENVIRONMENT: the aggkit image behind this proxy
+  // is already built from the fix (agglayer/aggkit#1835) that retypes
+  // `BridgeResponse.GlobalIndex` as a quoted `BigIntString`, so every
+  // `global_index` on the wire here -- bridge-level and claim-level alike --
+  // arrives ALREADY QUOTED. That means this live run exercises
+  // `quoteGlobalIndex`'s IDEMPOTENT branch only: it proves the >=2^64 value
+  // still survives byte-for-byte as a string end-to-end through this
+  // already-fixed server, but it does NOT exercise the bare-JSON-number ->
+  // quoted-string CONVERSION branch (the pre-#1835 wire format that
+  // `quoteGlobalIndex` was written to fix). That conversion path is exercised
+  // only by the committed fixture test against a captured pre-fix response
+  // (`src/aggkit/__fixtures__/activity_rc9_live_prefix.json`), not by this
+  // live run. Do not read a pass here as proof of the conversion path.
+  const l1OriginRow = activity.bridges.find(
+    (item) =>
+      item.bridge_network_id === 0 &&
+      BigInt(item.bridge.global_index) >= 2n ** 64n
+  );
+  assert(
+    l1OriginRow !== undefined,
+    'found an L1-origin activity row (bridge_network_id=0) with a global_index >= 2^64'
+  );
+  if (l1OriginRow) {
+    console.log(
+      `L1-origin row: bridge_hash=${l1OriginRow.bridge.bridge_hash} deposit_count=${l1OriginRow.bridge.deposit_count} ` +
+        `global_index=${l1OriginRow.bridge.global_index} claim_status=${l1OriginRow.claim_status}`
+    );
+    assert(
+      typeof l1OriginRow.bridge.global_index === 'string',
+      'L1-origin bridge.global_index is typeof string (not corrupted to an imprecise ' +
+        'JS number by a plain JSON.parse)'
+    );
+    assert(
+      l1OriginRow.bridge.global_index === '18446744073709551618',
+      `L1-origin bridge.global_index is the exact expected string "18446744073709551618" ` +
+        `(got "${l1OriginRow.bridge.global_index}")`
+    );
+    assert(
+      l1OriginRow.claim_status === 'claimed',
+      'the known L1-origin deposit (global_index=18446744073709551618) derives claim_status=claimed'
+    );
+    assert(
+      l1OriginRow.claim !== undefined,
+      'the known-claimed L1-origin row carries a populated claim object'
+    );
+    if (l1OriginRow.claim) {
+      assert(
+        typeof l1OriginRow.claim.global_index === 'string' &&
+          l1OriginRow.claim.global_index === '18446744073709551618',
+        'the joined claim.global_index matches the same exact string'
+      );
+    }
+    // Default includeTracking=false: the tracker was never asked to
+    // register this bridge, so no `tracking` field should be present, yet
+    // claim_status is already a usable, resolved value above.
+    assert(
+      l1OriginRow.tracking === undefined,
+      'default includeTracking=false: this row carries no `tracking` field, ' +
+        'yet claim_status is already resolved and usable'
+    );
+  }
+  // Same default-includeTracking check, generalized across the whole
+  // history fetched above (not just the one L1-origin row): every row's
+  // claim_status must already be one of the 4 known, directly-usable
+  // states with no `tracking` field required to interpret it.
+  const rowsWithTracking = activity.bridges.filter(
+    (item) => item.tracking !== undefined
+  );
+  assert(
+    rowsWithTracking.length === 0,
+    'default includeTracking=false: no activity row in the full history carries a `tracking` field'
   );
 
   console.log(
@@ -573,7 +687,7 @@ async function main(): Promise<void> {
               // `from_address` is documented-optional (`AggkitBridge.from_address`
               // in types.ts: "May be '' or absent; do not trust for identity
               // beyond sender display") -- an absent value must not TypeError
-              // here (audit finding C13), so default it the same way the SDK
+              // here, so default it the same way the SDK
               // itself does (aggregator.ts: `bridge.from_address ||
               // bridge.txn_sender`) before comparing.
               (l1Row.from_address ?? '').toLowerCase() !==
