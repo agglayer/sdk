@@ -20,12 +20,21 @@
  *     1: "http://proxy.local:8080",
  *     2: "http://proxy.local:8080", // Same URL, different networkId
  *   },
+ *   aggkitProxyUrl: "http://proxy.local:8080",
  * });
  * ```
  *
  * The proxy multiplexes networks via `?network_id=` query parameter; the URL
  * is the same for all networks. This is the correct configuration for devnets
  * with an aggkit-proxy service fronting multiple L2s.
+ *
+ * `networks` and `aggkitProxyUrl` address two different aggkit services and
+ * are both required. `networks` maps networkId -> **bridge service**
+ * (`/bridge/v1`) root; `aggkitProxyUrl` is the single **bridge tracker**
+ * (`/tracker/v1`) root that backs `getActivity`/`getBridgeTracking`. Behind
+ * one aggkit-proxy they are the same origin (as above), but the tracker is
+ * its own binary on its own port when nothing fronts it, so it must be
+ * stated explicitly rather than derived from `networks`.
  *
  * ## Cross-Network Activity
  *
@@ -120,8 +129,8 @@
  * shapes, so a deployment on rc4/rc5 will see a genuine failure
  * (`AggkitApiError`) for any not-ready state these endpoints report, rather
  * than the `{ claimable: false, reason, detail }` union described above. On
- * the rc6+ floor for that classification, the client absorbs
- * aggkit's not-ready wire shapes across `/l1-info-tree-index`,
+ * the rc6+ floor for that classification, the client absorbs aggkit's
+ * not-ready wire shapes across `/l1-info-tree-index`,
  * `/injected-l1-info-leaf`, and `/claim-proof` into the same stable
  * `AggkitNotReadyReason` members — a 404 with a fixed not-ready prose, or a
  * 503 while a syncer resolves a reorg (`SYNCER_INCONSISTENT`) — while any

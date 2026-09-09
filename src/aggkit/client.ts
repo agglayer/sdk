@@ -253,7 +253,18 @@ export class AggkitBridgeClient {
     this.networkId = config.networkId;
     this.rootUrl = stripTrailingSlashes(config.baseUrl);
     this.bridgeApiUrl = `${this.rootUrl}/bridge/v1`;
-    this.trackerApiUrl = `${this.rootUrl}/tracker/v1`;
+    // The bridge service (`/bridge/v1`) and the bridge tracker
+    // (`/tracker/v1`) are two separate aggkit services — separate binaries
+    // on separate ports unless an aggkit-proxy fronts both — so the tracker
+    // gets its own root. Falling back to `baseUrl` preserves the
+    // single-URL behaviour this client shipped with, and is correct only
+    // behind such a proxy; pointed straight at a bridge service, every
+    // `/tracker/v1` route 404s. (The tracker's `/tracker/v1/activity` route
+    // is additionally opt-in server-side and 404s when the tracker is
+    // configured without activity scanning/claims.)
+    this.trackerApiUrl = `${stripTrailingSlashes(
+      config.trackerBaseUrl ?? config.baseUrl
+    )}/tracker/v1`;
     this.fetchConfig = {
       timeout: config.timeout ?? DEFAULT_TIMEOUT,
       retries: config.retries ?? DEFAULT_RETRIES,
@@ -717,9 +728,9 @@ export class AggkitBridgeClient {
    * with server-side, so this ONE request returns a unified, deduped,
    * already-claim-checked list across every configured network — unlike
    * `getBridges`/`getClaims` above (which only ever answer for THIS client's
-   * own single network), this method is not network-scoped: any configured
-   * network's client answers identically (`AggkitBridgeAggregator.getActivity`
-   * relies on exactly this to pick just one).
+   * own single network), this method is not network-scoped at all: it hits
+   * the tracker root (`trackerBaseUrl`, defaulting to `baseUrl`) and ignores
+   * this client's `networkId` entirely.
    *
    * `includeTracking` defaults to `true` — almost every consumer needs the
    * per-row `AggkitTrackingData` to tell a merely-pending deposit apart from

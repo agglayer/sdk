@@ -867,10 +867,23 @@ probes), paginated with an opaque cursor. It now does none of that: it is a
 thin passthrough to aggkit's bridgetracker
 `GET /tracker/v1/activity/from/{from_address}`, which already fans out
 server-side across every bridge service it is configured with and returns
-one unified, deduped, already-claim-checked list in a single request. Only
-ONE configured network's client is used (any one answers identically — the
-tracker component owns the cross-network view, not any single bridge
-service).
+one unified, deduped, already-claim-checked list in a single request. The
+tracker component owns the cross-network view, not any single bridge service.
+
+- **BREAKING: `AggkitAggregatorConfig.aggkitProxyUrl` is new and required.**
+  The tracker is a _different aggkit service_ from the bridge services in
+  `networks` (its own binary on its own port unless an aggkit-proxy fronts
+  both), so it gets its own root URL — one URL, not a per-network map, since
+  the tracker already answers for every network from one endpoint. Behind an
+  aggkit-proxy this is simply the same origin as the `networks` values.
+  Consequently `getActivity` issues exactly one request and no longer tries
+  each configured network in turn: that loop was never real failover, only N
+  guesses at where the single tracker lives (each per-network client derived
+  its own `<baseUrl>/tracker/v1`), and it rewrapped errors so an
+  `AggkitApiError` reached callers as a plain `Error`. Errors from the
+  tracker now propagate unchanged. `AggkitBridgeClientConfig` gains an
+  optional `trackerBaseUrl` for the same reason; omitted, it falls back to
+  `baseUrl`, which is correct only behind such a proxy.
 
 - **New signature and return shape.** `getActivity(params: { fromAddress:
 string; includeTracking?: boolean })` (no more `pageSize`/`cursor`/`order`)
@@ -894,9 +907,11 @@ AggkitActivityWarning[] }` — see its module doc in `types.ts` for the full
   already has to interpret this result for status display —
   agglayer-dev-ui's own `app/services/activity.ts` `deriveStatus` is one
   worked example).
-- **New**: `AggkitBridgeClient.getActivity` (single-network client method
-  the aggregator delegates to) is available directly for callers that want
-  to pick their own network explicitly instead of "any configured one."
+- **New**: `AggkitBridgeClient.getActivity` (the client method the aggregator
+  delegates to) is available directly for callers that already talk to one
+  aggkit origin and don't need the aggregator. It is not network-scoped —
+  it hits `trackerBaseUrl` (default `baseUrl`) and ignores the client's
+  `networkId`.
 
 ### `AggkitActivityItem.claimed` renamed to `claim_status`, revalued to the tracker's own vocabulary (agglayer/aggkit#1830, PR [#1831](https://github.com/agglayer/aggkit/pull/1831))
 

@@ -16,6 +16,18 @@ export interface AggkitBridgeClientConfig {
   baseUrl: string;
   /** The L2 network id this aggkit instance serves. */
   networkId: number;
+  /**
+   * Root URL of the **bridge tracker** service — a DIFFERENT aggkit service
+   * from the bridge service `baseUrl` points at (own binary, own port unless
+   * something fronts both). Given WITHOUT `/tracker/v1`; the client appends
+   * it. Used by `getBridgeTracking` and `getActivity`.
+   *
+   * Defaults to `baseUrl` when omitted, which is correct ONLY when `baseUrl`
+   * is an aggkit-proxy (or other reverse proxy) that serves both
+   * `/bridge/v1` and `/tracker/v1` under one origin. Pointed straight at a
+   * bridge service, the tracker routes 404.
+   */
+  trackerBaseUrl?: string;
   /** Request timeout in ms. Default 30000 (matches `HttpClient`'s default). */
   timeout?: number;
   /** Max retry attempts on retryable (network/timeout) errors. Default 3. */
@@ -377,10 +389,42 @@ export interface AggkitErrorBody {
  * activity-passthrough implementation these types support.
  */
 
-/** Config for the multi-network aggregator: one aggkit base URL per L2 networkId. */
+/**
+ * Config for the multi-network aggregator.
+ *
+ * The two URL fields address **two different aggkit services**, and are not
+ * interchangeable:
+ *
+ * - `networks` is a per-network map of **bridge service** roots. Every
+ *   bridge-service call (`/bridge/v1/...`: bridges, claims, claim-proof,
+ *   token-mappings, l1-info-tree-index) is routed by networkId through this
+ *   map.
+ * - `aggkitProxyUrl` is the single **bridge tracker** root (`/tracker/v1`).
+ *   The tracker is one service with a cross-network view: it scans every
+ *   bridge service it is itself configured with and answers for all of them
+ *   from one endpoint. There is nothing per-network to route here, so it is
+ *   one URL, not a map — and it is required rather than derived from
+ *   `networks`, because a bridge-service root does not serve `/tracker/v1`
+ *   (the tracker is its own binary on its own port unless an aggkit-proxy
+ *   fronts both).
+ */
 export interface AggkitAggregatorConfig {
-  /** Map of L2 networkId -> aggkit REST base URL (no `/bridge/v1` suffix). */
+  /**
+   * Map of L2 networkId -> **bridge service** REST base URL (no `/bridge/v1`
+   * suffix). Bridge-service calls only; the tracker is not reachable here.
+   */
   networks: Record<number, string>;
+  /**
+   * Root URL of the aggkit-proxy (or any origin fronting the bridge
+   * tracker) that serves `/tracker/v1` — given WITHOUT the `/tracker/v1`
+   * suffix. Backs `getActivity` and `getBridgeTracking`.
+   *
+   * Required: the tracker is a distinct service, so it cannot be inferred
+   * from `networks`. When aggkit-proxy fronts everything this is simply the
+   * same origin as the `networks` values; when the tracker runs standalone
+   * it is that binary's own host:port.
+   */
+  aggkitProxyUrl: string;
   timeout?: number;
   retries?: number;
   retryDelay?: number;
