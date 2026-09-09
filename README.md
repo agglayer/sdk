@@ -389,10 +389,22 @@ unrelated deposit, with no error raised anywhere. There is no
 deprecated, so a stale call site fails to compile instead of mis-routing at
 runtime.
 
-**Minimum supported aggkit: v0.11.0-rc6.** Earlier releases (rc4/rc5) are not
-supported — this SDK does not attempt to classify their wire shapes, and a
-deployment on rc4/rc5 will see a genuine failure (`AggkitApiError`) for any
-not-ready state these endpoints report. On the supported floor, the client
+**Minimum supported aggkit: v0.11.0-rc9.** rc6 is the floor for the not-ready
+classification described in this section only. This module also depends on
+the tracker's activity endpoint (`getActivity`, `/tracker/v1/activity/from/{from_address}`),
+which raises the effective floor further: that route did not exist before
+rc8 (rc6/rc7 return a plain 404 for it), and `claim_status` on both the
+activity rows and `AggkitTrackingData` did not land until
+agglayer/aggkit#1829/#1831 — #1831's merge commit **is** the rc9 tag. On
+rc8, `claim_status` is `undefined` at runtime despite being declared
+required, so a `claim_status === 'readyToClaim'` filter (as this README
+instructs) silently returns zero rows forever, with no error raised
+anywhere. The effective minimum for this SDK is therefore **v0.11.0-rc9**.
+Earlier releases (rc4/rc5) are not supported for the not-ready
+classification below either — this SDK does not attempt to classify their
+wire shapes, and a deployment on rc4/rc5 will see a genuine failure
+(`AggkitApiError`) for any not-ready state these endpoints report. On the
+rc6+ floor for that classification, the client
 absorbs aggkit's not-ready wire shapes across `/l1-info-tree-index`,
 `/injected-l1-info-leaf`, and `/claim-proof` into the same stable
 `AggkitNotReadyReason` values — a 404 with a fixed not-ready prose, or a 503

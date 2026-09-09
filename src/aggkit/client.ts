@@ -754,7 +754,7 @@ export class AggkitBridgeClient {
     // address (swagger: `type: array, items: integer`), not the hex string
     // the caller already has — deliberately dropped from the return value,
     // it is redundant with `params.fromAddress` and useless as returned.
-    const raw = JSON.parse(text) as AggkitActivityResult & {
+    const raw = JSON.parse(quoteGlobalIndex(text)) as AggkitActivityResult & {
       from_address: number[];
     };
     return { bridges: raw.bridges, warnings: raw.warnings ?? [] };

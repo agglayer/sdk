@@ -322,8 +322,7 @@ export interface AggkitClaimInputsNotReady {
 }
 
 export type AggkitClaimInputsResult =
-  | AggkitClaimInputsReady
-  | AggkitClaimInputsNotReady;
+  AggkitClaimInputsReady | AggkitClaimInputsNotReady;
 
 // ---- token mapping ----
 
@@ -452,7 +451,14 @@ export interface AggkitActivityBridge {
   destination_network: number;
   /** May be absent; do not trust for identity beyond sender display. */
   from_address?: string;
-  /** Already a JSON string on this endpoint (unlike `/bridges`' bare-number `global_index` — see `AggkitBridge`). */
+  /**
+   * Parsed from a bare JSON number, quoted before JSON.parse — see
+   * client.ts. `ActivityItem.Bridge` embeds `bridgeservicetypes.BridgeResponse`
+   * unmodified (`bridgetracker/api/activity_command.go:27-30`, `:149`), whose
+   * `GlobalIndex` is `*big.Int` (`bridgeservice/types/types.go:113`), so this
+   * field is the same bare number as `AggkitBridge.global_index`, not the
+   * already-quoted string on `AggkitActivityClaim`/`AggkitClaim`.
+   */
   global_index: string;
   /** 0 = asset, 1 = message. */
   leaf_type: number;
@@ -630,10 +636,7 @@ export interface AggkitTokenMetadata {
  * `tracking_status_string` companion.
  */
 export type AggkitTrackingStatus =
-  | 'registered'
-  | 'running'
-  | 'error'
-  | 'finished';
+  'registered' | 'running' | 'error' | 'finished';
 
 /**
  * `BridgeStatus.bridge_type`: bare string on the wire (fixture-confirmed,
@@ -693,9 +696,7 @@ export type AggkitStepStatus = 'pending' | 'inProgress' | 'done' | 'error';
 export type AggkitTrackerErrorType = 0 | 1 | 2;
 /** `ErrorStep.error_type_string`. */
 export type AggkitTrackerErrorTypeString =
-  | 'transient'
-  | 'permanent'
-  | 'exhausted';
+  'transient' | 'permanent' | 'exhausted';
 
 /**
  * `TrackingData.claim_status` (agglayer/aggkit#1823, PR #1829): a derived
@@ -719,12 +720,21 @@ export type AggkitTrackerErrorTypeString =
  *
  * No fixture yet captures this field (all `__fixtures__/tracker_*.json`
  * predate #1829).
+ *
+ * Version floor: `claim_status` landed via agglayer/aggkit#1829/#1831 on
+ * both `TrackingData` and `ActivityItem` — #1831's merge commit **is** the
+ * `v0.11.0-rc9` tag. On rc8 (the first release with the tracker's activity
+ * endpoint at all; rc6/rc7 return a plain 404 for that route), this field is
+ * `undefined` at runtime despite being declared required here, so a
+ * `claim_status === 'readyToClaim'` filter silently returns zero rows
+ * forever, with no error raised anywhere. The SDK's effective minimum
+ * supported aggkit version is therefore `v0.11.0-rc9`, not the `rc6` floor
+ * that applies to the unrelated not-ready-classification endpoints (see
+ * the "Minimum Supported aggkit Version" section of `index.ts`'s module
+ * doc).
  */
 export type AggkitClaimStatus =
-  | 'pending'
-  | 'readyToClaim'
-  | 'claimed'
-  | 'error';
+  'pending' | 'readyToClaim' | 'claimed' | 'error';
 
 /**
  * `CertificateData.status`: mapped from the agglayer proto (aggkit
@@ -735,11 +745,7 @@ export type AggkitClaimStatus =
 export type AggkitCertificateStatus = 0 | 1 | 2 | 3 | 4;
 /** `CertificateData.status_string`. */
 export type AggkitCertificateStatusString =
-  | 'Pending'
-  | 'Proven'
-  | 'Candidate'
-  | 'InError'
-  | 'Settled';
+  'Pending' | 'Proven' | 'Candidate' | 'InError' | 'Settled';
 
 // ---- shared structures ----
 
