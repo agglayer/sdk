@@ -42,8 +42,8 @@ type InjectedLeafResolution =
   // Was `kind: 'not-injected'` with the reason hard-coded to
   // `'DESTINATION_GER_NOT_INJECTED'` at the `getClaimInputs` call site. That
   // silently rewrote every other not-ready reason this endpoint can now answer
-  // with (`L1_INFO_LEAF_NOT_INDEXED`, `SYNCER_INCONSISTENT` — audit finding
-  // C2), telling consumers the destination had not injected the GER when the
+  // with (`L1_INFO_LEAF_NOT_INDEXED`, `SYNCER_INCONSISTENT`), telling
+  // consumers the destination had not injected the GER when the
   // wire said the opposite. `reason` must stay pass-through: this endpoint's
   // reason taxonomy lives in `client.ts`, not here.
   | { kind: 'not-ready'; reason: AggkitNotReadyReason; detail: string }
@@ -240,7 +240,7 @@ export class AggkitBridgeAggregator {
    * deposit landing on `destinationNetworkId`.
    *  - destinationNetworkId === 0  -> { resolved, sourceL1InfoTreeIndex } (no injection step)
    *  - destination client missing  -> { unknown } (caller keeps legacy behaviour)
-   *  - 404 "not injected"          -> { not-injected, detail }
+   *  - 404 "not injected"          -> { kind: 'not-ready', reason, detail }
    *  - 200                         -> { resolved, leaf.l1_info_tree_index }  // >= source index
    * Probe errors are NOT swallowed here; they propagate so callers can attribute them
    * to a failure of their own.
@@ -322,8 +322,9 @@ export class AggkitBridgeAggregator {
    * `Error` (with `.cause` set to the underlying network error) for a
    * transport failure after retries are exhausted — a transport failure does
    * NOT produce `AggkitApiError` (`httpRaw.ts`'s `fetchRawText` throws before
-   * any response ever reaches the code that constructs one; see audit
-   * finding C4) (comments 3847523270 / 3847600104).
+   * any response ever reaches the code that constructs one — see
+   * `AggkitApiError`'s class doc in `errors.ts`) (comments 3847523270 /
+   * 3847600104).
    *
    * `reason` is an OPEN union (`AggkitNotReadyReason`): branch with a
    * `default` that keeps polling, never with an exhaustive `assertNever`.
@@ -397,7 +398,7 @@ export class AggkitBridgeAggregator {
       // `resolution.reason` is passed through, NOT hard-coded: rc6+ answers
       // this endpoint with `L1_INFO_LEAF_NOT_INDEXED` and `SYNCER_INCONSISTENT`
       // as well as `DESTINATION_GER_NOT_INJECTED`, and on the first of those
-      // the GER *is* already injected (audit finding C2).
+      // the GER *is* already injected.
       return {
         claimable: false,
         reason: resolution.reason,

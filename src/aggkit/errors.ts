@@ -7,8 +7,8 @@
  * `code`/`name`/`details`), so this class carries `httpStatus` + `endpoint` +
  * the raw `body` instead.
  *
- * NOT thrown for a network/transport failure after retries are exhausted
- * (audit finding C4): `httpRaw.ts`'s `fetchRawText` throws a plain `Error`
+ * NOT thrown for a network/transport failure after retries are exhausted:
+ * `httpRaw.ts`'s `fetchRawText` throws a plain `Error`
  * (`{ cause: lastError }`) in that case, before any HTTP response ever
  * reaches the code that would construct an `AggkitApiError` — there is no
  * status code or body to carry. A caller distinguishing "aggkit answered
