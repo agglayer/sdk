@@ -583,9 +583,17 @@ export interface AggkitActivityItem {
    */
   errors?: Record<string, string>;
   /**
-   * Only present when the request set `includeTracking: true` AND the
-   * bridge is still unclaimed. Same shape `getBridgeTracking` returns for a
-   * single tx (both are the bridgetracker service's `TrackingData` DTO).
+   * Absent by default: `getActivity`'s `includeTracking` defaults to
+   * `false` (matching the tracker's own default), so most rows will NOT
+   * carry this field. Only present when the request explicitly set
+   * `includeTracking: true` AND the bridge is still unclaimed — and setting
+   * `includeTracking: true` is itself not free: it registers every
+   * still-unclaimed bridge in the result with the tracker's supervised list
+   * (see `getActivity`'s JSDoc in `client.ts`). `claim_status` already
+   * resolves `'pending'` vs. `'readyToClaim'` without this field, so treat
+   * `tracking` as opt-in step-level detail, not something to request by
+   * default. Same shape `getBridgeTracking` returns for a single tx (both
+   * are the bridgetracker service's `TrackingData` DTO).
    */
   tracking?: AggkitTrackingData;
 }

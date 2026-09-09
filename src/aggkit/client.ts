@@ -732,11 +732,16 @@ export class AggkitBridgeClient {
    * the tracker root (`trackerBaseUrl`, defaulting to `baseUrl`) and ignores
    * this client's `networkId` entirely.
    *
-   * `includeTracking` defaults to `true` — almost every consumer needs the
-   * per-row `AggkitTrackingData` to tell a merely-pending deposit apart from
-   * one that is actually ready to claim (see `AggkitActivityItem.tracking`'s
-   * doc). Pass `false` for a lighter response when tracking detail isn't
-   * needed.
+   * `includeTracking` defaults to `false`, matching the tracker's own
+   * default (`bridgetracker/api/activity_command.go:88-90`). Passing `true`
+   * is NOT a free richer read: it registers every still-unclaimed bridge in
+   * the result with the tracker's supervised list, i.e. it is a
+   * server-side write triggered by what looks like a read. `claim_status`
+   * (see `AggkitClaimStatus`) already resolves the `'pending'` vs.
+   * `'readyToClaim'` distinction server-side even with `includeTracking:
+   * false` — see `AggkitActivityItem.claim_status`'s doc — so the per-row
+   * `AggkitTrackingData` under `tracking` is opt-in step-level detail for
+   * consumers that need it, not something most callers must request.
    *
    * See `AggkitActivityResult`'s module doc in `types.ts` for the full
    * contract (no pagination — `bridges` is the address's entire history in
@@ -747,7 +752,7 @@ export class AggkitBridgeClient {
     fromAddress: string;
     includeTracking?: boolean;
   }): Promise<AggkitActivityResult> {
-    const includeTracking = params.includeTracking ?? true;
+    const includeTracking = params.includeTracking ?? false;
     const query = this.buildQuery({ includeTracking });
     const url = `${this.trackerApiUrl}/activity/from/${encodeURIComponent(params.fromAddress)}?${query}`;
     const { status, text } = await fetchRawText(url, this.fetchConfig);
