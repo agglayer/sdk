@@ -40,11 +40,13 @@ const MAX_NETWORK_IDS = 5;
 /**
  * `/l1-info-tree-index` not-ready detection (comment 3862896539).
  *
- * **Minimum supported aggkit: v0.11.0-rc6.** rc4/rc5 support was dropped by
- * explicit product decision (see the S19 step note in
- * `plans/sdk-pr28-scratch.md`) — this SDK does not attempt to classify
- * rc4/rc5's wire shapes, and a deployment on rc4/rc5 will see a genuine
- * failure on any not-ready state this endpoint reports.
+ * **Minimum supported aggkit for this not-ready classification: v0.11.0-rc6**
+ * (the module-wide floor this SDK now requires is v0.11.0-rc9 — see
+ * `AggkitClaimStatus`, `index.ts`, and `README.md` — but rc6 is the earliest
+ * version whose `/l1-info-tree-index` wire shapes this function classifies).
+ * rc4/rc5 support was dropped by explicit product decision — this SDK does
+ * not attempt to classify rc4/rc5's wire shapes, and a deployment on rc4/rc5
+ * will see a genuine failure on any not-ready state this endpoint reports.
  *
  * On the supported floor (verified: `v0.11.0-rc6`, aggkit #1794 —
  * `httpStatusForSyncerError`, `bridge.go:1764-1786`, wired in via
@@ -71,13 +73,13 @@ const MAX_NETWORK_IDS = 5;
  * BRIDGED forever with no `failedNetworks` entry and no visible error.
  *
  * HISTORY: a rc4/rc5 500-body branch (`L1_INFO_TREE_INDEX_LEGACY_BARE_NOT_FOUND`)
- * previously matched a bare `db.ErrNotFound` 500 body as not-ready (audit
- * finding C1) to keep rc4/rc5 working. That branch, and the rc4/rc5 support it
- * existed for, were removed once the product decision fixed the floor at
- * rc6+ — see the S19 scratch-note entry. `L1_INFO_TREE_INDEX_NOT_READY_PATTERNS`
- * below is now gated to status 404 only; a 500 with either phrase (which can
- * happen only if a nested error chain happens to contain it) is a genuine
- * fault and throws, same as any other 500.
+ * previously matched a bare `db.ErrNotFound` 500 body as not-ready, to keep
+ * rc4/rc5 working. That branch, and the rc4/rc5 support it existed for, were
+ * removed once the product decision fixed the floor at rc6+.
+ * `L1_INFO_TREE_INDEX_NOT_READY_PATTERNS` below is now gated to status 404
+ * only; a 500 with either phrase (which can happen only if a nested error
+ * chain happens to contain it) is a genuine fault and throws, same as any
+ * other 500.
  */
 const L1_INFO_TREE_INDEX_NOT_READY_PATTERNS = [
   // rc6+ only (404, via ErrNotOnL1Info) — bridge.go:87.
@@ -127,7 +129,8 @@ const AGGKIT_PROXY_ROUTING_FAILURE_PATTERN =
  * (`bridge.go:1099-1101`; rc5 `:1083-1084`). A blanket "503 means not-ready"
  * would silently turn a misconfigured aggkit into "keep polling forever".
  *
- * See the 503 DECISION note on `SYNCER_INCONSISTENT` in `types.ts`.
+ * See `AggkitNotReadyReason`'s `SYNCER_INCONSISTENT` member doc in
+ * `types.ts` for the full not-ready-vs-throw rationale (comment 3862896539).
  */
 const SYNCER_INCONSISTENT_PATTERN = 'a syncer is temporarily inconsistent';
 
@@ -150,7 +153,7 @@ const SYNCER_INCONSISTENT_PATTERN = 'a syncer is temporarily inconsistent';
  * | `L1_INFO_LEAF_NOT_INDEXED` | `l1infotreesync has not indexed l1 info tree leaf index %d yet (already injected on L2 per l2gersync), retry later` | rc6 `:916-917` (rc6+ ONLY — rc5 answered 500 at `:909-913`) |
  * | `L1_INFO_LEAF_NOT_INDEXED` | `l1infotreesync has not indexed l1 info tree leaf index %d yet, retry later` | rc6 `:931` (rc6+ ONLY — rc5 answered 500 at `:923-928`) |
  *
- * Audit finding C2: `54c10b9` migrated only `/l1-info-tree-index`, so the two
+ * `54c10b9` migrated only `/l1-info-tree-index`, so the two
  * rc6 404s above (and the 503) all threw `AggkitApiError`. The first of them is
  * an ordinary, transient, seconds-to-minutes window on any L2->L2 deposit whose
  * GER *is* injected but whose L1-info leaf `l1infotreesync` has not caught up
@@ -165,7 +168,7 @@ const SYNCER_INCONSISTENT_PATTERN = 'a syncer is temporarily inconsistent';
  * caller cannot reintroduce the throw.
  *
  * Minimum supported aggkit: v0.11.0-rc6 (rc4/rc5 support dropped by explicit
- * product decision — see the S19 scratch-note entry). None of these three
+ * product decision). None of these three
  * patterns can be dropped while rc6+ is the deployable target: `not injected`
  * is the unchanged primary case, the other two are the rc6+ `respondSyncerError`
  * additions.
@@ -203,7 +206,7 @@ const INJECTED_L1_INFO_LEAF_NOT_READY_PATTERNS: ReadonlyArray<{
  * single wire state as far as a consumer is concerned, so they map to ONE
  * reason (`CLAIM_PROOF_NOT_AVAILABLE`) and the exact prose travels in `detail`.
  *
- * Audit finding C3: before this, `getClaimProof` called `assertOk`, so all five
+ * Before this, `getClaimProof` called `assertOk`, so all five
  * (plus the 503) threw. `/claim-proof` is the LAST call `getClaimInputs` makes
  * — the source is settled and the destination has injected — so throwing there
  * rendered a hard failure for a transient wait. This activates the not-ready
@@ -214,7 +217,7 @@ const INJECTED_L1_INFO_LEAF_NOT_READY_PATTERNS: ReadonlyArray<{
  * fault (`respondSyncerError`'s `internalMsg`), so it must keep throwing.
  *
  * Minimum supported aggkit: v0.11.0-rc6 (rc4/rc5 support dropped by explicit
- * product decision — see the S19 scratch-note entry). This pattern is the
+ * product decision). This pattern is the
  * rc6+ shape and stays as long as rc6+ is the deployable target; it can be
  * deleted only if aggkit stops classifying these as 404.
  */
@@ -253,7 +256,18 @@ export class AggkitBridgeClient {
     this.networkId = config.networkId;
     this.rootUrl = stripTrailingSlashes(config.baseUrl);
     this.bridgeApiUrl = `${this.rootUrl}/bridge/v1`;
-    this.trackerApiUrl = `${this.rootUrl}/tracker/v1`;
+    // The bridge service (`/bridge/v1`) and the bridge tracker
+    // (`/tracker/v1`) are two separate aggkit services — separate binaries
+    // on separate ports unless an aggkit-proxy fronts both — so the tracker
+    // gets its own root. Falling back to `baseUrl` preserves the
+    // single-URL behaviour this client shipped with, and is correct only
+    // behind such a proxy; pointed straight at a bridge service, every
+    // `/tracker/v1` route 404s. (The tracker's `/tracker/v1/activity` route
+    // is additionally opt-in server-side and 404s when the tracker is
+    // configured without activity scanning/claims.)
+    this.trackerApiUrl = `${stripTrailingSlashes(
+      config.trackerBaseUrl ?? config.baseUrl
+    )}/tracker/v1`;
     this.fetchConfig = {
       timeout: config.timeout ?? DEFAULT_TIMEOUT,
       retries: config.retries ?? DEFAULT_RETRIES,
@@ -327,8 +341,8 @@ export class AggkitBridgeClient {
    *   Carried as a **404** (aggkit #1794 remapped this endpoint's statuses —
    *   comment 3862896539). See `L1_INFO_TREE_INDEX_NOT_READY_PATTERNS`.
    * - `'SYNCER_INCONSISTENT'` — the syncer is halted resolving a reorg (503).
-   *   See `SYNCER_INCONSISTENT_PATTERN` and the DECISION note on this reason
-   *   in `types.ts`.
+   *   See `SYNCER_INCONSISTENT_PATTERN` and `AggkitNotReadyReason`'s
+   *   `SYNCER_INCONSISTENT` member doc in `types.ts` for the full rationale.
    *
    * Any genuine failure — a non-numeric 2xx body, an unmatched 404/503, ANY
    * 500 (unconditionally a genuine fault on this endpoint's minimum
@@ -419,7 +433,7 @@ export class AggkitBridgeClient {
    *
    * Returns `AggkitProbeResult`. The `ready: false` arm — the slot design
    * §2.2/§2.6 reserved and `54c10b9` left unactivated — is now LIVE for
-   * aggkit v0.11.0-rc6+ (audit finding C3):
+   * aggkit v0.11.0-rc6+:
    *
    * - `'CLAIM_PROOF_NOT_AVAILABLE'` — rc6+ only: **404** with one of the five
    *   fixed `"... has not indexed ..."` bodies `ClaimProofHandler` routes
@@ -503,11 +517,11 @@ export class AggkitBridgeClient {
    *
    * - **404** `'DESTINATION_GER_NOT_INJECTED'` — the destination has not
    *   injected a GER at or after this index yet.
-   * - **404** `'L1_INFO_LEAF_NOT_INDEXED'` (audit finding C2) —
+   * - **404** `'L1_INFO_LEAF_NOT_INDEXED'` —
    *   `l1infotreesync` has not indexed the L1-info-tree leaf yet; on the first
    *   of its two bodies the GER *is* already injected on L2. See
    *   `INJECTED_L1_INFO_LEAF_NOT_READY_PATTERNS` for both bodies and sites.
-   * - **503** `'SYNCER_INCONSISTENT'` (audit finding C2) — a syncer is halted
+   * - **503** `'SYNCER_INCONSISTENT'` — a syncer is halted
    *   resolving a reorg. See `SYNCER_INCONSISTENT_PATTERN`.
    *
    * Every other non-2xx throws `AggkitApiError` — including any other 404 (the
@@ -717,15 +731,20 @@ export class AggkitBridgeClient {
    * with server-side, so this ONE request returns a unified, deduped,
    * already-claim-checked list across every configured network — unlike
    * `getBridges`/`getClaims` above (which only ever answer for THIS client's
-   * own single network), this method is not network-scoped: any configured
-   * network's client answers identically (`AggkitBridgeAggregator.getActivity`
-   * relies on exactly this to pick just one).
+   * own single network), this method is not network-scoped at all: it hits
+   * the tracker root (`trackerBaseUrl`, defaulting to `baseUrl`) and ignores
+   * this client's `networkId` entirely.
    *
-   * `includeTracking` defaults to `true` — almost every consumer needs the
-   * per-row `AggkitTrackingData` to tell a merely-pending deposit apart from
-   * one that is actually ready to claim (see `AggkitActivityItem.tracking`'s
-   * doc). Pass `false` for a lighter response when tracking detail isn't
-   * needed.
+   * `includeTracking` defaults to `false`, matching the tracker's own
+   * default (`bridgetracker/api/activity_command.go:88-90`). Passing `true`
+   * is NOT a free richer read: it registers every still-unclaimed bridge in
+   * the result with the tracker's supervised list, i.e. it is a
+   * server-side write triggered by what looks like a read. `claim_status`
+   * (see `AggkitClaimStatus`) already resolves the `'pending'` vs.
+   * `'readyToClaim'` distinction server-side even with `includeTracking:
+   * false` — see `AggkitActivityItem.claim_status`'s doc — so the per-row
+   * `AggkitTrackingData` under `tracking` is opt-in step-level detail for
+   * consumers that need it, not something most callers must request.
    *
    * See `AggkitActivityResult`'s module doc in `types.ts` for the full
    * contract (no pagination — `bridges` is the address's entire history in
@@ -736,7 +755,7 @@ export class AggkitBridgeClient {
     fromAddress: string;
     includeTracking?: boolean;
   }): Promise<AggkitActivityResult> {
-    const includeTracking = params.includeTracking ?? true;
+    const includeTracking = params.includeTracking ?? false;
     const query = this.buildQuery({ includeTracking });
     const url = `${this.trackerApiUrl}/activity/from/${encodeURIComponent(params.fromAddress)}?${query}`;
     const { status, text } = await fetchRawText(url, this.fetchConfig);
@@ -750,12 +769,23 @@ export class AggkitBridgeClient {
       });
     }
 
-    // `from_address` on the wire is a byte-array echo of the requested
-    // address (swagger: `type: array, items: integer`), not the hex string
-    // the caller already has — deliberately dropped from the return value,
-    // it is redundant with `params.fromAddress` and useless as returned.
-    const raw = JSON.parse(text) as AggkitActivityResult & {
-      from_address: number[];
+    // `from_address` on the wire is a hex string, not a byte array: the
+    // top-level `ActivityResponse.FromAddress` field is a `common.Address`,
+    // which marshals via `MarshalText` to `"0x..."` — swagger's `type:
+    // array, items: integer` is swag's rendering of the underlying
+    // `[20]byte`, not the actual JSON. It is deliberately dropped from the
+    // return value here (redundant with `params.fromAddress`, and it is
+    // lowercased on the wire while the caller's own casing is preserved).
+    // Note the encoding is NOT uniform across this response: the nested
+    // `bridge.from_address` preserves the original mixed case, and
+    // `claim.from_address` is always `""` (see `AggkitActivityClaim`).
+    //
+    // This endpoint embeds `bridgeservicetypes.BridgeResponse` unmodified
+    // (neither it nor `ActivityItem` defines a custom `MarshalJSON`), so its
+    // `global_index` is the same bare `*big.Int` as `/bridges` and needs the
+    // same pre-quoting as `getBridges`/`getClaims` above.
+    const raw = JSON.parse(quoteGlobalIndex(text)) as AggkitActivityResult & {
+      from_address: string;
     };
     return { bridges: raw.bridges, warnings: raw.warnings ?? [] };
   }

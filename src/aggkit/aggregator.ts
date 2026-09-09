@@ -42,17 +42,51 @@ type InjectedLeafResolution =
   // Was `kind: 'not-injected'` with the reason hard-coded to
   // `'DESTINATION_GER_NOT_INJECTED'` at the `getClaimInputs` call site. That
   // silently rewrote every other not-ready reason this endpoint can now answer
-  // with (`L1_INFO_LEAF_NOT_INDEXED`, `SYNCER_INCONSISTENT` — audit finding
-  // C2), telling consumers the destination had not injected the GER when the
+  // with (`L1_INFO_LEAF_NOT_INDEXED`, `SYNCER_INCONSISTENT`), telling
+  // consumers the destination had not injected the GER when the
   // wire said the opposite. `reason` must stay pass-through: this endpoint's
   // reason taxonomy lives in `client.ts`, not here.
   | { kind: 'not-ready'; reason: AggkitNotReadyReason; detail: string }
   | { kind: 'unknown'; reason: string }; // no client for destination
 
 export class AggkitBridgeAggregator {
+  /**
+   * One client per configured L2 networkId, each bound to that network's
+   * **bridge service** (`/bridge/v1`). Every bridge-service call is routed
+   * through this map by networkId.
+   */
   private readonly clients: Map<number, AggkitBridgeClient>;
 
+  /**
+   * The **bridge tracker** client (`/tracker/v1`) — a different aggkit
+   * service from the bridge services in `clients`, and a singular one: the
+   * tracker holds the cross-network view itself and answers for every bridge
+   * service it is configured with from one endpoint. It is therefore built
+   * from `config.aggkitProxyUrl`, not from `config.networks`, and its
+   * `networkId` is a placeholder: `getActivity` is not network-scoped, and
+   * `getBridgeTracking` always passes the network explicitly in the path.
+   *
+   * `undefined` only when a non-TypeScript caller omits the (required)
+   * `aggkitProxyUrl`; `getActivity` turns that into an explicit error rather
+   * than a malformed URL.
+   */
+  private readonly trackerClient: AggkitBridgeClient | undefined;
+
   constructor(config: AggkitAggregatorConfig) {
+    const fetchOpts = {
+      ...(config.timeout !== undefined ? { timeout: config.timeout } : {}),
+      ...(config.retries !== undefined ? { retries: config.retries } : {}),
+      ...(config.retryDelay !== undefined
+        ? { retryDelay: config.retryDelay }
+        : {}),
+    };
+
+    const trackerBaseUrl =
+      typeof config.aggkitProxyUrl === 'string' &&
+      config.aggkitProxyUrl.trim() !== ''
+        ? config.aggkitProxyUrl
+        : undefined;
+
     this.clients = new Map();
     for (const [key, baseUrl] of Object.entries(config.networks)) {
       const networkId = Number(key);
@@ -61,14 +95,24 @@ export class AggkitBridgeAggregator {
         new AggkitBridgeClient({
           baseUrl,
           networkId,
-          ...(config.timeout !== undefined ? { timeout: config.timeout } : {}),
-          ...(config.retries !== undefined ? { retries: config.retries } : {}),
-          ...(config.retryDelay !== undefined
-            ? { retryDelay: config.retryDelay }
-            : {}),
+          // Tracker routes on a per-network client (`getBridgeTracking`)
+          // must still go to the ONE tracker service, not to that network's
+          // bridge service, which has no `/tracker/v1`.
+          ...(trackerBaseUrl !== undefined ? { trackerBaseUrl } : {}),
+          ...fetchOpts,
         })
       );
     }
+
+    this.trackerClient =
+      trackerBaseUrl === undefined
+        ? undefined
+        : new AggkitBridgeClient({
+            baseUrl: trackerBaseUrl,
+            trackerBaseUrl,
+            networkId: 0,
+            ...fetchOpts,
+          });
   }
 
   /** Returns the single-network client for `networkId`; throws if unconfigured. */
@@ -139,13 +183,21 @@ export class AggkitBridgeAggregator {
    * `AggkitBridgeClient.getActivity`, i.e. aggkit's bridgetracker
    * `GET /tracker/v1/activity/from/{from_address}`. That endpoint already
    * fans out server-side across every bridge service the tracker is
-   * configured with, so any ONE configured network's client answers this
-   * identically — the tracker component itself, not any one bridge-service,
-   * owns the cross-network view. Every configured client is tried in order
-   * (PR #33 review) until one succeeds, so a single temporarily-unreachable
-   * instance doesn't fail the call when another configured instance could
-   * have answered the identical tracker request; this rejects only once
-   * every configured client has failed (or none are configured).
+   * configured with, so the tracker component itself — not any one bridge
+   * service — owns the cross-network view.
+   *
+   * It therefore goes to `config.aggkitProxyUrl` (the tracker root), NOT
+   * through `config.networks` (bridge-service roots), and issues exactly ONE
+   * request. It used to loop over every configured network's client until
+   * one succeeded. That loop was removed with the introduction of the
+   * required, singular `aggkitProxyUrl`: it only ever looked like failover
+   * because each per-network client silently derived its own
+   * `<baseUrl>/tracker/v1`, i.e. it retried against N *guesses* at where the
+   * one tracker lives, all of them wrong unless every network URL was
+   * already the same proxy. With the tracker addressed explicitly there is
+   * one endpoint and nothing to fail over to, so an `AggkitApiError` from
+   * the tracker (a deterministic `400`, say) propagates unchanged instead of
+   * being replayed per network and rewrapped in a plain `Error`.
    *
    * REPLACES the client-side `/bridge/v1` fan-out (`getBridges` x2 +
    * `getClaims` x2 per configured network, plus per-row `/l1-info-tree-index`
@@ -165,40 +217,22 @@ export class AggkitBridgeAggregator {
     fromAddress: string;
     includeTracking?: boolean;
   }): Promise<AggkitActivityResult> {
-    const networkIds = this.listNetworkIds();
-    if (networkIds.length === 0) {
+    // Precondition is a configured tracker, NOT a configured network: this
+    // call does not touch `networks` at all (it was previously guarded on
+    // `networks` being non-empty only because it borrowed a bridge-service
+    // client to reach the tracker). `aggkitProxyUrl` is required by the
+    // type, so this can only trip a caller that isn't type-checked.
+    if (this.trackerClient === undefined) {
       throw new Error(
-        'AggkitBridgeAggregator.getActivity: no networks configured'
+        'AggkitBridgeAggregator.getActivity: no `aggkitProxyUrl` configured. ' +
+          'The bridge tracker (`/tracker/v1`) is a separate service from the ' +
+          'bridge services in `networks` and must be given its own root URL.'
       );
     }
 
-    const failures: Array<{ networkId: number; error: unknown }> = [];
-    for (const networkId of networkIds) {
-      try {
-        return await this.clientFor(networkId).getActivity(params);
-      } catch (error) {
-        failures.push({ networkId, error });
-      }
-    }
-
-    // A single configured network propagates its failure as-is (preserving
-    // `instanceof AggkitApiError` etc. for callers) — the "all networks
-    // failed" summary below only kicks in once there is more than one
-    // failure to summarize, since no single error type could represent it.
-    const [onlyFailure] = failures;
-    if (onlyFailure !== undefined && failures.length === 1) {
-      throw onlyFailure.error;
-    }
-
-    throw new Error(
-      `AggkitBridgeAggregator.getActivity: all configured networks failed: ` +
-        failures
-          .map(
-            ({ networkId, error }) =>
-              `${networkId}: ${error instanceof Error ? error.message : String(error)}`
-          )
-          .join('; ')
-    );
+    // One request, and errors propagate verbatim — an `AggkitApiError` stays
+    // an `AggkitApiError` for the caller.
+    return this.trackerClient.getActivity(params);
   }
 
   /**
@@ -206,7 +240,7 @@ export class AggkitBridgeAggregator {
    * deposit landing on `destinationNetworkId`.
    *  - destinationNetworkId === 0  -> { resolved, sourceL1InfoTreeIndex } (no injection step)
    *  - destination client missing  -> { unknown } (caller keeps legacy behaviour)
-   *  - 404 "not injected"          -> { not-injected, detail }
+   *  - 404 "not injected"          -> { kind: 'not-ready', reason, detail }
    *  - 200                         -> { resolved, leaf.l1_info_tree_index }  // >= source index
    * Probe errors are NOT swallowed here; they propagate so callers can attribute them
    * to a failure of their own.
@@ -288,8 +322,9 @@ export class AggkitBridgeAggregator {
    * `Error` (with `.cause` set to the underlying network error) for a
    * transport failure after retries are exhausted — a transport failure does
    * NOT produce `AggkitApiError` (`httpRaw.ts`'s `fetchRawText` throws before
-   * any response ever reaches the code that constructs one; see audit
-   * finding C4) (comments 3847523270 / 3847600104).
+   * any response ever reaches the code that constructs one — see
+   * `AggkitApiError`'s class doc in `errors.ts`) (comments 3847523270 /
+   * 3847600104).
    *
    * `reason` is an OPEN union (`AggkitNotReadyReason`): branch with a
    * `default` that keeps polling, never with an exhaustive `assertNever`.
@@ -363,7 +398,7 @@ export class AggkitBridgeAggregator {
       // `resolution.reason` is passed through, NOT hard-coded: rc6+ answers
       // this endpoint with `L1_INFO_LEAF_NOT_INDEXED` and `SYNCER_INCONSISTENT`
       // as well as `DESTINATION_GER_NOT_INJECTED`, and on the first of those
-      // the GER *is* already injected (audit finding C2).
+      // the GER *is* already injected.
       return {
         claimable: false,
         reason: resolution.reason,
@@ -474,12 +509,23 @@ export class AggkitBridgeAggregator {
   /**
    * Bridge tracker lookup (aggkit `tracker/v1`,
    * `docs/bridgetracker/API.md`): registers (if not already) and returns
-   * `txHash`'s `AggkitTrackingData` from the aggkit instance serving
-   * `networkId`. Routes L1 (`networkId === 0`) through a configured L2
-   * instance, same as `getTokenMetadata` — L1 has no dedicated instance —
-   * and always passes `networkId` through explicitly to
-   * `AggkitBridgeClient.getBridgeTracking`'s URL path, since the routed-
-   * through L2 instance's own `networkId` is not 0.
+   * `txHash`'s `AggkitTrackingData`. Like `getActivity`, this is a tracker
+   * call, so it goes to `config.aggkitProxyUrl` via the same dedicated
+   * tracker client — it does NOT consult `networks`, and works on an
+   * aggregator configured with a tracker root and no networks at all.
+   * `networkId` is always passed explicitly in
+   * `AggkitBridgeClient.getBridgeTracking`'s URL path (including `0` for L1,
+   * which has no dedicated aggkit instance), never taken from any client's
+   * own `networkId`.
+   *
+   * Only when `aggkitProxyUrl` is absent or blank — which the type forbids,
+   * so only an un-type-checked caller — does this fall back to borrowing a
+   * configured network's client, preserving the pre-`aggkitProxyUrl`
+   * behaviour of deriving `/tracker/v1` from that network's bridge-service
+   * URL. That derivation is wrong unless the URL is a proxy fronting both
+   * services, so the fallback exists for compatibility, not because it is
+   * correct; `getActivity` refuses outright in the same situation because it
+   * has no per-network client to borrow at all.
    *
    * See `AggkitBridgeClient.getBridgeTracking` for terminal-state/polling
    * guidance, and the `AggkitTrackingData`/`AggkitBridgeStepPath` etc. type
@@ -493,7 +539,12 @@ export class AggkitBridgeAggregator {
     networkId: number,
     txHash: string
   ): Promise<AggkitTrackingData> {
-    const client = this.clientForNetworkOrL1(networkId);
+    // The tracker is one service, so prefer the dedicated tracker client and
+    // do not require `networks` to be populated for a call that never touches
+    // a bridge service. `clientForNetworkOrL1` is only the untyped-caller
+    // fallback (no/blank `aggkitProxyUrl`); it also throws when `networks` is
+    // empty, which is why it must not be the primary path.
+    const client = this.trackerClient ?? this.clientForNetworkOrL1(networkId);
     return client.getBridgeTracking(txHash, networkId);
   }
 }

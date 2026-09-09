@@ -328,7 +328,8 @@ describe('AggkitBridgeClient', () => {
       }
     });
 
-    // FLOOR DECISION (supersedes audit finding C1's fix in commit 60d7407).
+    // FLOOR DECISION (supersedes the rc4/rc5 bare-not-found-as-not-ready fix
+    // in commit 60d7407).
     // rc4/rc5 support was dropped by explicit product decision — this SDK's
     // minimum supported aggkit is now v0.11.0-rc6. This fixture is
     // LIVE-CAPTURED from a devnet that was running rc4/rc5, where this exact
@@ -343,7 +344,7 @@ describe('AggkitBridgeClient', () => {
     // deleted, precisely so this decision is codified and visible rather than
     // silently dropped. Do NOT flip this back to not-ready without first
     // restoring rc4/rc5 as a supported target.
-    it('throws AggkitApiError — rc4/rc5 are NOT a supported aggkit target — for the bare "not found" 500 body (l1_info_tree_index_network1_error.json, live-captured from an rc4/rc5 devnet): a 500 on this endpoint is unconditionally a genuine fault on the supported v0.11.0-rc6+ floor (supersedes audit finding C1 / commit 60d7407)', async () => {
+    it('throws AggkitApiError — rc4/rc5 are NOT a supported aggkit target — for the bare "not found" 500 body (l1_info_tree_index_network1_error.json, live-captured from an rc4/rc5 devnet): a 500 on this endpoint is unconditionally a genuine fault on the supported v0.11.0-rc6+ floor (supersedes the rc4/rc5 bare-not-found-as-not-ready fix, commit 60d7407)', async () => {
       mockFetchOnce(loadFixture('l1_info_tree_index_network1_error.json'), 500);
 
       await expect(
@@ -570,7 +571,7 @@ describe('AggkitBridgeClient', () => {
         'claim_proof_rc6_rollup_exit_tree_not_indexed_404.json',
       ],
     ])(
-      "returns { ready: false, reason: 'CLAIM_PROOF_NOT_AVAILABLE' } — NOT a throw — for the rc6 404 not-ready body: %s (audit finding C3)",
+      "returns { ready: false, reason: 'CLAIM_PROOF_NOT_AVAILABLE' } — NOT a throw — for the rc6 404 not-ready body: %s",
       async (_label, fixture) => {
         mockFetchOnce(loadFixture(fixture), 404);
 
@@ -623,7 +624,7 @@ describe('AggkitBridgeClient', () => {
         'L2 bridge syncer is not available',
       ],
     ])(
-      "throws AggkitApiError for /claim-proof's GENUINE-FAULT 503 — %s — which must never be read as not-ready (audit finding C3)",
+      "throws AggkitApiError for /claim-proof's GENUINE-FAULT 503 — %s — which must never be read as not-ready",
       async (_label, fixture, message) => {
         mockFetchOnce(loadFixture(fixture), 503);
 
@@ -770,7 +771,7 @@ describe('AggkitBridgeClient', () => {
         'injected_l1_info_leaf_rc6_leaf_not_indexed_mainnet_404.json',
       ],
     ])(
-      "returns { ready: false, reason: 'L1_INFO_LEAF_NOT_INDEXED' } — NOT a throw — for the rc6 404 not-ready body: %s (audit finding C2)",
+      "returns { ready: false, reason: 'L1_INFO_LEAF_NOT_INDEXED' } — NOT a throw — for the rc6 404 not-ready body: %s",
       async (_label, fixture) => {
         mockFetchOnce(loadFixture(fixture), 404);
 
@@ -789,7 +790,7 @@ describe('AggkitBridgeClient', () => {
       }
     );
 
-    it("returns { ready: false, reason: 'SYNCER_INCONSISTENT' } for the rc6 503 on /injected-l1-info-leaf (injected_l1_info_leaf_rc6_syncer_inconsistent_503.json) — an ordinary destination-side reorg must not flood failedNetworks (audit finding C2)", async () => {
+    it("returns { ready: false, reason: 'SYNCER_INCONSISTENT' } for the rc6 503 on /injected-l1-info-leaf (injected_l1_info_leaf_rc6_syncer_inconsistent_503.json) — an ordinary destination-side reorg must not flood failedNetworks", async () => {
       mockFetchOnce(
         loadFixture('injected_l1_info_leaf_rc6_syncer_inconsistent_503.json'),
         503

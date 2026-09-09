@@ -257,6 +257,71 @@ const claimMessageTx = await bridge.buildClaimMessageFromHash(
 );
 ```
 
+### aggkit Module - Bridge Tracking & Activity
+
+The `AggkitBridgeAggregator` talks to two distinct aggkit services, each
+with its own root URL:
+
+- **Bridge service** (`/bridge/v1`) — one instance per L2 network.
+  `AggkitAggregatorConfig.networks` maps networkId -> that network's
+  bridge-service base URL. It answers per-network bridge/claim/token-mapping/
+  proof queries and has no cross-network view of its own.
+- **Bridge tracker** (`/tracker/v1`) — a **different aggkit service**: its
+  own binary on its own port unless an aggkit-proxy fronts both alongside
+  every bridge service. It already holds the cross-network view: it fans
+  out server-side across every bridge service it is itself configured with
+  and answers for all of them from ONE endpoint, so it is addressed by a
+  single URL, not a per-network map — `AggkitAggregatorConfig.aggkitProxyUrl`.
+  This field is **required** because it cannot be derived from `networks`
+  (a bridge-service root does not serve `/tracker/v1`). Its
+  `/tracker/v1/activity` route is also opt-in server-side: an aggkit
+  deployment that has not configured/enabled the tracker for a network
+  returns a plain 404 for it.
+
+```typescript
+import { AggkitBridgeAggregator } from '@agglayer/sdk';
+
+const aggregator = new AggkitBridgeAggregator({
+  networks: {
+    1101: 'https://zkevm-bridge-service.example.com', // per-network bridge service
+    1: 'https://ethereum-bridge-service.example.com',
+  },
+  // The bridge TRACKER — a separate aggkit service, not one of the URLs above.
+  aggkitProxyUrl: 'https://aggkit-tracker.example.com',
+});
+```
+
+Behind a single aggkit-proxy fronting everything, `aggkitProxyUrl` is simply
+the same origin as every `networks` value — see the "Multi-Network Proxy
+Configuration" example in `src/aggkit/index.ts`'s module doc for that
+topology.
+
+#### Cross-Network Activity
+
+```typescript
+// One request: the tracker fans out server-side across every configured
+// bridge service and returns the address's ENTIRE bridge history (no
+// pagination) in one unified, deduped, already-claim-checked list.
+const { bridges, warnings } = await aggregator.getActivity({
+  fromAddress: '0xFromAddress12345678901234567890123456789012345',
+});
+
+// Ready-to-claim bridges: filter on `claim_status`. This is resolved
+// server-side even without `includeTracking: true`.
+const readyToClaim = bridges.filter(
+  (item) => item.claim_status === 'readyToClaim'
+);
+```
+
+`includeTracking` defaults to **`false`**, matching the tracker's own
+server-side default. Passing `includeTracking: true` is not simply a richer
+read — it **registers every still-unclaimed bridge in the result with the
+tracker's supervised list**, i.e. it is a server-side write triggered by
+what looks like a read. `claim_status` already resolves `'pending'` vs.
+`'readyToClaim'` without it, so reserve `includeTracking: true` for callers
+that specifically need the per-row step detail (`item.tracking`) that
+requires it.
+
 #### Bridge Transaction Tracking
 
 ```typescript
@@ -389,10 +454,22 @@ unrelated deposit, with no error raised anywhere. There is no
 deprecated, so a stale call site fails to compile instead of mis-routing at
 runtime.
 
-**Minimum supported aggkit: v0.11.0-rc6.** Earlier releases (rc4/rc5) are not
-supported — this SDK does not attempt to classify their wire shapes, and a
-deployment on rc4/rc5 will see a genuine failure (`AggkitApiError`) for any
-not-ready state these endpoints report. On the supported floor, the client
+**Minimum supported aggkit: v0.11.0-rc9.** rc6 is the floor for the not-ready
+classification described in this section only. This module also depends on
+the tracker's activity endpoint (`getActivity`, `/tracker/v1/activity/from/{from_address}`),
+which raises the effective floor further: that route did not exist before
+rc8 (rc6/rc7 return a plain 404 for it), and `claim_status` on both the
+activity rows and `AggkitTrackingData` did not land until
+agglayer/aggkit#1829/#1831 — #1831's merge commit **is** the rc9 tag. On
+rc8, `claim_status` is `undefined` at runtime despite being declared
+required, so a `claim_status === 'readyToClaim'` filter (as this README
+instructs) silently returns zero rows forever, with no error raised
+anywhere. The effective minimum for this SDK is therefore **v0.11.0-rc9**.
+Earlier releases (rc4/rc5) are not supported for the not-ready
+classification below either — this SDK does not attempt to classify their
+wire shapes, and a deployment on rc4/rc5 will see a genuine failure
+(`AggkitApiError`) for any not-ready state these endpoints report. On the
+rc6+ floor for that classification, the client
 absorbs aggkit's not-ready wire shapes across `/l1-info-tree-index`,
 `/injected-l1-info-leaf`, and `/claim-proof` into the same stable
 `AggkitNotReadyReason` values — a 404 with a fixed not-ready prose, or a 503
@@ -855,10 +932,23 @@ probes), paginated with an opaque cursor. It now does none of that: it is a
 thin passthrough to aggkit's bridgetracker
 `GET /tracker/v1/activity/from/{from_address}`, which already fans out
 server-side across every bridge service it is configured with and returns
-one unified, deduped, already-claim-checked list in a single request. Only
-ONE configured network's client is used (any one answers identically — the
-tracker component owns the cross-network view, not any single bridge
-service).
+one unified, deduped, already-claim-checked list in a single request. The
+tracker component owns the cross-network view, not any single bridge service.
+
+- **BREAKING: `AggkitAggregatorConfig.aggkitProxyUrl` is new and required.**
+  The tracker is a _different aggkit service_ from the bridge services in
+  `networks` (its own binary on its own port unless an aggkit-proxy fronts
+  both), so it gets its own root URL — one URL, not a per-network map, since
+  the tracker already answers for every network from one endpoint. Behind an
+  aggkit-proxy this is simply the same origin as the `networks` values.
+  Consequently `getActivity` issues exactly one request and no longer tries
+  each configured network in turn: that loop was never real failover, only N
+  guesses at where the single tracker lives (each per-network client derived
+  its own `<baseUrl>/tracker/v1`), and it rewrapped errors so an
+  `AggkitApiError` reached callers as a plain `Error`. Errors from the
+  tracker now propagate unchanged. `AggkitBridgeClientConfig` gains an
+  optional `trackerBaseUrl` for the same reason; omitted, it falls back to
+  `baseUrl`, which is correct only behind such a proxy.
 
 - **New signature and return shape.** `getActivity(params: { fromAddress:
 string; includeTracking?: boolean })` (no more `pageSize`/`cursor`/`order`)
@@ -882,9 +972,11 @@ AggkitActivityWarning[] }` — see its module doc in `types.ts` for the full
   already has to interpret this result for status display —
   agglayer-dev-ui's own `app/services/activity.ts` `deriveStatus` is one
   worked example).
-- **New**: `AggkitBridgeClient.getActivity` (single-network client method
-  the aggregator delegates to) is available directly for callers that want
-  to pick their own network explicitly instead of "any configured one."
+- **New**: `AggkitBridgeClient.getActivity` (the client method the aggregator
+  delegates to) is available directly for callers that already talk to one
+  aggkit origin and don't need the aggregator. It is not network-scoped —
+  it hits `trackerBaseUrl` (default `baseUrl`) and ignores the client's
+  `networkId`.
 
 ### `AggkitActivityItem.claimed` renamed to `claim_status`, revalued to the tracker's own vocabulary (agglayer/aggkit#1830, PR [#1831](https://github.com/agglayer/aggkit/pull/1831))
 

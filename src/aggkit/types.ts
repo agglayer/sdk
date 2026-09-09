@@ -16,6 +16,18 @@ export interface AggkitBridgeClientConfig {
   baseUrl: string;
   /** The L2 network id this aggkit instance serves. */
   networkId: number;
+  /**
+   * Root URL of the **bridge tracker** service — a DIFFERENT aggkit service
+   * from the bridge service `baseUrl` points at (own binary, own port unless
+   * something fronts both). Given WITHOUT `/tracker/v1`; the client appends
+   * it. Used by `getBridgeTracking` and `getActivity`.
+   *
+   * Defaults to `baseUrl` when omitted, which is correct ONLY when `baseUrl`
+   * is an aggkit-proxy (or other reverse proxy) that serves both
+   * `/bridge/v1` and `/tracker/v1` under one origin. Pointed straight at a
+   * bridge service, the tracker routes 404.
+   */
+  trackerBaseUrl?: string;
   /** Request timeout in ms. Default 30000 (matches `HttpClient`'s default). */
   timeout?: number;
   /** Max retry attempts on retryable (network/timeout) errors. Default 3. */
@@ -167,7 +179,7 @@ export type AggkitNotReadyReason =
    * the opposite of what the wire said.
    *
    * On rc4/rc5 the same condition arrived as a 500 and threw; rc6+ reclassifies
-   * it as 404 not-ready via `respondSyncerError` (audit finding C2). Transient,
+   * it as 404 not-ready via `respondSyncerError`. Transient,
    * self-resolving, seconds to minutes. Retry.
    */
   | 'L1_INFO_LEAF_NOT_INDEXED'
@@ -184,7 +196,7 @@ export type AggkitNotReadyReason =
    *
    * This is the member design §2.2/§2.6 reserved when `getClaimProof` was given
    * a union return with a deliberately unreachable not-ready arm; the arm is now
-   * reachable (audit finding C3). Retry.
+   * reachable. Retry.
    */
   | 'CLAIM_PROOF_NOT_AVAILABLE'
   /**
@@ -195,7 +207,7 @@ export type AggkitNotReadyReason =
    * (`aggkitsync.ErrInconsistentState`, `sync/evmdriver.go:18`; mapped to 503
    * by `httpStatusForSyncerError`, `bridgeservice/bridge.go:1774-1786`).
    *
-   * DECISION (S7, comment 3862896539): modelled as not-ready rather than as
+   * DECISION (comment 3862896539): modelled as not-ready rather than as
    * a genuine `AggkitApiError` throw, even though the condition is
    * syncer-wide rather than specific to this one deposit. Justification:
    * aggkit's own OpenAPI contract for this endpoint documents 503 with the
@@ -207,7 +219,7 @@ export type AggkitNotReadyReason =
    * for the duration of any ordinary reorg, which is a worse consumer
    * experience than a `default`-branch "not ready yet" while it clears.
    *
-   * EXTENDED (S16, audit findings C2/C3) from `/l1-info-tree-index` to all
+   * EXTENDED from `/l1-info-tree-index` to all
    * three claim-path endpoints, since `respondSyncerError` writes the same
    * fixed 503 body from all three handlers. The prose gate is load-bearing on
    * `/claim-proof`: that handler has two OTHER 503s
@@ -322,8 +334,7 @@ export interface AggkitClaimInputsNotReady {
 }
 
 export type AggkitClaimInputsResult =
-  | AggkitClaimInputsReady
-  | AggkitClaimInputsNotReady;
+  AggkitClaimInputsReady | AggkitClaimInputsNotReady;
 
 // ---- token mapping ----
 
@@ -378,10 +389,42 @@ export interface AggkitErrorBody {
  * activity-passthrough implementation these types support.
  */
 
-/** Config for the multi-network aggregator: one aggkit base URL per L2 networkId. */
+/**
+ * Config for the multi-network aggregator.
+ *
+ * The two URL fields address **two different aggkit services**, and are not
+ * interchangeable:
+ *
+ * - `networks` is a per-network map of **bridge service** roots. Every
+ *   bridge-service call (`/bridge/v1/...`: bridges, claims, claim-proof,
+ *   token-mappings, l1-info-tree-index) is routed by networkId through this
+ *   map.
+ * - `aggkitProxyUrl` is the single **bridge tracker** root (`/tracker/v1`).
+ *   The tracker is one service with a cross-network view: it scans every
+ *   bridge service it is itself configured with and answers for all of them
+ *   from one endpoint. There is nothing per-network to route here, so it is
+ *   one URL, not a map — and it is required rather than derived from
+ *   `networks`, because a bridge-service root does not serve `/tracker/v1`
+ *   (the tracker is its own binary on its own port unless an aggkit-proxy
+ *   fronts both).
+ */
 export interface AggkitAggregatorConfig {
-  /** Map of L2 networkId -> aggkit REST base URL (no `/bridge/v1` suffix). */
+  /**
+   * Map of L2 networkId -> **bridge service** REST base URL (no `/bridge/v1`
+   * suffix). Bridge-service calls only; the tracker is not reachable here.
+   */
   networks: Record<number, string>;
+  /**
+   * Root URL of the aggkit-proxy (or any origin fronting the bridge
+   * tracker) that serves `/tracker/v1` — given WITHOUT the `/tracker/v1`
+   * suffix. Backs `getActivity` and `getBridgeTracking`.
+   *
+   * Required: the tracker is a distinct service, so it cannot be inferred
+   * from `networks`. When aggkit-proxy fronts everything this is simply the
+   * same origin as the `networks` values; when the tracker runs standalone
+   * it is that binary's own host:port.
+   */
+  aggkitProxyUrl: string;
   timeout?: number;
   retries?: number;
   retryDelay?: number;
@@ -452,7 +495,14 @@ export interface AggkitActivityBridge {
   destination_network: number;
   /** May be absent; do not trust for identity beyond sender display. */
   from_address?: string;
-  /** Already a JSON string on this endpoint (unlike `/bridges`' bare-number `global_index` — see `AggkitBridge`). */
+  /**
+   * Parsed from a bare JSON number, quoted before JSON.parse — see
+   * client.ts. `ActivityItem.Bridge` embeds `bridgeservicetypes.BridgeResponse`
+   * unmodified (`bridgetracker/api/activity_command.go:27-30`, `:149`), whose
+   * `GlobalIndex` is `*big.Int` (`bridgeservice/types/types.go:113`), so this
+   * field is the same bare number as `AggkitBridge.global_index`, not the
+   * already-quoted string on `AggkitActivityClaim`/`AggkitClaim`.
+   */
   global_index: string;
   /** 0 = asset, 1 = message. */
   leaf_type: number;
@@ -481,8 +531,10 @@ export interface AggkitActivityClaim {
   metadata: string;
   origin_address: string;
   origin_network: number;
-  proof_local_exit_root: string[];
-  proof_rollup_exit_root: string[];
+  /** Absent on this endpoint (verified: zero occurrences in a live rc9 capture) — matches `/claims`'s `AggkitClaim`, whose `ClaimResponse` source declares these `*Proof \`json:",omitempty"\``. */
+  proof_local_exit_root?: string[];
+  /** Absent on this endpoint (verified: zero occurrences in a live rc9 capture) — matches `/claims`'s `AggkitClaim`, whose `ClaimResponse` source declares these `*Proof \`json:",omitempty"\``. */
+  proof_rollup_exit_root?: string[];
   rollup_exit_root: string;
 }
 
@@ -533,9 +585,17 @@ export interface AggkitActivityItem {
    */
   errors?: Record<string, string>;
   /**
-   * Only present when the request set `includeTracking: true` AND the
-   * bridge is still unclaimed. Same shape `getBridgeTracking` returns for a
-   * single tx (both are the bridgetracker service's `TrackingData` DTO).
+   * Absent by default: `getActivity`'s `includeTracking` defaults to
+   * `false` (matching the tracker's own default), so most rows will NOT
+   * carry this field. Only present when the request explicitly set
+   * `includeTracking: true` AND the bridge is still unclaimed — and setting
+   * `includeTracking: true` is itself not free: it registers every
+   * still-unclaimed bridge in the result with the tracker's supervised list
+   * (see `getActivity`'s JSDoc in `client.ts`). `claim_status` already
+   * resolves `'pending'` vs. `'readyToClaim'` without this field, so treat
+   * `tracking` as opt-in step-level detail, not something to request by
+   * default. Same shape `getBridgeTracking` returns for a single tx (both
+   * are the bridgetracker service's `TrackingData` DTO).
    */
   tracking?: AggkitTrackingData;
 }
@@ -630,10 +690,7 @@ export interface AggkitTokenMetadata {
  * `tracking_status_string` companion.
  */
 export type AggkitTrackingStatus =
-  | 'registered'
-  | 'running'
-  | 'error'
-  | 'finished';
+  'registered' | 'running' | 'error' | 'finished';
 
 /**
  * `BridgeStatus.bridge_type`: bare string on the wire (fixture-confirmed,
@@ -693,9 +750,7 @@ export type AggkitStepStatus = 'pending' | 'inProgress' | 'done' | 'error';
 export type AggkitTrackerErrorType = 0 | 1 | 2;
 /** `ErrorStep.error_type_string`. */
 export type AggkitTrackerErrorTypeString =
-  | 'transient'
-  | 'permanent'
-  | 'exhausted';
+  'transient' | 'permanent' | 'exhausted';
 
 /**
  * `TrackingData.claim_status` (agglayer/aggkit#1823, PR #1829): a derived
@@ -719,12 +774,21 @@ export type AggkitTrackerErrorTypeString =
  *
  * No fixture yet captures this field (all `__fixtures__/tracker_*.json`
  * predate #1829).
+ *
+ * Version floor: `claim_status` landed via agglayer/aggkit#1829/#1831 on
+ * both `TrackingData` and `ActivityItem` — #1831's merge commit **is** the
+ * `v0.11.0-rc9` tag. On rc8 (the first release with the tracker's activity
+ * endpoint at all; rc6/rc7 return a plain 404 for that route), this field is
+ * `undefined` at runtime despite being declared required here, so a
+ * `claim_status === 'readyToClaim'` filter silently returns zero rows
+ * forever, with no error raised anywhere. The SDK's effective minimum
+ * supported aggkit version is therefore `v0.11.0-rc9`, not the `rc6` floor
+ * that applies to the unrelated not-ready-classification endpoints (see
+ * the "Minimum Supported aggkit Version" section of `index.ts`'s module
+ * doc).
  */
 export type AggkitClaimStatus =
-  | 'pending'
-  | 'readyToClaim'
-  | 'claimed'
-  | 'error';
+  'pending' | 'readyToClaim' | 'claimed' | 'error';
 
 /**
  * `CertificateData.status`: mapped from the agglayer proto (aggkit
@@ -735,11 +799,7 @@ export type AggkitClaimStatus =
 export type AggkitCertificateStatus = 0 | 1 | 2 | 3 | 4;
 /** `CertificateData.status_string`. */
 export type AggkitCertificateStatusString =
-  | 'Pending'
-  | 'Proven'
-  | 'Candidate'
-  | 'InError'
-  | 'Settled';
+  'Pending' | 'Proven' | 'Candidate' | 'InError' | 'Settled';
 
 // ---- shared structures ----
 
