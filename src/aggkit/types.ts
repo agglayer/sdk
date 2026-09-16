@@ -743,20 +743,38 @@ export type AggkitBridgeStep =
  * `BridgeStepPath.status`: bare string on the wire (fixture-confirmed,
  * matches aggkit's rc5-corrected API.md) — no numeric value, no
  * `status_string` companion.
+ *
+ * `'skipped'` (agglayer/sdk#38): the tracker decided this step no longer
+ * needs to be verified — e.g. the bridge was already claimed on the
+ * destination network by the time the tracker reached this step. A
+ * `'skipped'` step carries `error` (see `AggkitTrackerErrorStep`), but that
+ * `error.error_type` is not necessarily `3`/`'skipped'` itself: the proxy's
+ * example shows an earlier `'skipped'` step keeping the last `transient`
+ * (0) error it saw before being skipped, while the step that was actually
+ * short-circuited reports `error_type: 3`/`'skipped'`.
  */
-export type AggkitStepStatus = 'pending' | 'inProgress' | 'done' | 'error';
+export type AggkitStepStatus =
+  | 'pending'
+  | 'inProgress'
+  | 'done'
+  | 'error'
+  | 'skipped';
 
 /**
  * `ErrorStep.error_type`: 0->transient, 1->permanent, 2->exhausted (retries
- * have been given up on). Fixture-confirmed to match API.md's documented
- * numeric + `_string` companion convention exactly.
+ * have been given up on), 3->skipped (agglayer/sdk#38 — the step itself was
+ * short-circuited, as opposed to a step that is merely reporting the last
+ * error it saw before something else caused it to be skipped). Fixture-
+ * confirmed to match API.md's documented numeric + `_string` companion
+ * convention exactly.
  */
-export type AggkitTrackerErrorType = 0 | 1 | 2;
+export type AggkitTrackerErrorType = 0 | 1 | 2 | 3;
 /** `ErrorStep.error_type_string`. */
 export type AggkitTrackerErrorTypeString =
   | 'transient'
   | 'permanent'
-  | 'exhausted';
+  | 'exhausted'
+  | 'skipped';
 
 /**
  * `TrackingData.claim_status` (agglayer/aggkit#1823, PR #1829): a derived
@@ -854,11 +872,12 @@ export interface AggkitBridgeStatus {
 
 /**
  * Carried both in `AggkitBridgeStepPath.error` (that step of an otherwise-
- * resolved bridge failed) and in `AggkitTrackingData.error` (the tracker is
- * failing to resolve the bridge — tx not found, or the tx exists but emitted
- * no `BridgeEvent`). In the latter case `retry_count` counts the not-found
- * polls so far: while `error_type` is `transient` (0) the tracker is still
- * retrying and `tracking_status` stays `'registered'` (fixture-confirmed —
+ * resolved bridge failed, or — agglayer/sdk#38 — was `'skipped'`) and in
+ * `AggkitTrackingData.error` (the tracker is failing to resolve the bridge —
+ * tx not found, or the tx exists but emitted no `BridgeEvent`). In the
+ * latter case `retry_count` counts the not-found polls so far: while
+ * `error_type` is `transient` (0) the tracker is still retrying and
+ * `tracking_status` stays `'registered'` (fixture-confirmed —
  * `tracker_registered.json` carries a transient error at `retry_count: 1`);
  * once retries are exhausted (`error_type` 2) `tracking_status` becomes
  * `'error'` and the field is final.
@@ -979,6 +998,11 @@ export type AggkitBridgeStepResult =
  * keys, an `inProgress` step has only `start_date`, a `done` step has both
  * dates plus `result` (when that step produces one). `expected_duration`
  * was never observed on the wire in any fixture at any status.
+ *
+ * A `'skipped'` step (agglayer/sdk#38) does not follow the same start/end
+ * pattern as the others: it may carry both `start_date` and `end_date` (it
+ * had already started when something else caused it to be skipped) or only
+ * `end_date` (it was skipped before ever starting) — see `status`.
  */
 export interface AggkitBridgeStepPath {
   /** Position of this entry within `all_steps` (redundant with array index; now documented by aggkit's rc5-corrected API.md — rc4's did not cover it). */
@@ -991,7 +1015,12 @@ export interface AggkitBridgeStepPath {
   expected_duration?: string;
   /** Present only once the step produces a result; absent for steps without one (e.g. `Claimed`). */
   result?: AggkitBridgeStepResult;
-  /** Present only when `status` is `error`; see `AggkitTrackerErrorStep`. Never observed in captured fixtures. */
+  /**
+   * Present when `status` is `'error'`, and also when `status` is
+   * `'skipped'` (agglayer/sdk#38) — in the latter case `error_type` is not
+   * necessarily `3`/`'skipped'`; see `AggkitStepStatus`. See
+   * `AggkitTrackerErrorStep`.
+   */
   error?: AggkitTrackerErrorStep;
 }
 
