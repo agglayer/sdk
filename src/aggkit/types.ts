@@ -746,12 +746,19 @@ export type AggkitBridgeStep =
  *
  * `'skipped'` (agglayer/sdk#38): the tracker decided this step no longer
  * needs to be verified — e.g. the bridge was already claimed on the
- * destination network by the time the tracker reached this step. A
- * `'skipped'` step carries `error` (see `AggkitTrackerErrorStep`), but that
- * `error.error_type` is not necessarily `3`/`'skipped'` itself: the proxy's
- * example shows an earlier `'skipped'` step keeping the last `transient`
- * (0) error it saw before being skipped, while the step that was actually
- * short-circuited reports `error_type: 3`/`'skipped'`.
+ * destination network by the time the tracker reached this step.
+ * `start_date`/`end_date`/`error` are NOT reliably present on a `'skipped'`
+ * step — fixture-confirmed by a live capture (`tracker_l2l2_skipped_live.
+ * json`) showing three different shapes in the same response: a step that
+ * had already started retrying before being superseded keeps its
+ * `start_date`/`end_date` plus the last `transient` (0) `error` it saw (NOT
+ * `error_type: 3`); the steps downstream of it are bare — `{step_index,
+ * step_name, status: 'skipped'}` only, no dates, no `error` at all. A
+ * `error_type: 3`/`'skipped'` value has also been observed (see the
+ * `AggkitTrackerErrorType` doc and `tracker_l2l2_skipped.json`, a synthetic
+ * fixture modeling the issue's own example) on a step that IS the one being
+ * short-circuited, but this is not guaranteed — do not assume `error` is
+ * present just because `status` is `'skipped'`.
  */
 export type AggkitStepStatus =
   | 'pending'
@@ -1000,9 +1007,12 @@ export type AggkitBridgeStepResult =
  * was never observed on the wire in any fixture at any status.
  *
  * A `'skipped'` step (agglayer/sdk#38) does not follow the same start/end
- * pattern as the others: it may carry both `start_date` and `end_date` (it
- * had already started when something else caused it to be skipped) or only
- * `end_date` (it was skipped before ever starting) — see `status`.
+ * pattern as the others, and — unlike every other status — that pattern is
+ * NOT consistent across a single response's `all_steps`: fixture-confirmed
+ * (`tracker_l2l2_skipped_live.json`) shows a `'skipped'` step that had
+ * already started retrying keeping its `start_date`/`end_date`/`error`,
+ * while the steps downstream of it are entirely bare — `{step_index,
+ * step_name, status: 'skipped'}` and nothing else. See `status`.
  */
 export interface AggkitBridgeStepPath {
   /** Position of this entry within `all_steps` (redundant with array index; now documented by aggkit's rc5-corrected API.md — rc4's did not cover it). */
@@ -1016,10 +1026,11 @@ export interface AggkitBridgeStepPath {
   /** Present only once the step produces a result; absent for steps without one (e.g. `Claimed`). */
   result?: AggkitBridgeStepResult;
   /**
-   * Present when `status` is `'error'`, and also when `status` is
-   * `'skipped'` (agglayer/sdk#38) — in the latter case `error_type` is not
-   * necessarily `3`/`'skipped'`; see `AggkitStepStatus`. See
-   * `AggkitTrackerErrorStep`.
+   * Present when `status` is `'error'`. MAY also be present when `status`
+   * is `'skipped'` (agglayer/sdk#38) — but not always: fixture-confirmed
+   * (`tracker_l2l2_skipped_live.json`) shows `'skipped'` steps with no
+   * `error` at all, alongside one with `error_type: 0`/`'transient'` (NOT
+   * `3`). See `AggkitStepStatus`, `AggkitTrackerErrorStep`.
    */
   error?: AggkitTrackerErrorStep;
 }
