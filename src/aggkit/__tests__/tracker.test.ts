@@ -1,0 +1,546 @@
+import { readFileSync } from 'node:fs';
+import { describe, it, expect, beforeEach, vi, type Mock } from 'vitest';
+import { AggkitBridgeClient } from '../client';
+import { AggkitBridgeAggregator } from '../aggregator';
+import { AggkitApiError } from '../errors';
+import type { AggkitTrackingData } from '../types';
+
+// ---------------------------------------------------------------------------
+// Bridge-tracker (`tracker/v1`) unit tests, run against LIVE fixtures
+// captured live from a real v0.11.0-rc4 devnet enclave on 2026-08-07
+// (copied in as `tracker_*.json`). At capture time, these shapes disagreed
+// with rc4's docs/bridgetracker/API.md (agglayer/aggkit#1781); rc4's
+// fixtures were treated as the source of truth over the docs. That gap is
+// now closed upstream: v0.11.0-rc5 (PR agglayer/aggkit#1784) corrected
+// API.md to match the wire format exactly, and the shapes below were
+// re-verified byte-identical on a real rc5 enclave on 2026-08-10. No
+// fixture recapture was needed; these rc4 captures remain valid. See
+// `types.ts`'s tracker-section module doc for the full wire-format writeup.
+// ---------------------------------------------------------------------------
+
+function loadFixture(name: string): string {
+  return readFileSync(
+    new URL(`../__fixtures__/${name}`, import.meta.url),
+    'utf-8'
+  );
+}
+
+function mockResponse(text: string, status: number): Response {
+  return new Response(text, { status });
+}
+
+function mockFetchOnce(text: string, status: number): void {
+  (global.fetch as Mock).mockResolvedValueOnce(mockResponse(text, status));
+}
+
+function lastFetchUrl(): string {
+  const mock = global.fetch as Mock;
+  const call = mock.mock.calls[mock.mock.calls.length - 1] as [string, unknown];
+  return call[0];
+}
+
+const BASE_URL = 'http://127.0.0.1:33460';
+
+describe('AggkitBridgeClient.getBridgeTracking', () => {
+  let client: AggkitBridgeClient;
+
+  beforeEach(() => {
+    global.fetch = vi.fn();
+    client = new AggkitBridgeClient({ baseUrl: BASE_URL, networkId: 1 });
+  });
+
+  describe('URL construction', () => {
+    it("builds /tracker/v1/network/{id}/tx/{hash} using the client's own networkId by default", async () => {
+      mockFetchOnce(loadFixture('tracker_l2l1_running.json'), 200);
+      const hash =
+        '0xcfbdc931acce665da204150bc025cd76cdbe5566578abaa1ec4ef236fa5c8009';
+      await client.getBridgeTracking(hash);
+      expect(lastFetchUrl()).toBe(
+        `${BASE_URL}/tracker/v1/network/1/tx/${hash}`
+      );
+    });
+
+    it("uses the explicit networkId argument over the client's own networkId when passed", async () => {
+      mockFetchOnce(loadFixture('tracker_l1l2_finished.json'), 200);
+      const hash =
+        '0x64b65138996aae61811dac45f10c2baddbf0ab5aae9ef587766b92a23c85791e';
+      // client is bound to networkId 1, but the caller explicitly routes L1 (0).
+      await client.getBridgeTracking(hash, 0);
+      expect(lastFetchUrl()).toBe(
+        `${BASE_URL}/tracker/v1/network/0/tx/${hash}`
+      );
+    });
+  });
+
+  describe('trackerBaseUrl resolution', () => {
+    it('builds the tracking URL from trackerBaseUrl when given, leaving baseUrl for /bridge/v1 only', async () => {
+      const trackerUrl = 'http://127.0.0.1:33470';
+      const split = new AggkitBridgeClient({
+        baseUrl: BASE_URL,
+        trackerBaseUrl: trackerUrl,
+        networkId: 1,
+      });
+      mockFetchOnce(loadFixture('tracker_l1l2_finished.json'), 200);
+      const hash =
+        '0x64b65138996aae61811dac45f10c2baddbf0ab5aae9ef587766b92a23c85791e';
+
+      await split.getBridgeTracking(hash);
+
+      expect(lastFetchUrl()).toBe(
+        `${trackerUrl}/tracker/v1/network/1/tx/${hash}`
+      );
+      expect(lastFetchUrl()).not.toContain(BASE_URL);
+    });
+
+    it('falls back to baseUrl for the tracking URL when trackerBaseUrl is omitted', async () => {
+      mockFetchOnce(loadFixture('tracker_l1l2_finished.json'), 200);
+      const hash =
+        '0x64b65138996aae61811dac45f10c2baddbf0ab5aae9ef587766b92a23c85791e';
+
+      await client.getBridgeTracking(hash);
+
+      expect(lastFetchUrl()).toBe(
+        `${BASE_URL}/tracker/v1/network/1/tx/${hash}`
+      );
+    });
+  });
+
+  describe('registered-only tracking data', () => {
+    it('parses tracker_registered.json: bridge_status/step_index/all_steps null, error populated', async () => {
+      mockFetchOnce(loadFixture('tracker_registered.json'), 200);
+      const data = await client.getBridgeTracking(
+        '0xdeadbeef00000000000000000000000000000000000000000000000000000000'
+      );
+
+      expect(data.tracking_status).toBe('registered');
+      expect(data.bridge_status).toBeNull();
+      expect(data.step_index).toBeNull();
+      expect(data.all_steps).toBeNull();
+      expect(data.error).not.toBeNull();
+      expect(data.error?.error_type).toBe(0);
+      expect(data.error?.error_type_string).toBe('transient');
+      expect(data.error?.retry_count).toBe(1);
+    });
+  });
+
+  describe('giving-up error tracking data', () => {
+    it('parses tracker_error_giveup.json: tracking_status "error", error_type 2/"exhausted"', async () => {
+      mockFetchOnce(loadFixture('tracker_error_giveup.json'), 200);
+      const data = await client.getBridgeTracking(
+        '0xdeadbeef00000000000000000000000000000000000000000000000000000000'
+      );
+
+      expect(data.tracking_status).toBe('error');
+      expect(data.bridge_status).toBeNull();
+      expect(data.all_steps).toBeNull();
+      expect(data.error).not.toBeNull();
+      // numeric + string companion DOES follow the documented convention for error_type.
+      expect(data.error?.error_type).toBe(2);
+      expect(data.error?.error_type_string).toBe('exhausted');
+      expect(data.error?.retry_count).toBe(5);
+      expect(data.error?.description).toHaveLength(5);
+    });
+  });
+
+  describe('L1->L2 typology (4 steps)', () => {
+    it('parses a mid-flight run (tracker_l1l2_running.json)', async () => {
+      mockFetchOnce(loadFixture('tracker_l1l2_running.json'), 200);
+      const data = await client.getBridgeTracking('0xirrelevant');
+
+      expect(data.tracking_status).toBe('running');
+      expect(data.bridge_status?.bridge_type).toBe('L1->L2');
+      expect(data.bridge_status?.event.leaf_type).toBe('Asset');
+      expect(data.step_index).toBe(2);
+      expect(data.all_steps).toHaveLength(4);
+      // WaitingGERInjection just completed; WaitingClaim now inProgress; the
+      // still-`pending` steps carry no start_date/end_date/result keys at all.
+      expect(data.all_steps?.[1]?.step_name).toBe('WaitingGERInjection');
+      expect(data.all_steps?.[1]?.status).toBe('done');
+      expect(data.all_steps?.[2]?.step_name).toBe('WaitingClaim');
+      expect(data.all_steps?.[2]?.status).toBe('inProgress');
+      expect(data.all_steps?.[3]?.status).toBe('pending');
+      expect(data.all_steps?.[3]?.start_date).toBeUndefined();
+      expect(data.all_steps?.[3]?.result).toBeUndefined();
+    });
+
+    it('parses the terminal `finished` route (tracker_l1l2_finished.json) with correct step count/order/results', async () => {
+      mockFetchOnce(loadFixture('tracker_l1l2_finished.json'), 200);
+      const data = await client.getBridgeTracking('0xirrelevant');
+
+      expect(data.tracking_status).toBe('finished');
+      expect(data.step_index).toBe(3);
+      expect(data.all_steps).toHaveLength(4);
+      expect(data.all_steps?.map((s) => s.step_name)).toEqual([
+        'WaitingGERUpdate',
+        'WaitingGERInjection',
+        'WaitingClaim',
+        'Claimed',
+      ]);
+
+      const gerUpdate = data.all_steps?.[0];
+      expect(gerUpdate?.result).toMatchObject({
+        l1_info_tree_index: 6,
+        ger: '0x6c670cb382e5202b19eae5ae3d61491f38c5d4806a4d154410d5370816fbf090',
+      });
+
+      const gerInjection = data.all_steps?.[1];
+      expect(gerInjection?.result).toEqual({
+        ger: '0x6c670cb382e5202b19eae5ae3d61491f38c5d4806a4d154410d5370816fbf090',
+      });
+
+      const waitingClaim = data.all_steps?.[2];
+      expect(waitingClaim?.result).toMatchObject({
+        claim_tx:
+          '0x178eed25e7a70d088367b81879bffb7fa800e3f23789d8a11bd05ae78505e3f3',
+      });
+
+      const claimed = data.all_steps?.[3];
+      expect(claimed?.status).toBe('done');
+      expect(claimed?.result).toBeUndefined();
+    });
+  });
+
+  describe('L2->L1 typology (6 steps)', () => {
+    it('parses a mid-flight run (tracker_l2l1_running.json), including certificate + WaitL1SettledGER results', async () => {
+      mockFetchOnce(loadFixture('tracker_l2l1_running.json'), 200);
+      const data = await client.getBridgeTracking('0xirrelevant');
+
+      expect(data.bridge_status?.bridge_type).toBe('L2->L1');
+      expect(data.all_steps).toHaveLength(6);
+      // No WaitingGERInjection step for an L1-destination route.
+      expect(data.all_steps?.map((s) => s.step_name)).toEqual([
+        'WaitingLERUpdate',
+        'PendingInclusion',
+        'CertificatePending',
+        'WaitL1SettledGER',
+        'WaitingClaim',
+        'Claimed',
+      ]);
+
+      const certStep = data.all_steps?.[2];
+      expect(certStep?.status).toBe('done');
+      // certificate status DOES follow the documented numeric + string convention.
+      expect(certStep?.result).toMatchObject({
+        status: 4,
+        status_string: 'Settled',
+        settlement_tx_hash:
+          '0x1bf33df3df7e20de949cb8e8dd664c1a928a009d8af2692894a7df9fdc6a76e7',
+      });
+
+      const settledGer = data.all_steps?.[3];
+      expect(settledGer?.result).toMatchObject({
+        l1_info_tree_index: 5,
+        has_verify_batches_trusted_aggregator: true,
+      });
+
+      expect(data.all_steps?.[4]?.step_name).toBe('WaitingClaim');
+      expect(data.all_steps?.[4]?.status).toBe('inProgress');
+    });
+
+    it('parses the terminal `finished` route (tracker_l2l1_finished.json) with the manually-submitted claim', async () => {
+      mockFetchOnce(loadFixture('tracker_l2l1_finished.json'), 200);
+      const data = await client.getBridgeTracking('0xirrelevant');
+
+      expect(data.tracking_status).toBe('finished');
+      expect(data.step_index).toBe(5);
+      expect(data.all_steps).toHaveLength(6);
+
+      const waitingClaim = data.all_steps?.[4];
+      expect(waitingClaim?.result).toMatchObject({
+        claim_tx:
+          '0x51d247094346142f780378bfb82a1e54b152db5d4035ec4e6937c531c47b0145',
+      });
+
+      const pendingInclusion = data.all_steps?.[1];
+      expect(pendingInclusion?.result).toMatchObject({
+        certificate_id:
+          '0xfd92b4854c0364e0a9e8e3bade6bbcc0873a6be917321320d7e2f24e24f7131f',
+        previous_ler:
+          '0xfd107fe3ba1c4de7139e4ca5d666ec90a7df9698c926f585611eac31ce13192f',
+      });
+    });
+  });
+
+  describe('L2->L2 typology (7 steps)', () => {
+    it('parses a mid-flight run (tracker_l2l2_running.json) with the WaitingGERInjection step present', async () => {
+      mockFetchOnce(loadFixture('tracker_l2l2_running.json'), 200);
+      const data = await client.getBridgeTracking('0xirrelevant');
+
+      expect(data.bridge_status?.bridge_type).toBe('L2->L2');
+      expect(data.all_steps).toHaveLength(7);
+      expect(data.all_steps?.map((s) => s.step_name)).toEqual([
+        'WaitingLERUpdate',
+        'PendingInclusion',
+        'CertificatePending',
+        'WaitL1SettledGER',
+        'WaitingGERInjection',
+        'WaitingClaim',
+        'Claimed',
+      ]);
+      expect(data.all_steps?.[4]?.step_name).toBe('WaitingGERInjection');
+      expect(data.all_steps?.[4]?.status).toBe('inProgress');
+    });
+
+    it('parses the terminal `finished` route (tracker_l2l2_finished.json) with correct step count/order/results', async () => {
+      mockFetchOnce(loadFixture('tracker_l2l2_finished.json'), 200);
+      const data = await client.getBridgeTracking('0xirrelevant');
+
+      expect(data.tracking_status).toBe('finished');
+      expect(data.step_index).toBe(6);
+      expect(data.all_steps).toHaveLength(7);
+
+      const gerInjection = data.all_steps?.[4];
+      expect(gerInjection?.step_name).toBe('WaitingGERInjection');
+      expect(gerInjection?.result).toEqual({
+        ger: '0x6989b12606017b91d6defe2184415b5071fb7004e8daee4b3b82efd5e54045ff',
+      });
+
+      const waitingClaim = data.all_steps?.[5];
+      expect(waitingClaim?.result).toMatchObject({
+        claim_tx:
+          '0xea2424b0837070a37feba683b1994357fb92bc3b55116aae528a0f777d7c937c',
+      });
+
+      const claimed = data.all_steps?.[6];
+      expect(claimed?.status).toBe('done');
+      expect(claimed?.result).toBeUndefined();
+    });
+  });
+
+  describe('`skipped` step status (agglayer/sdk#38)', () => {
+    // tracker_l2l2_skipped.json is a SYNTHETIC fixture, not a live capture:
+    // it is modeled on the proxy-backend example from agglayer/sdk#38,
+    // filled out to a full L2->L2 AggkitTrackingData response using the
+    // same bridge_status/step results as tracker_l2l2_running.json.
+    it('parses tracker_l2l2_skipped.json: a bridge already claimed on destination leaves later steps `skipped`', async () => {
+      mockFetchOnce(loadFixture('tracker_l2l2_skipped.json'), 200);
+      const data = await client.getBridgeTracking('0xirrelevant');
+
+      expect(data.tracking_status).toBe('running');
+      expect(data.claim_status).toBe('claimed');
+      expect(data.all_steps).toHaveLength(7);
+
+      // WaitL1SettledGER: skipped, but still carries the last TRANSIENT
+      // error it saw before something else short-circuited it — not
+      // error_type 3, unlike the step that was actually skipped.
+      const waitL1SettledGer = data.all_steps?.[3];
+      expect(waitL1SettledGer?.step_name).toBe('WaitL1SettledGER');
+      expect(waitL1SettledGer?.status).toBe('skipped');
+      expect(waitL1SettledGer?.start_date).toBeDefined();
+      expect(waitL1SettledGer?.error?.error_type).toBe(0);
+      expect(waitL1SettledGer?.error?.error_type_string).toBe('transient');
+
+      // WaitingGERInjection: the step actually skipped because the bridge
+      // was already claimed on the destination network — error_type 3,
+      // and no start_date since it never ran.
+      const gerInjection = data.all_steps?.[4];
+      expect(gerInjection?.step_name).toBe('WaitingGERInjection');
+      expect(gerInjection?.status).toBe('skipped');
+      expect(gerInjection?.start_date).toBeUndefined();
+      expect(gerInjection?.end_date).toBeDefined();
+      expect(gerInjection?.error?.error_type).toBe(3);
+      expect(gerInjection?.error?.error_type_string).toBe('skipped');
+      expect(gerInjection?.error?.description).toEqual([
+        'bridge already claimed on destination network; step left unverified',
+      ]);
+
+      const waitingClaim = data.all_steps?.[5];
+      expect(waitingClaim?.status).toBe('skipped');
+
+      const claimed = data.all_steps?.[6];
+      expect(claimed?.status).toBe('done');
+    });
+
+    // tracker_l2l2_skipped_live.json IS a live capture (2026-09-16, local
+    // devnet, network 81) — unlike the synthetic fixture above, it shows
+    // `'skipped'` steps carrying NONE of start_date/end_date/error at all,
+    // not just a missing start_date. Only the step that had already begun
+    // retrying before being superseded (WaitL1SettledGER) keeps its dates
+    // and its last (transient, not error_type 3) error.
+    it('parses tracker_l2l2_skipped_live.json: downstream `skipped` steps carry no dates/error/result at all', async () => {
+      mockFetchOnce(loadFixture('tracker_l2l2_skipped_live.json'), 200);
+      const data = await client.getBridgeTracking('0xirrelevant');
+
+      expect(data.tracking_status).toBe('running');
+      expect(data.claim_status).toBe('claimed');
+      expect(data.all_steps).toHaveLength(8);
+
+      const waitL1SettledGer = data.all_steps?.[3];
+      expect(waitL1SettledGer?.step_name).toBe('WaitL1SettledGER');
+      expect(waitL1SettledGer?.status).toBe('skipped');
+      expect(waitL1SettledGer?.start_date).toBeDefined();
+      expect(waitL1SettledGer?.end_date).toBeDefined();
+      expect(waitL1SettledGer?.error?.error_type).toBe(0);
+      expect(waitL1SettledGer?.error?.error_type_string).toBe('transient');
+
+      for (const index of [4, 5, 6]) {
+        const step = data.all_steps?.[index];
+        expect(step?.status).toBe('skipped');
+        expect(step?.start_date).toBeUndefined();
+        expect(step?.end_date).toBeUndefined();
+        expect(step?.error).toBeUndefined();
+        expect(step?.result).toBeUndefined();
+      }
+      expect(data.all_steps?.map((s) => s.step_name).slice(4, 7)).toEqual([
+        'WaitingGERInjection',
+        'WaitingL1InfoLeafAvailable',
+        'WaitingClaim',
+      ]);
+
+      // The terminal step is `'error'`, not `'skipped'`: the tracker itself
+      // is still retrying the claim lookup, distinct from the upstream
+      // steps that were skipped as a side effect of the bridge already
+      // being claimed.
+      const claimedStep = data.all_steps?.[7];
+      expect(claimedStep?.step_name).toBe('Claimed');
+      expect(claimedStep?.status).toBe('error');
+      expect(claimedStep?.start_date).toBeDefined();
+      expect(claimedStep?.end_date).toBeUndefined();
+      expect(claimedStep?.error?.error_type).toBe(0);
+      expect(claimedStep?.error?.retry_count).toBe(21);
+    });
+  });
+
+  describe('400 ErrorData (tracker error shape, not the bridge-service {"error"} shape)', () => {
+    it('throws AggkitApiError with the {code,message} body parsed as the error message', async () => {
+      mockFetchOnce(loadFixture('tracker_error_400.json'), 400);
+
+      let caught: unknown;
+      try {
+        await client.getBridgeTracking('not-a-valid-hash');
+      } catch (err) {
+        caught = err;
+      }
+
+      expect(caught).toBeInstanceOf(AggkitApiError);
+      expect((caught as AggkitApiError).httpStatus).toBe(400);
+      expect((caught as AggkitApiError).message).toBe(
+        'invalid tx_hash parameter'
+      );
+      expect((caught as AggkitApiError).endpoint).toBe(
+        '/tracker/v1/network/{network_id}/tx/{tx_hash}'
+      );
+    });
+  });
+});
+
+describe('AggkitBridgeAggregator.getBridgeTracking', () => {
+  const L2_1_URL = 'http://127.0.0.1:40001';
+  const L2_2_URL = 'http://127.0.0.1:40002';
+  /**
+   * The bridge TRACKER root (`AggkitAggregatorConfig.aggkitProxyUrl`) — the
+   * one service that answers `/tracker/v1`, and a different aggkit service
+   * from the bridge services at `L2_*_URL`. Deliberately a distinct
+   * host:port so a regression that derives the tracker URL from a `networks`
+   * entry (as this used to, per-network) is visible in the asserted URL.
+   */
+  const PROXY_URL = 'http://127.0.0.1:40009';
+  let aggregator: AggkitBridgeAggregator;
+
+  beforeEach(() => {
+    global.fetch = vi.fn();
+    aggregator = new AggkitBridgeAggregator({
+      networks: { 1: L2_1_URL, 2: L2_2_URL },
+      aggkitProxyUrl: PROXY_URL,
+    });
+  });
+
+  it('sends network 0 (L1) to the aggkitProxyUrl tracker root but puts network 0 in the URL path', async () => {
+    mockFetchOnce(loadFixture('tracker_l1l2_finished.json'), 200);
+    const hash =
+      '0x64b65138996aae61811dac45f10c2baddbf0ab5aae9ef587766b92a23c85791e';
+
+    const data: AggkitTrackingData = await aggregator.getBridgeTracking(
+      0,
+      hash
+    );
+
+    expect(data.tracking_status).toBe('finished');
+    // The tracker root comes from `aggkitProxyUrl`. Network 0 is still
+    // ROUTED through a configured L2 client (L1 has no dedicated aggkit
+    // instance) — that client is picked for its fetch config, and it is
+    // handed the tracker root rather than its own bridge-service URL...
+    expect(lastFetchUrl()).toContain(PROXY_URL);
+    // ...so the request must NOT go to either bridge service.
+    expect(lastFetchUrl()).not.toContain(L2_1_URL);
+    expect(lastFetchUrl()).not.toContain(L2_2_URL);
+    // ...and the URL path itself says network 0, not the routed-through
+    // client's own networkId of 1.
+    expect(lastFetchUrl()).toBe(`${PROXY_URL}/tracker/v1/network/0/tx/${hash}`);
+  });
+
+  it('sends a non-L1 network to the same aggkitProxyUrl tracker root, with that networkId in the URL path', async () => {
+    mockFetchOnce(loadFixture('tracker_l2l2_finished.json'), 200);
+    const hash =
+      '0x66a20ab10e92748f7ee30f9a487e262a673b790df365bf3067a59c8b71fb2fe8';
+
+    const data = await aggregator.getBridgeTracking(1, hash);
+
+    expect(data.bridge_status?.bridge_type).toBe('L2->L2');
+    // Network 1 HAS its own configured bridge service, and the tracker call
+    // still must not go there: there is one tracker, not one per network.
+    expect(lastFetchUrl()).toBe(`${PROXY_URL}/tracker/v1/network/1/tx/${hash}`);
+    expect(lastFetchUrl()).not.toContain(L2_1_URL);
+  });
+
+  it('sends every configured network to the one tracker root, differing only in the URL path', async () => {
+    const hash =
+      '0x66a20ab10e92748f7ee30f9a487e262a673b790df365bf3067a59c8b71fb2fe8';
+    const urls: string[] = [];
+
+    for (const networkId of [0, 1, 2]) {
+      mockFetchOnce(loadFixture('tracker_l2l2_finished.json'), 200);
+      await aggregator.getBridgeTracking(networkId, hash);
+      urls.push(lastFetchUrl());
+    }
+
+    expect(urls).toEqual([
+      `${PROXY_URL}/tracker/v1/network/0/tx/${hash}`,
+      `${PROXY_URL}/tracker/v1/network/1/tx/${hash}`,
+      `${PROXY_URL}/tracker/v1/network/2/tx/${hash}`,
+    ]);
+  });
+
+  // The tracker is one service that never routes through `networks`, so a
+  // tracker-only aggregator must be able to answer a tracker call. This used
+  // to borrow a per-network client purely for its fetch config, which made
+  // `networks` a hard precondition for a call that touches no bridge service
+  // — and, with no networks configured, threw "no client configured for
+  // network 0" while the tracker was reachable the whole time.
+  it('answers from the tracker root with no networks configured at all, and for a networkId absent from networks', async () => {
+    const trackerOnly = new AggkitBridgeAggregator({
+      networks: {},
+      aggkitProxyUrl: PROXY_URL,
+    });
+    const hash =
+      '0x66a20ab10e92748f7ee30f9a487e262a673b790df365bf3067a59c8b71fb2fe8';
+
+    mockFetchOnce(loadFixture('tracker_l2l2_finished.json'), 200);
+    await trackerOnly.getBridgeTracking(0, hash);
+    expect(lastFetchUrl()).toBe(`${PROXY_URL}/tracker/v1/network/0/tx/${hash}`);
+
+    // Also true for a network that is not in `networks`: the path segment is
+    // the caller's networkId, and the tracker resolves it server-side.
+    mockFetchOnce(loadFixture('tracker_l2l2_finished.json'), 200);
+    await aggregator.getBridgeTracking(7, hash);
+    expect(lastFetchUrl()).toBe(`${PROXY_URL}/tracker/v1/network/7/tx/${hash}`);
+  });
+
+  // The untyped-caller fallback: with no usable `aggkitProxyUrl` there is no
+  // tracker client, so the pre-`aggkitProxyUrl` behaviour is preserved
+  // exactly — borrow a configured network's client and derive
+  // `/tracker/v1` from its bridge-service URL.
+  it('falls back to a configured network client when aggkitProxyUrl is blank (untyped caller only)', async () => {
+    const noProxy = new AggkitBridgeAggregator({
+      networks: { 1: L2_1_URL, 2: L2_2_URL },
+      aggkitProxyUrl: '   ',
+    });
+    const hash =
+      '0x66a20ab10e92748f7ee30f9a487e262a673b790df365bf3067a59c8b71fb2fe8';
+
+    mockFetchOnce(loadFixture('tracker_l2l2_finished.json'), 200);
+    await noProxy.getBridgeTracking(1, hash);
+
+    expect(lastFetchUrl()).toBe(`${L2_1_URL}/tracker/v1/network/1/tx/${hash}`);
+  });
+});

@@ -1,0 +1,95 @@
+{
+  "tracking_status": "finished",
+  "network_id": 1,
+  "tx_hash": "0xcfbdc931acce665da204150bc025cd76cdbe5566578abaa1ec4ef236fa5c8009",
+  "bridge_status": {
+    "bridge_type": "L2->L1",
+    "block_number": 826,
+    "log_index": 0,
+    "block_timestamp": 1786113875,
+    "event": {
+      "leaf_type": "Asset",
+      "origin_network": 0,
+      "origin_address": "0x0000000000000000000000000000000000000000",
+      "destination_network": 0,
+      "destination_address": "0xa0b4b0c6314b6b028adf7c787eca150add9e1ec0",
+      "amount": "50000000000000000",
+      "deposit_count": 1
+    }
+  },
+  "step_index": 5,
+  "all_steps": [
+    {
+      "step_index": 0,
+      "step_name": "WaitingLERUpdate",
+      "status": "done",
+      "start_date": "2026-08-07T14:44:45.774402045Z",
+      "end_date": "2026-08-07T14:44:45.776405692Z",
+      "result": {
+        "network_id": 1,
+        "ler": "0x3ba1af1eba0fbefdbd0b741efc3d805119a3b192663784bf8974f7dc27d3f41e",
+        "block_number": 826
+      }
+    },
+    {
+      "step_index": 1,
+      "step_name": "PendingInclusion",
+      "status": "done",
+      "start_date": "2026-08-07T14:44:45.776405692Z",
+      "end_date": "2026-08-07T14:44:45.776405692Z",
+      "result": {
+        "certificate_id": "0xfd92b4854c0364e0a9e8e3bade6bbcc0873a6be917321320d7e2f24e24f7131f",
+        "new_ler": "0x3ba1af1eba0fbefdbd0b741efc3d805119a3b192663784bf8974f7dc27d3f41e",
+        "previous_ler": "0xfd107fe3ba1c4de7139e4ca5d666ec90a7df9698c926f585611eac31ce13192f"
+      }
+    },
+    {
+      "step_index": 2,
+      "step_name": "CertificatePending",
+      "status": "done",
+      "start_date": "2026-08-07T14:44:45.776405692Z",
+      "end_date": "2026-08-07T14:45:06.844644141Z",
+      "result": {
+        "certificate_id": "0xfd92b4854c0364e0a9e8e3bade6bbcc0873a6be917321320d7e2f24e24f7131f",
+        "status": 4,
+        "status_string": "Settled",
+        "settlement_tx_hash": "0x1bf33df3df7e20de949cb8e8dd664c1a928a009d8af2692894a7df9fdc6a76e7"
+      }
+    },
+    {
+      "step_index": 3,
+      "step_name": "WaitL1SettledGER",
+      "status": "done",
+      "start_date": "2026-08-07T14:45:06.844644141Z",
+      "end_date": "2026-08-07T14:45:06.844644141Z",
+      "result": {
+        "tx_hash": "0x1bf33df3df7e20de949cb8e8dd664c1a928a009d8af2692894a7df9fdc6a76e7",
+        "block_number": 511,
+        "ger": "0xe95cc8832a43e15f02052ae8d436589fc0ad89643e4a7a0f1af7242016f173b7",
+        "l1_info_tree_index": 5,
+        "has_verify_batches_trusted_aggregator": true,
+        "has_update_l1_info_tree": true,
+        "has_update_l1_info_tree_v2": true
+      }
+    },
+    {
+      "step_index": 4,
+      "step_name": "WaitingClaim",
+      "status": "done",
+      "start_date": "2026-08-07T14:45:06.844644141Z",
+      "end_date": "2026-08-07T14:47:26.844119964Z",
+      "result": {
+        "claim_tx": "0x51d247094346142f780378bfb82a1e54b152db5d4035ec4e6937c531c47b0145",
+        "block_number": 583
+      }
+    },
+    {
+      "step_index": 5,
+      "step_name": "Claimed",
+      "status": "done",
+      "start_date": "2026-08-07T14:47:26.844119964Z",
+      "end_date": "2026-08-07T14:47:26.844119964Z"
+    }
+  ],
+  "error": null
+}

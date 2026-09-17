@@ -257,6 +257,249 @@ const claimMessageTx = await bridge.buildClaimMessageFromHash(
 );
 ```
 
+### aggkit Module - Bridge Tracking & Activity
+
+The `AggkitBridgeAggregator` talks to two distinct aggkit services, each
+with its own root URL:
+
+- **Bridge service** (`/bridge/v1`) — one instance per L2 network.
+  `AggkitAggregatorConfig.networks` maps networkId -> that network's
+  bridge-service base URL. It answers per-network bridge/claim/token-mapping/
+  proof queries and has no cross-network view of its own.
+- **Bridge tracker** (`/tracker/v1`) — a **different aggkit service**: its
+  own binary on its own port unless an aggkit-proxy fronts both alongside
+  every bridge service. It already holds the cross-network view: it fans
+  out server-side across every bridge service it is itself configured with
+  and answers for all of them from ONE endpoint, so it is addressed by a
+  single URL, not a per-network map — `AggkitAggregatorConfig.aggkitProxyUrl`.
+  This field is **required** because it cannot be derived from `networks`
+  (a bridge-service root does not serve `/tracker/v1`). Its
+  `/tracker/v1/activity` route is also opt-in server-side: an aggkit
+  deployment that has not configured/enabled the tracker for a network
+  returns a plain 404 for it.
+
+```typescript
+import { AggkitBridgeAggregator } from '@agglayer/sdk';
+
+const aggregator = new AggkitBridgeAggregator({
+  networks: {
+    1101: 'https://zkevm-bridge-service.example.com', // per-network bridge service
+    1: 'https://ethereum-bridge-service.example.com',
+  },
+  // The bridge TRACKER — a separate aggkit service, not one of the URLs above.
+  aggkitProxyUrl: 'https://aggkit-tracker.example.com',
+});
+```
+
+Behind a single aggkit-proxy fronting everything, `aggkitProxyUrl` is simply
+the same origin as every `networks` value — see the "Multi-Network Proxy
+Configuration" example in `src/aggkit/index.ts`'s module doc for that
+topology.
+
+#### Cross-Network Activity
+
+```typescript
+// One request: the tracker fans out server-side across every configured
+// bridge service and returns the address's ENTIRE bridge history (no
+// pagination) in one unified, deduped, already-claim-checked list.
+const { bridges, warnings } = await aggregator.getActivity({
+  fromAddress: '0xFromAddress12345678901234567890123456789012345',
+});
+
+// Ready-to-claim bridges: filter on `claim_status`. This is resolved
+// server-side even without `includeTracking: true`.
+const readyToClaim = bridges.filter(
+  (item) => item.claim_status === 'readyToClaim'
+);
+```
+
+`includeTracking` defaults to **`false`**, matching the tracker's own
+server-side default. Passing `includeTracking: true` is not simply a richer
+read — it **registers every still-unclaimed bridge in the result with the
+tracker's supervised list**, i.e. it is a server-side write triggered by
+what looks like a read. `claim_status` already resolves `'pending'` vs.
+`'readyToClaim'` without it, so reserve `includeTracking: true` for callers
+that specifically need the per-row step detail (`item.tracking`) that
+requires it.
+
+#### Bridge Transaction Tracking
+
+```typescript
+// Poll the aggkit bridge tracker for a single transaction's route/status,
+// keyed by the SOURCE network id and the tx hash that created the bridge.
+const trackingData = await aggregator.getBridgeTracking(
+  11155111, // source network where the bridge tx occurred
+  '0xBridgeTxHash123456789012345678901234567890123456789012345678'
+);
+```
+
+The aggkit tracker (`tracker/v1`) has no push/subscription transport — only
+this REST lookup — so callers must poll. ~5s between calls is a good
+default (matches the dev-ui consumer). Stop polling as soon as either
+terminal condition is met:
+
+- `tracking_status === 'finished'`, or
+- `tracking_status === 'error'` with `bridge_status: null` (the tracker gave
+  up resolving the bridge at all — distinct from a step-level error, which
+  reports `tracking_status: 'error'` too but with `bridge_status` populated
+  and is retried by the tracker on its own).
+
+Keep polling through any other non-terminal state, including a regression
+back to `'registered'` with `all_steps: null` — the FIRST call for a given
+`(networkId, txHash)` pair registers it with the tracker, and the tracker
+is stateful with a bounded retention window (`RetentionPeriod`); if a
+tracked-but-not-yet-terminal bridge is evicted, the next poll silently
+re-registers it from scratch (`'registered'`, `all_steps: null` again)
+rather than erroring.
+
+`tracking_status`, `bridge_type`, and each step's `status`/`step_name` ship
+as bare string unions on the wire — not a numeric value with a `_string`
+companion field, unlike `error_type` and certificate `status`, which do
+keep the int + `_string` pair. See the `AggkitTrackingData` /
+`AggkitBridgeStepPath` JSDoc in `src/aggkit/types.ts` for the full
+wire-format reference.
+
+A step's `status` can also be `'skipped'`
+([agglayer/sdk#38](https://github.com/agglayer/sdk/issues/38)): the tracker
+decided this step no longer needs verifying, e.g. because the bridge was
+already claimed on the destination network before the tracker's own step
+machine caught up. Do NOT assume a `'skipped'` step carries `error`,
+`start_date`, or `end_date` — a live capture
+(`src/aggkit/__fixtures__/tracker_l2l2_skipped_live.json`) shows a response
+where only the step that had already started retrying before being
+superseded keeps its dates and its last `transient` (0) `error`, while every
+step downstream of it is entirely bare: `{step_index, step_name, status:
+'skipped'}` and nothing else. A `error_type: 3`/`'skipped'` value has also
+been observed (see the proxy's own example in the issue, modeled by the
+synthetic `tracker_l2l2_skipped.json` fixture) on the step actually being
+short-circuited, but this is not guaranteed either. See `AggkitStepStatus`
+and `AggkitTrackerErrorType` in `src/aggkit/types.ts`.
+
+`TrackingData` also carries `claim_status`
+(`'pending' | 'readyToClaim' | 'claimed' | 'error'`,
+[agglayer/aggkit#1823](https://github.com/agglayer/aggkit/issues/1823), PR
+[#1829](https://github.com/agglayer/aggkit/pull/1829)) — use it instead of
+inspecting `step_index`/`all_steps` by hand to decide whether to show a claim
+button. Same PR adds a `WaitingL1InfoLeafAvailable` step, inserted
+immediately before `WaitingClaim` on all three routes (L1->L2, L2->L1,
+L2->L2): the resolving bridge-service (origin's, or destination's when the
+origin is mainnet) syncing its L1 Info Tree far enough to include this
+deposit's leaf, a prerequisite for the claim proof. See `AggkitClaimStatus`
+and `AggkitBridgeStep` in `src/aggkit/types.ts`.
+
+The activity endpoint's `AggkitActivityItem.claim_status`
+([agglayer/aggkit#1830](https://github.com/agglayer/aggkit/issues/1830), PR
+[#1831](https://github.com/agglayer/aggkit/pull/1831)) now reports this same
+`'pending' | 'readyToClaim' | 'claimed' | 'error'` vocabulary, replacing the
+old `claimed: 'true' | 'false' | 'error'` tri-state — **breaking**: a
+consumer filtering on `claimed !== 'true'` to find claimable bridges must
+switch to `claim_status === 'readyToClaim'`. `'readyToClaim'` vs `'pending'`
+is resolved server-side even without `includeTracking: true` — no `tracking`
+snapshot required on the item to tell them apart.
+
+**Caveat ([agglayer/aggkit#1786](https://github.com/agglayer/aggkit/issues/1786), OPEN)**:
+the tracker's `WaitingClaim` step routinely precedes actual claimability by
+seconds to tens of seconds — it reflects only the tracker's own fast-path
+read of the settlement tx's L1 receipt, not aggkit's separate bridge-service
+L1-info-tree sync that a claim's proof fetch depends on. Gate claim-readiness
+UX on your own check (e.g. the bridge-service's own status/proof
+availability), not on the tracker reaching `WaitingClaim` (nor on
+`claim_status === 'readyToClaim'`, which is derived from the same step
+machine). `getClaimInputs`, documented next, is exactly that check. Whether
+`WaitingL1InfoLeafAvailable` narrows this gap is not yet confirmed — it's a
+new step, not a stated fix for #1786; treat the caveat as still in force
+until #1786 itself closes.
+
+#### Claim Readiness & Claim Inputs
+
+```typescript
+// Resolve the proof inputs needed to claim a single bridge deposit.
+// `recordingNetworkId` is the network whose LOCAL EXIT TREE recorded the
+// deposit — from an `AggkitActivityItem` row (`getActivity`) this is
+// `item.bridge_network_id`, NOT the asset's `origin_network`.
+const result = await aggregator.getClaimInputs({
+  recordingNetworkId: item.bridge_network_id,
+  destinationNetworkId: item.bridge.destination_network,
+  depositCount: item.bridge.deposit_count,
+});
+
+if (!result.claimable) {
+  // Not yet claimable is data, not an error: a well-formed request whose
+  // deposit simply has not settled yet. `reason` is an OPEN union — always
+  // keep a `default` branch, never an exhaustive `assertNever` switch.
+  switch (result.reason) {
+    case 'SOURCE_NOT_ON_L1_INFO_TREE':
+      // still settling on the source network
+      break;
+    case 'DESTINATION_GER_NOT_INJECTED':
+      // waiting for the destination to inject the global exit root
+      break;
+    default:
+      // e.g. 'SYNCER_INCONSISTENT' (a syncer is resolving a reorg) — keep polling
+      break;
+  }
+} else {
+  // result.proof, result.leafIndex, result.sourceL1InfoTreeIndex
+}
+```
+
+`getClaimInputs` throws **only** for genuine failures — `AggkitApiError` for
+a real non-2xx response, a plain `Error` for a backend-contract violation or
+a configuration problem, or a plain `Error` (its `.cause` carries the
+original network error) for a transport failure after retries are
+exhausted. A transport failure does **not** produce `AggkitApiError` — that
+class is only ever constructed from an actual HTTP response, and a transport
+failure never gets one; a caller branching on `instanceof AggkitApiError`
+should treat the plain-`Error`/`.cause` case as a distinct outcome. It never
+throws to signal "not ready yet"; not yet claimable is data, not an error,
+and is always returned as the `{ claimable: false, reason, detail }` branch
+above — there is no thrown not-ready state anywhere on this path.
+
+**Routing.** `recordingNetworkId` is REQUIRED and keys the `network_id` sent
+to both the L1-info-tree-index probe and the claim-proof call. It also keys
+which aggkit instance answers **except** when `recordingNetworkId === 0`
+(L1 has no dedicated instance): there, the destination L2's instance is used
+instead, since it is the one that must also answer the injected-GER probe
+(falling back to any configured instance if the destination itself isn't
+configured). It is **not** the asset's `origin_network` — the two diverge for
+native-gas-token withdrawals and for transfers of a token whose origin
+differs from the network the transfer executed on. Passing `origin_network`
+in those cases silently builds a well-formed proof for a different,
+unrelated deposit, with no error raised anywhere. There is no
+`originNetworkId` parameter to fall back to; it was removed rather than
+deprecated, so a stale call site fails to compile instead of mis-routing at
+runtime.
+
+**Minimum supported aggkit: v0.11.0-rc9.** rc6 is the floor for the not-ready
+classification described in this section only. This module also depends on
+the tracker's activity endpoint (`getActivity`, `/tracker/v1/activity/from/{from_address}`),
+which raises the effective floor further: that route did not exist before
+rc8 (rc6/rc7 return a plain 404 for it), and `claim_status` on both the
+activity rows and `AggkitTrackingData` did not land until
+agglayer/aggkit#1829/#1831 — #1831's merge commit **is** the rc9 tag. On
+rc8, `claim_status` is `undefined` at runtime despite being declared
+required, so a `claim_status === 'readyToClaim'` filter (as this README
+instructs) silently returns zero rows forever, with no error raised
+anywhere. The effective minimum for this SDK is therefore **v0.11.0-rc9**.
+Earlier releases (rc4/rc5) are not supported for the not-ready
+classification below either — this SDK does not attempt to classify their
+wire shapes, and a deployment on rc4/rc5 will see a genuine failure
+(`AggkitApiError`) for any not-ready state these endpoints report. On the
+rc6+ floor for that classification, the client
+absorbs aggkit's not-ready wire shapes across `/l1-info-tree-index`,
+`/injected-l1-info-leaf`, and `/claim-proof` into the same stable
+`AggkitNotReadyReason` values — a 404 with a fixed not-ready prose, or a 503
+while a syncer resolves a reorg (`SYNCER_INCONSISTENT` — reachable from ALL
+THREE of those endpoints, not just `/l1-info-tree-index`) — while any 500 on
+any of the three is unconditionally a genuine fault and throws
+`AggkitApiError`. `AggkitNotReadyReason` currently has five members:
+`SOURCE_NOT_ON_L1_INFO_TREE` and `DESTINATION_GER_NOT_INJECTED` (shown in the
+switch above), plus `SYNCER_INCONSISTENT`, `L1_INFO_LEAF_NOT_INDEXED` (the
+destination's GER _is_ already injected; a different syncer is merely a few
+blocks behind indexing that leaf), and `CLAIM_PROOF_NOT_AVAILABLE` (the
+`/claim-proof` call itself is waiting on one of several syncers). The union
+is open — see the `default` branch above.
+
 ## ⚙️ Configuration
 
 ### SDK Configuration Options
@@ -464,6 +707,7 @@ The SDK includes a comprehensive registry of popular networks:
 - **Ethereum Mainnet** (Chain ID: 1)
 - **Katana** (Chain ID: 747474)
 - **Sepolia Testnet** (Chain ID: 11155111)
+
 <!-- - **Bokuto Testnet** (Chain ID: 2442) -->
 
 Additional networks can be added via the `chains` configuration option.
@@ -628,6 +872,151 @@ try {
   }
 }
 ```
+
+## ⚠️ Breaking Changes
+
+### `ChainRegistry.getChainByNetworkId()` registration precedence (base branch, commit `b9a990c`)
+
+**Not introduced by this PR** — this shipped on the base branch
+(`origin/feat/aggkit-bridge-client`), independent of anything in this fix
+branch. Recorded here because its blast radius crosses module boundaries and
+was otherwise undocumented (reviewer comment 3862898221).
+
+`ChainRegistry.getChainByNetworkId()` now resolves networkId collisions with
+consumer precedence in every case, not just when the consumer picks a
+brand-new chainId. Previously, `defaultChainIds` was frozen at construction
+and never cleared, so a consumer re-registering one of the SDK's own
+built-in default chainIds (e.g. the real Sepolia chainId, `11155111`) stayed
+flagged as a default alongside the SDK's pre-seeded entry for that same
+networkId, and `getChainByNetworkId()` fell back to whichever of the two was
+registered first — in practice, always the SDK's own default (e.g. Ethereum
+mainnet at networkId 0), never the consumer's override. `registerChain()`
+now deletes a chainId from `defaultChainIds` on every call, so any
+re-registration — whether it introduces a brand-new chainId or reuses one of
+the SDK's own defaults — immediately graduates that chainId to
+consumer-registered status and wins the collision, independent of
+registration order.
+
+Consumers who register a chain at a networkId already used by an SDK
+default, using the SDK's own default chainId for that chain, will now see
+`getChainByNetworkId()` (and everything downstream of it) resolve to their
+registration instead of the SDK default; this is the intended fix, but is a
+behavior change for anyone who was relying on (or unaware of) the previous
+frozen-defaults fallback. **The blast radius is not limited to aggkit**: it
+includes the existing NATIVE path via `BridgeUtil.fromNetworkId`
+(`src/native/bridge/bridge.ts:280`, `:307`, `:330`), which resolves chain
+configuration for native bridge operations, in addition to
+`AggkitBridgeAggregator.getTokenMetadata` (`src/aggkit/aggregator.ts`). Any
+consumer relying on the old first-registered/frozen-defaults fallback for a
+re-registered default chainId will see different resolution results after
+this change.
+
+### `AggkitBridgeAggregator.getClaimInputs` (this PR)
+
+Two related breaking changes to this method:
+
+1. **`originNetworkId` removed, `recordingNetworkId` now required.** The
+   parameter was routing claim-proof lookups by the asset's `origin_network`,
+   which silently builds a well-formed proof against the wrong network's
+   exit tree for native-gas-token withdrawals and for cross-network
+   transfers of a token whose origin differs from the network the transfer
+   executed on (comment 3847422009). `originNetworkId` is declared as
+   `never` rather than deprecated, so a stale call site is a compile error;
+   a JS caller that still passes it gets a thrown migration `Error` at
+   runtime. Replace `originNetworkId` with `recordingNetworkId` —
+   `AggkitActivityItem.bridge_network_id` from `getActivity` rows — never
+   the asset's `origin_network`.
+2. **"Not yet claimable" changed from a thrown, fabricated `AggkitApiError`
+   to a returned result union.** Previously a not-ready source or
+   destination state was reported as a thrown `AggkitApiError` with an
+   `httpStatus` that did not correspond to any real aggkit response
+   (comments 3847523270 / 3847600104). `getClaimInputs` now returns
+   `AggkitClaimInputsResult = AggkitClaimInputsReady | AggkitClaimInputsNotReady`
+   (discriminated on `claimable`) — a not-ready deposit is
+   `{ claimable: false, reason, detail }`, not a `catch` branch. Callers that
+   wrapped `getClaimInputs` in a `try`/`catch` to detect "not ready yet" must
+   switch to checking `result.claimable` instead; genuine failures (a real
+   non-2xx response, a transport failure, or a config/contract violation)
+   still throw.
+
+### `AggkitBridgeAggregator.getActivity` now wraps aggkit's bridgetracker `/tracker/v1/activity`, not a client-side `/bridge/v1` fan-out; `getReadyToClaimCount` is REMOVED (issues #30, #31)
+
+`getActivity` previously fanned out client-side across every configured
+network's `/bridge/v1` instance (`getBridges` x2 + `getClaims` x2 per
+network, plus per-row `/l1-info-tree-index` / `/injected-l1-info-leaf`
+probes), paginated with an opaque cursor. It now does none of that: it is a
+thin passthrough to aggkit's bridgetracker
+`GET /tracker/v1/activity/from/{from_address}`, which already fans out
+server-side across every bridge service it is configured with and returns
+one unified, deduped, already-claim-checked list in a single request. The
+tracker component owns the cross-network view, not any single bridge service.
+
+- **BREAKING: `AggkitAggregatorConfig.aggkitProxyUrl` is new and required.**
+  The tracker is a _different aggkit service_ from the bridge services in
+  `networks` (its own binary on its own port unless an aggkit-proxy fronts
+  both), so it gets its own root URL — one URL, not a per-network map, since
+  the tracker already answers for every network from one endpoint. Behind an
+  aggkit-proxy this is simply the same origin as the `networks` values.
+  Consequently `getActivity` issues exactly one request and no longer tries
+  each configured network in turn: that loop was never real failover, only N
+  guesses at where the single tracker lives (each per-network client derived
+  its own `<baseUrl>/tracker/v1`), and it rewrapped errors so an
+  `AggkitApiError` reached callers as a plain `Error`. Errors from the
+  tracker now propagate unchanged. `AggkitBridgeClientConfig` gains an
+  optional `trackerBaseUrl` for the same reason; omitted, it falls back to
+  `baseUrl`, which is correct only behind such a proxy.
+
+- **New signature and return shape.** `getActivity(params: { fromAddress:
+string; includeTracking?: boolean })` (no more `pageSize`/`cursor`/`order`)
+  returns `AggkitActivityResult = { bridges: AggkitActivityItem[]; warnings:
+AggkitActivityWarning[] }` — see its module doc in `types.ts` for the full
+  contract and trade-offs versus the old fan-out (no pagination;
+  `claim_status: AggkitClaimStatus` + optional `tracking` instead of the old
+  BRIDGED/LEAF_INCLUDED/READY_TO_CLAIM/CLAIMED derivation; `warnings` instead
+  of `failedNetworks`).
+- **Removed types**: `AggkitTransaction`, `AggkitTransactionStatus`,
+  `AggkitFailedNetwork`, `AggkitActivityPage`, `AggkitPageCursor`,
+  `AggkitSourceCursorState`, `AggkitReadyToClaimCountResult`, and the
+  `decodeCursor` export. Replaced by `AggkitActivityBridge`,
+  `AggkitActivityClaim`, `AggkitActivityItem`, `AggkitActivityWarning`,
+  `AggkitActivityResult`.
+- **`AggkitBridgeAggregator.getReadyToClaimCount` is REMOVED entirely**
+  (it can no longer disagree with `getActivity` on the same row the way
+  issue #31 described, because there is no separate fan-out left to
+  disagree). Derive a ready-to-claim count yourself from `getActivity`'s
+  result: filter `claim_status === 'readyToClaim'` (mirrors how a consumer
+  already has to interpret this result for status display —
+  agglayer-dev-ui's own `app/services/activity.ts` `deriveStatus` is one
+  worked example).
+- **New**: `AggkitBridgeClient.getActivity` (the client method the aggregator
+  delegates to) is available directly for callers that already talk to one
+  aggkit origin and don't need the aggregator. It is not network-scoped —
+  it hits `trackerBaseUrl` (default `baseUrl`) and ignores the client's
+  `networkId`.
+
+### `AggkitActivityItem.claimed` renamed to `claim_status`, revalued to the tracker's own vocabulary (agglayer/aggkit#1830, PR [#1831](https://github.com/agglayer/aggkit/pull/1831))
+
+`GET /tracker/v1/activity/from/{from_address}`'s per-bridge claim field used
+to be a plain tri-state mirroring only the destination bridge contract's
+`isClaimed()` call. It is now `claim_status: AggkitClaimStatus` — the same
+`'pending' | 'readyToClaim' | 'claimed' | 'error'` vocabulary
+`AggkitTrackingData.claim_status` already used (PR #1829) — so a consumer no
+longer needs `includeTracking: true` and a `tracking` inspection just to
+tell "still pending" apart from "ready to claim": the tracker resolves
+`readyToClaim` directly against the bridge-service `/l1-info-tree-index` +
+`/injected-l1-info-leaf` endpoints server-side either way.
+
+- **Breaking**: `claimed: 'true' | 'false' | 'error'` is GONE. Replace
+  `claimed !== 'true'` with `claim_status === 'readyToClaim'` (not
+  `!== 'claimed'` — that would still include `'pending'`) to find claimable
+  bridges; replace `claimed === 'error'` with `claim_status === 'error'`
+  unchanged.
+- `errors` may now carry a `readiness` key (in addition to the existing
+  `claim` key) when the direct readiness probe itself failed while the
+  bridge was still unclaimed — `claim_status` conservatively stays
+  `'pending'` in that case rather than surfacing as `'error'`.
+- No fixture yet captures this field (all `__fixtures__/tracker_*.json`
+  predate #1831).
 
 ## 📈 Roadmap & Future Development
 
