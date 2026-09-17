@@ -359,6 +359,22 @@ keep the int + `_string` pair. See the `AggkitTrackingData` /
 `AggkitBridgeStepPath` JSDoc in `src/aggkit/types.ts` for the full
 wire-format reference.
 
+A step's `status` can also be `'skipped'`
+([agglayer/sdk#38](https://github.com/agglayer/sdk/issues/38)): the tracker
+decided this step no longer needs verifying, e.g. because the bridge was
+already claimed on the destination network before the tracker's own step
+machine caught up. Do NOT assume a `'skipped'` step carries `error`,
+`start_date`, or `end_date` — a live capture
+(`src/aggkit/__fixtures__/tracker_l2l2_skipped_live.json`) shows a response
+where only the step that had already started retrying before being
+superseded keeps its dates and its last `transient` (0) `error`, while every
+step downstream of it is entirely bare: `{step_index, step_name, status:
+'skipped'}` and nothing else. A `error_type: 3`/`'skipped'` value has also
+been observed (see the proxy's own example in the issue, modeled by the
+synthetic `tracker_l2l2_skipped.json` fixture) on the step actually being
+short-circuited, but this is not guaranteed either. See `AggkitStepStatus`
+and `AggkitTrackerErrorType` in `src/aggkit/types.ts`.
+
 `TrackingData` also carries `claim_status`
 (`'pending' | 'readyToClaim' | 'claimed' | 'error'`,
 [agglayer/aggkit#1823](https://github.com/agglayer/aggkit/issues/1823), PR

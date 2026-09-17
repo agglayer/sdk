@@ -307,6 +307,100 @@ describe('AggkitBridgeClient.getBridgeTracking', () => {
     });
   });
 
+  describe('`skipped` step status (agglayer/sdk#38)', () => {
+    // tracker_l2l2_skipped.json is a SYNTHETIC fixture, not a live capture:
+    // it is modeled on the proxy-backend example from agglayer/sdk#38,
+    // filled out to a full L2->L2 AggkitTrackingData response using the
+    // same bridge_status/step results as tracker_l2l2_running.json.
+    it('parses tracker_l2l2_skipped.json: a bridge already claimed on destination leaves later steps `skipped`', async () => {
+      mockFetchOnce(loadFixture('tracker_l2l2_skipped.json'), 200);
+      const data = await client.getBridgeTracking('0xirrelevant');
+
+      expect(data.tracking_status).toBe('running');
+      expect(data.claim_status).toBe('claimed');
+      expect(data.all_steps).toHaveLength(7);
+
+      // WaitL1SettledGER: skipped, but still carries the last TRANSIENT
+      // error it saw before something else short-circuited it — not
+      // error_type 3, unlike the step that was actually skipped.
+      const waitL1SettledGer = data.all_steps?.[3];
+      expect(waitL1SettledGer?.step_name).toBe('WaitL1SettledGER');
+      expect(waitL1SettledGer?.status).toBe('skipped');
+      expect(waitL1SettledGer?.start_date).toBeDefined();
+      expect(waitL1SettledGer?.error?.error_type).toBe(0);
+      expect(waitL1SettledGer?.error?.error_type_string).toBe('transient');
+
+      // WaitingGERInjection: the step actually skipped because the bridge
+      // was already claimed on the destination network — error_type 3,
+      // and no start_date since it never ran.
+      const gerInjection = data.all_steps?.[4];
+      expect(gerInjection?.step_name).toBe('WaitingGERInjection');
+      expect(gerInjection?.status).toBe('skipped');
+      expect(gerInjection?.start_date).toBeUndefined();
+      expect(gerInjection?.end_date).toBeDefined();
+      expect(gerInjection?.error?.error_type).toBe(3);
+      expect(gerInjection?.error?.error_type_string).toBe('skipped');
+      expect(gerInjection?.error?.description).toEqual([
+        'bridge already claimed on destination network; step left unverified',
+      ]);
+
+      const waitingClaim = data.all_steps?.[5];
+      expect(waitingClaim?.status).toBe('skipped');
+
+      const claimed = data.all_steps?.[6];
+      expect(claimed?.status).toBe('done');
+    });
+
+    // tracker_l2l2_skipped_live.json IS a live capture (2026-09-16, local
+    // devnet, network 81) — unlike the synthetic fixture above, it shows
+    // `'skipped'` steps carrying NONE of start_date/end_date/error at all,
+    // not just a missing start_date. Only the step that had already begun
+    // retrying before being superseded (WaitL1SettledGER) keeps its dates
+    // and its last (transient, not error_type 3) error.
+    it('parses tracker_l2l2_skipped_live.json: downstream `skipped` steps carry no dates/error/result at all', async () => {
+      mockFetchOnce(loadFixture('tracker_l2l2_skipped_live.json'), 200);
+      const data = await client.getBridgeTracking('0xirrelevant');
+
+      expect(data.tracking_status).toBe('running');
+      expect(data.claim_status).toBe('claimed');
+      expect(data.all_steps).toHaveLength(8);
+
+      const waitL1SettledGer = data.all_steps?.[3];
+      expect(waitL1SettledGer?.step_name).toBe('WaitL1SettledGER');
+      expect(waitL1SettledGer?.status).toBe('skipped');
+      expect(waitL1SettledGer?.start_date).toBeDefined();
+      expect(waitL1SettledGer?.end_date).toBeDefined();
+      expect(waitL1SettledGer?.error?.error_type).toBe(0);
+      expect(waitL1SettledGer?.error?.error_type_string).toBe('transient');
+
+      for (const index of [4, 5, 6]) {
+        const step = data.all_steps?.[index];
+        expect(step?.status).toBe('skipped');
+        expect(step?.start_date).toBeUndefined();
+        expect(step?.end_date).toBeUndefined();
+        expect(step?.error).toBeUndefined();
+        expect(step?.result).toBeUndefined();
+      }
+      expect(data.all_steps?.map((s) => s.step_name).slice(4, 7)).toEqual([
+        'WaitingGERInjection',
+        'WaitingL1InfoLeafAvailable',
+        'WaitingClaim',
+      ]);
+
+      // The terminal step is `'error'`, not `'skipped'`: the tracker itself
+      // is still retrying the claim lookup, distinct from the upstream
+      // steps that were skipped as a side effect of the bridge already
+      // being claimed.
+      const claimedStep = data.all_steps?.[7];
+      expect(claimedStep?.step_name).toBe('Claimed');
+      expect(claimedStep?.status).toBe('error');
+      expect(claimedStep?.start_date).toBeDefined();
+      expect(claimedStep?.end_date).toBeUndefined();
+      expect(claimedStep?.error?.error_type).toBe(0);
+      expect(claimedStep?.error?.retry_count).toBe(21);
+    });
+  });
+
   describe('400 ErrorData (tracker error shape, not the bridge-service {"error"} shape)', () => {
     it('throws AggkitApiError with the {code,message} body parsed as the error message', async () => {
       mockFetchOnce(loadFixture('tracker_error_400.json'), 400);
