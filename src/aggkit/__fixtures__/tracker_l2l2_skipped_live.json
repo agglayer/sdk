@@ -1,0 +1,133 @@
+{
+  "tracking_status": "running",
+  "claim_status": "claimed",
+  "network_id": 81,
+  "tx_hash": "0x042176caf421150727eee99aa49a4f9145b7c09deb1d2e2dc44e4f359c2d0fd7",
+  "bridge_status": {
+    "bridge_type": "L2->L2",
+    "block_number": 3117432,
+    "log_index": 0,
+    "block_timestamp": 1789036284,
+    "event": {
+      "leaf_type": "Asset",
+      "origin_network": 0,
+      "origin_address": "0x0000000000000000000000000000000000000000",
+      "destination_network": 63,
+      "destination_address": "0x43377b45c0e92257588f092b461c2496fc5053b3",
+      "amount": "1234000000000000",
+      "deposit_count": 10
+    }
+  },
+  "step_index": 7,
+  "all_steps": [
+    {
+      "step_index": 0,
+      "step_name": "WaitingLERUpdate",
+      "status": "done",
+      "start_date": "2026-09-16T12:48:52.897462639+02:00",
+      "end_date": "2026-09-16T12:48:54.453023244+02:00",
+      "result": {
+        "network_id": 81,
+        "ler": "0xf085ed3b64370e17ef3e14cd6f3b599ae7fdb2f27811d4cb875009e2cd3f304c",
+        "block_number": 3117432
+      }
+    },
+    {
+      "step_index": 1,
+      "step_name": "PendingInclusion",
+      "status": "done",
+      "start_date": "2026-09-16T12:48:54.453023244+02:00",
+      "end_date": "2026-09-16T12:48:54.453023244+02:00",
+      "result": {
+        "certificate_id": "0xbf4e6d1b875ad776a7a56ef337fd10ce4100945c4d32e3692a4ff1aea1d7a86c",
+        "new_ler": "0xec933c024737903e6b5395ecf7d3686734b7cb08108d7c91698e72db35b17dea",
+        "previous_ler": "0xec933c024737903e6b5395ecf7d3686734b7cb08108d7c91698e72db35b17dea"
+      }
+    },
+    {
+      "step_index": 2,
+      "step_name": "CertificatePending",
+      "status": "done",
+      "start_date": "2026-09-16T12:48:54.453023244+02:00",
+      "end_date": "2026-09-16T12:48:54.453023244+02:00",
+      "result": {
+        "certificate_id": "0xbf4e6d1b875ad776a7a56ef337fd10ce4100945c4d32e3692a4ff1aea1d7a86c",
+        "status": 4,
+        "status_string": "Settled",
+        "settlement_tx_hash": "0x68aaa081fad211a68b403e341480847dc247b1c623f97ed520c8e9969d8fce37",
+        "block_number": 11716239,
+        "block_timestamp": 1789555296
+      }
+    },
+    {
+      "step_index": 3,
+      "step_name": "WaitL1SettledGER",
+      "status": "skipped",
+      "start_date": "2026-09-16T12:48:54.453023244+02:00",
+      "end_date": "2026-09-16T12:48:54.453023244+02:00",
+      "error": {
+        "error_type": 0,
+        "error_type_string": "transient",
+        "retry_count": 1,
+        "description": [
+          "L1 info tree index for GER: fetching L1 info tree leaf for GER 0xb4ad476ab4e02f181762d19dc3ae74ada06793bd595206f075d9d411a499f87f: do request: Get \"http://http:5577//bridge/v1/l1-info-tree-leaf-by-ger?global_exit_root=0xb4ad476ab4e02f181762d19dc3ae74ada06793bd595206f075d9d411a499f87f&network_id=0\": dial tcp: lookup http on 127.0.0.53:53: server misbehaving"
+        ]
+      }
+    },
+    {
+      "step_index": 4,
+      "step_name": "WaitingGERInjection",
+      "status": "skipped"
+    },
+    {
+      "step_index": 5,
+      "step_name": "WaitingL1InfoLeafAvailable",
+      "status": "skipped"
+    },
+    {
+      "step_index": 6,
+      "step_name": "WaitingClaim",
+      "status": "skipped"
+    },
+    {
+      "step_index": 7,
+      "step_name": "Claimed",
+      "status": "error",
+      "start_date": "2026-09-16T12:48:54.453023244+02:00",
+      "error": {
+        "error_type": 0,
+        "error_type_string": "transient",
+        "retry_count": 21,
+        "description": [
+          "claim info: fetching claims of global index 343597383690 on network 63: do request: Get \"http://http:5577//bridge/v1/claims?global_index=343597383690&network_id=63\": dial tcp: lookup http on 127.0.0.53:53: server misbehaving",
+          "claim info: fetching claims of global index 343597383690 on network 63: do request: Get \"http://http:5577//bridge/v1/claims?global_index=343597383690&network_id=63\": dial tcp: lookup http on 127.0.0.53:53: server misbehaving",
+          "claim info: fetching claims of global index 343597383690 on network 63: do request: Get \"http://http:5577//bridge/v1/claims?global_index=343597383690&network_id=63\": dial tcp: lookup http on 127.0.0.53:53: server misbehaving",
+          "claim info: fetching claims of global index 343597383690 on network 63: do request: Get \"http://http:5577//bridge/v1/claims?global_index=343597383690&network_id=63\": dial tcp: lookup http on 127.0.0.53:53: server misbehaving",
+          "claim info: fetching claims of global index 343597383690 on network 63: do request: Get \"http://http:5577//bridge/v1/claims?global_index=343597383690&network_id=63\": dial tcp: lookup http on 127.0.0.53:53: server misbehaving",
+          "claim info: fetching claims of global index 343597383690 on network 63: do request: Get \"http://http:5577//bridge/v1/claims?global_index=343597383690&network_id=63\": dial tcp: lookup http on 127.0.0.53:53: server misbehaving",
+          "claim info: fetching claims of global index 343597383690 on network 63: do request: Get \"http://http:5577//bridge/v1/claims?global_index=343597383690&network_id=63\": dial tcp: lookup http on 127.0.0.53:53: server misbehaving",
+          "claim info: fetching claims of global index 343597383690 on network 63: do request: Get \"http://http:5577//bridge/v1/claims?global_index=343597383690&network_id=63\": dial tcp: lookup http on 127.0.0.53:53: server misbehaving",
+          "claim info: fetching claims of global index 343597383690 on network 63: do request: Get \"http://http:5577//bridge/v1/claims?global_index=343597383690&network_id=63\": dial tcp: lookup http on 127.0.0.53:53: server misbehaving",
+          "claim info: fetching claims of global index 343597383690 on network 63: do request: Get \"http://http:5577//bridge/v1/claims?global_index=343597383690&network_id=63\": dial tcp: lookup http on 127.0.0.53:53: server misbehaving"
+        ]
+      }
+    }
+  ],
+  "error": {
+    "error_type": 0,
+    "error_type_string": "transient",
+    "retry_count": 21,
+    "description": [
+      "claim info: fetching claims of global index 343597383690 on network 63: do request: Get \"http://http:5577//bridge/v1/claims?global_index=343597383690&network_id=63\": dial tcp: lookup http on 127.0.0.53:53: server misbehaving",
+      "claim info: fetching claims of global index 343597383690 on network 63: do request: Get \"http://http:5577//bridge/v1/claims?global_index=343597383690&network_id=63\": dial tcp: lookup http on 127.0.0.53:53: server misbehaving",
+      "claim info: fetching claims of global index 343597383690 on network 63: do request: Get \"http://http:5577//bridge/v1/claims?global_index=343597383690&network_id=63\": dial tcp: lookup http on 127.0.0.53:53: server misbehaving",
+      "claim info: fetching claims of global index 343597383690 on network 63: do request: Get \"http://http:5577//bridge/v1/claims?global_index=343597383690&network_id=63\": dial tcp: lookup http on 127.0.0.53:53: server misbehaving",
+      "claim info: fetching claims of global index 343597383690 on network 63: do request: Get \"http://http:5577//bridge/v1/claims?global_index=343597383690&network_id=63\": dial tcp: lookup http on 127.0.0.53:53: server misbehaving",
+      "claim info: fetching claims of global index 343597383690 on network 63: do request: Get \"http://http:5577//bridge/v1/claims?global_index=343597383690&network_id=63\": dial tcp: lookup http on 127.0.0.53:53: server misbehaving",
+      "claim info: fetching claims of global index 343597383690 on network 63: do request: Get \"http://http:5577//bridge/v1/claims?global_index=343597383690&network_id=63\": dial tcp: lookup http on 127.0.0.53:53: server misbehaving",
+      "claim info: fetching claims of global index 343597383690 on network 63: do request: Get \"http://http:5577//bridge/v1/claims?global_index=343597383690&network_id=63\": dial tcp: lookup http on 127.0.0.53:53: server misbehaving",
+      "claim info: fetching claims of global index 343597383690 on network 63: do request: Get \"http://http:5577//bridge/v1/claims?global_index=343597383690&network_id=63\": dial tcp: lookup http on 127.0.0.53:53: server misbehaving",
+      "claim info: fetching claims of global index 343597383690 on network 63: do request: Get \"http://http:5577//bridge/v1/claims?global_index=343597383690&network_id=63\": dial tcp: lookup http on 127.0.0.53:53: server misbehaving"
+    ]
+  }
+}

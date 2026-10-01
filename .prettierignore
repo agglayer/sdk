@@ -1,0 +1,4 @@
+# Captured wire fixtures: byte-identical to live aggkit responses.
+# Formatting them would break byte-fidelity with the capture and the raw-substring
+# assertions in src/aggkit/__tests__/activity.test.ts.
+src/aggkit/__fixtures__/*.json

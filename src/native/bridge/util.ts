@@ -195,7 +195,12 @@ export class BridgeUtil {
   }
 
   /**
-   * Fetch merkle proof from Polygon's hub API
+   * Fetch merkle proof from Polygon's hub API.
+   *
+   * @deprecated Legacy Bridge Hub API path. The aggkit bridge-service migration
+   * (see @agglayer/sdk `src/aggkit/*` — `AggkitBridgeAggregator.getClaimInputs`)
+   * supersedes this proof source. Left in place for the existing NATIVE claim
+   * flow; remove once all consumers move to the aggkit claim-inputs path.
    */
   private async fetchMerkleProof(
     networkId: number,

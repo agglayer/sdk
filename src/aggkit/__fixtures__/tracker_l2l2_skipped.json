@@ -1,0 +1,112 @@
+{
+  "tracking_status": "running",
+  "claim_status": "claimed",
+  "network_id": 1,
+  "tx_hash": "0x66a20ab10e92748f7ee30f9a487e262a673b790df365bf3067a59c8b71fb2fe8",
+  "bridge_status": {
+    "bridge_type": "L2->L2",
+    "block_number": 1143,
+    "log_index": 0,
+    "block_timestamp": 1786114192,
+    "event": {
+      "leaf_type": "Asset",
+      "origin_network": 0,
+      "origin_address": "0x0000000000000000000000000000000000000000",
+      "destination_network": 2,
+      "destination_address": "0x4e0ff24158eeac22ed9abfe3abbbda6d6a609fe0",
+      "amount": "20000000000000000",
+      "deposit_count": 2
+    }
+  },
+  "step_index": 4,
+  "all_steps": [
+    {
+      "step_index": 0,
+      "step_name": "WaitingLERUpdate",
+      "status": "done",
+      "start_date": "2026-08-07T14:49:59.046296597Z",
+      "end_date": "2026-08-07T14:49:59.048885846Z",
+      "result": {
+        "network_id": 1,
+        "ler": "0x70790a490a3fd74bd69a3321fe08acda9ec621054d0a88b559992db0a625bbfb",
+        "block_number": 1143
+      }
+    },
+    {
+      "step_index": 1,
+      "step_name": "PendingInclusion",
+      "status": "done",
+      "start_date": "2026-08-07T14:49:59.048885846Z",
+      "end_date": "2026-08-07T14:49:59.048885846Z",
+      "result": {
+        "certificate_id": "0xe56cb2819d2eeaa33113b54ede35f061e334eb74f47b783443326127336e29c2",
+        "new_ler": "0x70790a490a3fd74bd69a3321fe08acda9ec621054d0a88b559992db0a625bbfb",
+        "previous_ler": "0x3ba1af1eba0fbefdbd0b741efc3d805119a3b192663784bf8974f7dc27d3f41e"
+      }
+    },
+    {
+      "step_index": 2,
+      "step_name": "CertificatePending",
+      "status": "done",
+      "start_date": "2026-08-07T14:49:59.048885846Z",
+      "end_date": "2026-08-07T14:50:06.843777138Z",
+      "result": {
+        "certificate_id": "0xe56cb2819d2eeaa33113b54ede35f061e334eb74f47b783443326127336e29c2",
+        "status": 4,
+        "status_string": "Settled",
+        "settlement_tx_hash": "0x9016f9365aca01c8da56e2b97d2b1f53e7758b5dd0ed02d303bab46f242ee5a0"
+      }
+    },
+    {
+      "step_index": 3,
+      "step_name": "WaitL1SettledGER",
+      "status": "skipped",
+      "start_date": "2026-09-16T11:26:55.110064841+02:00",
+      "end_date": "2026-09-16T11:26:55.110064841+02:00",
+      "error": {
+        "error_type": 0,
+        "error_type_string": "transient",
+        "retry_count": 1,
+        "description": [
+          "L1 info tree index for GER: fetching L1 info tree leaf for GER 0x7772b4e8231ae83bb6cd34fdded6f8644e6dc7802bdafea15699bc5b2f4c91f4: do request: Get \"http://http:5577//bridge/v1/l1-info-tree-leaf-by-ger?global_exit_root=0x7772b4e8231ae83bb6cd34fdded6f8644e6dc7802bdafea15699bc5b2f4c91f4&network_id=0\": dial tcp: lookup http on 127.0.0.53:53: server misbehaving"
+        ]
+      }
+    },
+    {
+      "step_index": 4,
+      "step_name": "WaitingGERInjection",
+      "status": "skipped",
+      "end_date": "2026-09-16T11:26:55.110064841+02:00",
+      "error": {
+        "error_type": 3,
+        "error_type_string": "skipped",
+        "retry_count": 0,
+        "description": [
+          "bridge already claimed on destination network; step left unverified"
+        ]
+      }
+    },
+    {
+      "step_index": 5,
+      "step_name": "WaitingClaim",
+      "status": "skipped",
+      "end_date": "2026-09-16T11:26:55.110064841+02:00",
+      "error": {
+        "error_type": 3,
+        "error_type_string": "skipped",
+        "retry_count": 0,
+        "description": [
+          "bridge already claimed on destination network; step left unverified"
+        ]
+      }
+    },
+    {
+      "step_index": 6,
+      "step_name": "Claimed",
+      "status": "done",
+      "start_date": "2026-09-16T11:26:55.110064841+02:00",
+      "end_date": "2026-09-16T11:26:55.110064841+02:00"
+    }
+  ],
+  "error": null
+}

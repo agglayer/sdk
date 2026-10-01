@@ -1,0 +1,16 @@
+{
+  "tracking_status": "registered",
+  "network_id": 1,
+  "tx_hash": "0xdeadbeef00000000000000000000000000000000000000000000000000000000",
+  "bridge_status": null,
+  "step_index": null,
+  "all_steps": null,
+  "error": {
+    "error_type": 0,
+    "error_type_string": "transient",
+    "retry_count": 1,
+    "description": [
+      "network=1/tx=0xdeadbeef00000000000000000000000000000000000000000000000000000000 does not exist on the network"
+    ]
+  }
+}

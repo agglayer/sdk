@@ -1,0 +1,3 @@
+{
+  "error": "a syncer is temporarily inconsistent (reorg being resolved), retry later: state is inconsistent, try again later once the state is consolidated"
+}

@@ -1,0 +1,20 @@
+{
+  "tracking_status": "error",
+  "network_id": 1,
+  "tx_hash": "0xdeadbeef00000000000000000000000000000000000000000000000000000000",
+  "bridge_status": null,
+  "step_index": null,
+  "all_steps": null,
+  "error": {
+    "error_type": 2,
+    "error_type_string": "exhausted",
+    "retry_count": 5,
+    "description": [
+      "network=1/tx=0xdeadbeef00000000000000000000000000000000000000000000000000000000 does not exist on the network",
+      "network=1/tx=0xdeadbeef00000000000000000000000000000000000000000000000000000000 does not exist on the network",
+      "network=1/tx=0xdeadbeef00000000000000000000000000000000000000000000000000000000 does not exist on the network",
+      "network=1/tx=0xdeadbeef00000000000000000000000000000000000000000000000000000000 does not exist on the network",
+      "network=1/tx=0xdeadbeef00000000000000000000000000000000000000000000000000000000 does not exist on the network"
+    ]
+  }
+}

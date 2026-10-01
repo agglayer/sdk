@@ -1,0 +1,39 @@
+{
+  "claims": [
+    {
+      "block_num": 1969,
+      "block_timestamp": 1785776023,
+      "tx_hash": "0x17145dc0ce17e73b6df0e939d2bd82ba4df1e0d9801d677fac51ca5d3461e364",
+      "global_index": "2",
+      "origin_address": "0x0000000000000000000000000000000000000000",
+      "origin_network": 0,
+      "destination_address": "0x6Ac917d111d0577470809D5E34d54A00b97B0462",
+      "destination_network": 2,
+      "amount": "100000000000000000",
+      "from_address": "",
+      "mainnet_exit_root": "0xb95baa2123d348ef6e6bcce08109f2232881723940ae41612bc4a7801f0ecba2",
+      "rollup_exit_root": "0x1dc6244abad4b765e53a67831f0778a142764a668bb98bb5b63c3d6fa5117b71",
+      "global_exit_root": "0x0994468b497cb06f95d7cffc448daeae8fb0e8a4b2cfa4919aae0415b095a25e",
+      "metadata": "0x",
+      "is_message": false
+    },
+    {
+      "block_num": 639,
+      "block_timestamp": 1785774693,
+      "tx_hash": "0x0f0702b44b8a389d3a8bc3ddceb29fec40f0d4a379d8797df727010ebaca328d",
+      "global_index": "0",
+      "origin_address": "0x0000000000000000000000000000000000000000",
+      "origin_network": 0,
+      "destination_address": "0x6Ac917d111d0577470809D5E34d54A00b97B0462",
+      "destination_network": 2,
+      "amount": "100000000000000000",
+      "from_address": "",
+      "mainnet_exit_root": "0x30fad20b0e01900d3e7760a4f2283f99cd482f2e92c48a2224c16adebc0c9589",
+      "rollup_exit_root": "0x5296f9f75640adfcd0323f0ceec8d4b8b28f9f0273ef8ccb116b72fdbc1d1364",
+      "global_exit_root": "0x604735f870db22166e2bc37d9cbad6783c5f2f907eda1b71e045b5470072ae5a",
+      "metadata": "0x",
+      "is_message": false
+    }
+  ],
+  "count": 2
+}

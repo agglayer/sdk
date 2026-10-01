@@ -1,0 +1,62 @@
+{
+  "bridges": [
+    {
+      "block_num": 2080,
+      "block_pos": 0,
+      "from_address": "0x9BEE1d978DF451350fA93C69c4A1f6fFca12d107",
+      "tx_hash": "0xac862504244c13ce14da7cb484751b8786b91c893d489de4d52125eb610deb7c",
+      "global_index": 2,
+      "block_timestamp": 1785775936,
+      "leaf_type": 0,
+      "origin_network": 0,
+      "origin_address": "0x0000000000000000000000000000000000000000",
+      "destination_network": 2,
+      "destination_address": "0x6Ac917d111d0577470809D5E34d54A00b97B0462",
+      "amount": "100000000000000000",
+      "metadata": "0x",
+      "deposit_count": 2,
+      "bridge_hash": "0xf9242318868e1d109c9c249055f96ffb04913e5ecb05ac7ddf10776df66d45f0",
+      "txn_sender": "0x9BEE1d978DF451350fA93C69c4A1f6fFca12d107",
+      "to_address": "0xC8cbEBf950B9Df44d987c8619f092beA980fF038"
+    },
+    {
+      "block_num": 726,
+      "block_pos": 0,
+      "from_address": "0x9BEE1d978DF451350fA93C69c4A1f6fFca12d107",
+      "tx_hash": "0x979da11f1a5201755b87e3d29202db7e337ab65f74aef34127616be9140f4e68",
+      "global_index": 1,
+      "block_timestamp": 1785774582,
+      "leaf_type": 0,
+      "origin_network": 0,
+      "origin_address": "0x0000000000000000000000000000000000000000",
+      "destination_network": 0,
+      "destination_address": "0x9BEE1d978DF451350fA93C69c4A1f6fFca12d107",
+      "amount": "50000000000000000",
+      "metadata": "0x",
+      "deposit_count": 1,
+      "bridge_hash": "0x96615554c24907c596a359081651887b79eeb5700eb4f54863c3a8b0809d0bf9",
+      "txn_sender": "0x9BEE1d978DF451350fA93C69c4A1f6fFca12d107",
+      "to_address": "0xC8cbEBf950B9Df44d987c8619f092beA980fF038"
+    },
+    {
+      "block_num": 715,
+      "block_pos": 0,
+      "from_address": "0x9BEE1d978DF451350fA93C69c4A1f6fFca12d107",
+      "tx_hash": "0x00650c3d030c15140737c34fa164ca86eaac31d0447241af5f1b5ef1cd37e961",
+      "global_index": 0,
+      "block_timestamp": 1785774571,
+      "leaf_type": 0,
+      "origin_network": 0,
+      "origin_address": "0x0000000000000000000000000000000000000000",
+      "destination_network": 2,
+      "destination_address": "0x6Ac917d111d0577470809D5E34d54A00b97B0462",
+      "amount": "100000000000000000",
+      "metadata": "0x",
+      "deposit_count": 0,
+      "bridge_hash": "0xf9242318868e1d109c9c249055f96ffb04913e5ecb05ac7ddf10776df66d45f0",
+      "txn_sender": "0x9BEE1d978DF451350fA93C69c4A1f6fFca12d107",
+      "to_address": "0xC8cbEBf950B9Df44d987c8619f092beA980fF038"
+    }
+  ],
+  "count": 3
+}

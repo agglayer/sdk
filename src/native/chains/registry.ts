@@ -12,6 +12,17 @@ export class ChainRegistry {
   private static instance: ChainRegistry;
   private chains: Map<number, ChainConfig> = new Map();
   private viemChains: Map<number, Chain> = new Map();
+  // chainIds currently considered built-in defaults. Seeded by
+  // `initializeDefaultChains()` at construction time, but NOT frozen after
+  // that: `registerChain()` deletes a chainId from this set whenever a
+  // consumer (re-)registers it, so a consumer reusing one of the SDK's own
+  // default chainIds (e.g. the real Sepolia chainId, 11155111, in testnet
+  // mode) graduates it out of "default" too — not just a consumer that
+  // picks a brand-new chainId (e.g. a devnet L1 at networkId 0 with no
+  // chainId collision at all). Used by `getChainByNetworkId` to make
+  // consumer-registered chains win over still-default chains on networkId
+  // collisions.
+  private readonly defaultChainIds = new Set<number>();
 
   private constructor() {
     this.initializeDefaultChains();
@@ -27,7 +38,7 @@ export class ChainRegistry {
   // DEV: if adding new default chains, also update README.md
   private initializeDefaultChains() {
     // Ethereum Mainnet
-    this.registerChain({
+    this.registerDefaultChain({
       chainId: 1,
       networkId: 0,
       name: 'Ethereum',
@@ -40,7 +51,7 @@ export class ChainRegistry {
     });
 
     // Katana
-    this.registerChain({
+    this.registerDefaultChain({
       chainId: 747474,
       networkId: 20,
       name: 'Katana',
@@ -56,7 +67,7 @@ export class ChainRegistry {
     });
 
     // Ethereum Sepolia Testnet
-    this.registerChain({
+    this.registerDefaultChain({
       chainId: 11155111,
       networkId: 0,
       name: 'Ethereum Sepolia',
@@ -75,9 +86,26 @@ export class ChainRegistry {
   }
 
   /**
-   * Register a new chain
+   * Register a new chain.
+   *
+   * Precedence note: chains registered here (by a consumer, at any point
+   * after construction) always take precedence over the SDK's built-in
+   * defaults (registered via `initializeDefaultChains()`/
+   * `registerDefaultChain()`) when `getChainByNetworkId()` resolves a
+   * networkId collision — regardless of registration order, and regardless
+   * of whether the consumer's chainId is brand-new or reuses one of the
+   * SDK's own default chainIds (e.g. the real Sepolia chainId, 11155111):
+   * registering here always deletes the chainId from `defaultChainIds`
+   * first, so a reused default chainId graduates to consumer-registered too.
+   * See `getChainByNetworkId()`.
    */
   registerChain(config: ChainConfig): void {
+    // Graduate this chainId out of "default" status, if it was one. Must
+    // run before `registerDefaultChain()`'s own `defaultChainIds.add()` call
+    // below (construction-time seeding calls this method first), so a
+    // default chain's own initial registration isn't immediately
+    // un-flagged by itself.
+    this.defaultChainIds.delete(config.chainId);
     this.chains.set(config.chainId, config);
 
     // Create viem chain object
@@ -94,6 +122,18 @@ export class ChainRegistry {
   }
 
   /**
+   * Register a built-in default chain (used only by
+   * `initializeDefaultChains()`). Identical to `registerChain()`, plus
+   * (re-)marking the chainId as a default for `getChainByNetworkId()`
+   * precedence purposes — undoing the `defaultChainIds.delete()` that
+   * `registerChain()` itself just did for this same chainId.
+   */
+  private registerDefaultChain(config: ChainConfig): void {
+    this.registerChain(config);
+    this.defaultChainIds.add(config.chainId);
+  }
+
+  /**
    * Get chain configuration by ID
    */
   getChain(chainId: number): ChainConfig {
@@ -107,12 +147,26 @@ export class ChainRegistry {
   }
 
   /**
-   * Get chain configuration by network ID
+   * Get chain configuration by network ID.
+   *
+   * Precedence: multiple registered chains can share a `networkId` (e.g. a
+   * consumer-registered devnet L1 and the SDK's pre-seeded Ethereum mainnet
+   * default both at networkId 0, keyed by distinct chainIds — or a consumer
+   * re-registering the SDK's own Sepolia chainId, 11155111, also at
+   * networkId 0). When that happens, a consumer-registered chain always
+   * wins over a still-default chain, independent of registration order and
+   * of whether the consumer's chainId is new or reused — a default is only
+   * returned when no consumer-registered chain shares the networkId.
+   * Ties among multiple consumer-registered (or multiple default) chains
+   * fall back to first-registered, matching prior behavior.
    */
   getChainByNetworkId(networkId: number): ChainConfig {
-    const chain = Array.from(this.chains.values()).find(
+    const matches = Array.from(this.chains.values()).filter(
       (chain) => chain.networkId === networkId
     );
+    const chain =
+      matches.find((chain) => !this.defaultChainIds.has(chain.chainId)) ??
+      matches[0];
     if (!chain) {
       throw new Error(
         `Chain with network ID ${networkId} not found. Available network IDs: ${Array.from(
