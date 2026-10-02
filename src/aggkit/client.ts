@@ -12,6 +12,7 @@ import { AggkitApiError } from './errors';
 import { fetchRawText, type RawFetchConfig } from './httpRaw';
 import { quoteGlobalIndex } from './parsing';
 import type {
+  AggkitActivityFilter,
   AggkitActivityResult,
   AggkitBridgeClientConfig,
   AggkitBridgesResult,
@@ -746,6 +747,11 @@ export class AggkitBridgeClient {
    * `AggkitTrackingData` under `tracking` is opt-in step-level detail for
    * consumers that need it, not something most callers must request.
    *
+   * `filterBridges` (`'all'` | `'claimed'` | `'pending'` | `'readyToClaim'` |
+   * `'error'`, i.e. `AggkitActivityFilter`) restricts `bridges` to that
+   * `claim_status` server-side. When omitted the parameter is not sent and
+   * the tracker applies its own default.
+   *
    * See `AggkitActivityResult`'s module doc in `types.ts` for the full
    * contract (no pagination — `bridges` is the address's entire history in
    * one response — and the trade-offs versus the older `/bridge/v1`
@@ -754,9 +760,13 @@ export class AggkitBridgeClient {
   async getActivity(params: {
     fromAddress: string;
     includeTracking?: boolean;
+    filterBridges?: AggkitActivityFilter;
   }): Promise<AggkitActivityResult> {
     const includeTracking = params.includeTracking ?? false;
-    const query = this.buildQuery({ includeTracking });
+    const query = this.buildQuery({
+      includeTracking,
+      filterBridges: params.filterBridges,
+    });
     const url = `${this.trackerApiUrl}/activity/from/${encodeURIComponent(params.fromAddress)}?${query}`;
     const { status, text } = await fetchRawText(url, this.fetchConfig);
 

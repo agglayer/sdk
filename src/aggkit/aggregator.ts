@@ -13,6 +13,7 @@ import { chainRegistry } from '../native/chains/registry';
 import { ERC20 } from '../native';
 import { ZERO_ADDRESS } from '../constants';
 import type {
+  AggkitActivityFilter,
   AggkitActivityResult,
   AggkitAggregatorConfig,
   AggkitClaimInputsParams,
@@ -216,6 +217,7 @@ export class AggkitBridgeAggregator {
   async getActivity(params: {
     fromAddress: string;
     includeTracking?: boolean;
+    filterBridges?: AggkitActivityFilter;
   }): Promise<AggkitActivityResult> {
     // Precondition is a configured tracker, NOT a configured network: this
     // call does not touch `networks` at all (it was previously guarded on

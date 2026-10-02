@@ -182,6 +182,23 @@ describe('AggkitBridgeClient.getActivity', () => {
       );
     });
 
+    it.each(['all', 'claimed', 'pending', 'readyToClaim', 'error'] as const)(
+      'sends filterBridges=%s when given',
+      async (filterBridges) => {
+        mockFetchOnce(activityBody([]), 200);
+        await client.getActivity({ fromAddress: ADDRESS, filterBridges });
+        expect(lastFetchUrl()).toBe(
+          `${BASE_URL}/tracker/v1/activity/from/${ADDRESS}?includeTracking=false&filterBridges=${filterBridges}`
+        );
+      }
+    );
+
+    it('does not send filterBridges when omitted', async () => {
+      mockFetchOnce(activityBody([]), 200);
+      await client.getActivity({ fromAddress: ADDRESS });
+      expect(lastFetchUrl()).not.toContain('filterBridges');
+    });
+
     it('builds the activity URL from trackerBaseUrl when given, leaving baseUrl for /bridge/v1 only', async () => {
       const trackerUrl = 'http://127.0.0.1:33470';
       const split = new AggkitBridgeClient({

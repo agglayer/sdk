@@ -311,6 +311,14 @@ const { bridges, warnings } = await aggregator.getActivity({
 const readyToClaim = bridges.filter(
   (item) => item.claim_status === 'readyToClaim'
 );
+
+// Or let the tracker filter by bridge status
+// (`filterBridges=all|claimed|pending|readyToClaim|error`). Prefer this over
+// client-side filtering: it stays correct if the endpoint gets paginated.
+const { bridges: pending } = await aggregator.getActivity({
+  fromAddress: '0xFromAddress12345678901234567890123456789012345',
+  filterBridges: 'pending',
+});
 ```
 
 `includeTracking` defaults to **`false`**, matching the tracker's own

@@ -193,6 +193,7 @@ export type {
   AggkitBridgeStepResult,
   AggkitBridgeStepPath,
   AggkitClaimStatus,
+  AggkitActivityFilter,
   AggkitTrackingData,
   AggkitTrackerErrorData,
 } from './types';
