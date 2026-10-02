@@ -12,6 +12,7 @@ import { AggkitApiError } from './errors';
 import { fetchRawText, type RawFetchConfig } from './httpRaw';
 import { quoteGlobalIndex } from './parsing';
 import type {
+  AggkitActivityFilter,
   AggkitActivityResult,
   AggkitBridgeClientConfig,
   AggkitBridgesResult,
@@ -746,17 +747,37 @@ export class AggkitBridgeClient {
    * `AggkitTrackingData` under `tracking` is opt-in step-level detail for
    * consumers that need it, not something most callers must request.
    *
+   * `filterBridges` (`'all'` | `'claimed'` | `'pending'` | `'readyToClaim'` |
+   * `'error'`, i.e. `AggkitActivityFilter`) restricts `bridges` to that
+   * `claim_status` server-side. When omitted the parameter is not sent and
+   * the tracker applies its own default.
+   *
+   * `pageNumber` (1-based, tracker default `1`) and `pageSize` (tracker
+   * default `20`, max `200`) page the result, newest bridge first. `count`
+   * in the result is the total matching `filterBridges` across every page,
+   * so there are `Math.ceil(count / pageSize)` pages. Pages are not a
+   * consistent snapshot: see `AggkitActivityResult.count`.
+   *
    * See `AggkitActivityResult`'s module doc in `types.ts` for the full
-   * contract (no pagination — `bridges` is the address's entire history in
-   * one response — and the trade-offs versus the older `/bridge/v1`
-   * client-side fan-out this replaces).
+   * contract and the trade-offs versus the older `/bridge/v1` client-side
+   * fan-out this replaces.
    */
   async getActivity(params: {
     fromAddress: string;
     includeTracking?: boolean;
+    filterBridges?: AggkitActivityFilter;
+    pageNumber?: number;
+    pageSize?: number;
   }): Promise<AggkitActivityResult> {
+    this.assertActivityPage(params.pageNumber, params.pageSize);
+
     const includeTracking = params.includeTracking ?? false;
-    const query = this.buildQuery({ includeTracking });
+    const query = this.buildQuery({
+      includeTracking,
+      filterBridges: params.filterBridges,
+      page_number: params.pageNumber,
+      page_size: params.pageSize,
+    });
     const url = `${this.trackerApiUrl}/activity/from/${encodeURIComponent(params.fromAddress)}?${query}`;
     const { status, text } = await fetchRawText(url, this.fetchConfig);
 
@@ -787,7 +808,16 @@ export class AggkitBridgeClient {
     const raw = JSON.parse(quoteGlobalIndex(text)) as AggkitActivityResult & {
       from_address: string;
     };
-    return { bridges: raw.bridges, warnings: raw.warnings ?? [] };
+    // `count` is the total number of bridges matching `filterBridges` across
+    // every page. The fallback only holds for a tracker that predates
+    // pagination (e.g. rc9): it omits `count` AND ignores `page_*`, returning
+    // the whole history, so `bridges.length` is then the exact total. Current
+    // trackers always send `count` alongside a page.
+    return {
+      bridges: raw.bridges,
+      count: raw.count ?? raw.bridges.length,
+      warnings: raw.warnings ?? [],
+    };
   }
 
   private async requestRaw(
@@ -841,6 +871,23 @@ export class AggkitBridgeClient {
         `pageSize must be <= ${MAX_PAGE_SIZE} (received ${pageSize})`
       );
     }
+  }
+
+  private assertActivityPage(
+    pageNumber: number | undefined,
+    pageSize: number | undefined
+  ): void {
+    for (const [name, value] of [
+      ['pageNumber', pageNumber],
+      ['pageSize', pageSize],
+    ] as const) {
+      if (value !== undefined && (!Number.isInteger(value) || value < 1)) {
+        throw new RangeError(
+          `${name} must be an integer >= 1 (received ${value})`
+        );
+      }
+    }
+    this.assertPageSize(pageSize);
   }
 
   private assertNetworkIds(networkIds: number[] | undefined): void {

@@ -452,8 +452,9 @@ export interface AggkitAggregatorConfig {
  * Trade-offs versus the old fan-out (accepted product decision, ported here
  * from agglayer-dev-ui's own `app/services/activity.ts`, S-review
  * 2026-08-28):
- *  - No pagination: `bridges` is the address's ENTIRE history in one
- *    response. Paginate client-side over the returned array if needed.
+ *  - Pagination is server-side (`pageNumber`/`pageSize`, with the total in
+ *    `count`) instead of the old opaque cursor; `filterBridges` filters
+ *    server-side too, so both compose correctly.
  *  - Per-network partial failure is a `warnings` array (one entry per
  *    upstream bridge-service call that failed the tracker's own fan-out),
  *    not `AggkitFailedNetwork[]`.
@@ -609,7 +610,24 @@ export interface AggkitActivityWarning {
 
 /** Result of `AggkitBridgeAggregator.getActivity` / `AggkitBridgeClient.getActivity`. */
 export interface AggkitActivityResult {
+  /** This page of bridges, newest first (`creation_timestamp` descending). */
   bridges: AggkitActivityItem[];
+  /**
+   * Total number of bridges matching `filterBridges` across EVERY page, not
+   * `bridges.length`. Total pages: `Math.ceil(count / pageSize)`; a page is
+   * the last one when `pageNumber * pageSize >= count`. A `pageNumber` past
+   * the end yields an empty `bridges` and the real `count`.
+   *
+   * If the tracker omits it (one that predates pagination, which also
+   * ignores the page parameters and returns the whole history), it is
+   * `bridges.length`, which is then the exact total.
+   *
+   * Pages are not a consistent snapshot: the tracker's background refresh
+   * can add bridges between two requests, shifting older ones down. A client
+   * walking every page must deduplicate by `bridge.global_index` and, if
+   * `count` grew meanwhile, refetch page 1 to pick up the new ones.
+   */
+  count: number;
   warnings: AggkitActivityWarning[];
 }
 
@@ -823,6 +841,15 @@ export type AggkitClaimStatus =
   | 'readyToClaim'
   | 'claimed'
   | 'error';
+
+/**
+ * Server-side `filterBridges` values of the tracker's activity endpoint
+ * (`GET /tracker/v1/activity/from/{from_address}?filterBridges=...`): every
+ * `AggkitClaimStatus`, plus `'all'` (no filtering). Filtering is done by the
+ * tracker rather than by the consumer so it stays correct across pages
+ * (`count` is the total matching the filter).
+ */
+export type AggkitActivityFilter = 'all' | AggkitClaimStatus;
 
 /**
  * `CertificateData.status`: mapped from the agglayer proto (aggkit
