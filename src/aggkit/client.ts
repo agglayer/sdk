@@ -752,20 +752,31 @@ export class AggkitBridgeClient {
    * `claim_status` server-side. When omitted the parameter is not sent and
    * the tracker applies its own default.
    *
+   * `pageNumber` (1-based, tracker default `1`) and `pageSize` (tracker
+   * default `20`, max `200`) page the result, newest bridge first. `count`
+   * in the result is the total matching `filterBridges` across every page,
+   * so there are `Math.ceil(count / pageSize)` pages. Pages are not a
+   * consistent snapshot: see `AggkitActivityResult.count`.
+   *
    * See `AggkitActivityResult`'s module doc in `types.ts` for the full
-   * contract (no pagination — `bridges` is the address's entire history in
-   * one response — and the trade-offs versus the older `/bridge/v1`
-   * client-side fan-out this replaces).
+   * contract and the trade-offs versus the older `/bridge/v1` client-side
+   * fan-out this replaces.
    */
   async getActivity(params: {
     fromAddress: string;
     includeTracking?: boolean;
     filterBridges?: AggkitActivityFilter;
+    pageNumber?: number;
+    pageSize?: number;
   }): Promise<AggkitActivityResult> {
+    this.assertPageSize(params.pageSize);
+
     const includeTracking = params.includeTracking ?? false;
     const query = this.buildQuery({
       includeTracking,
       filterBridges: params.filterBridges,
+      page_number: params.pageNumber,
+      page_size: params.pageSize,
     });
     const url = `${this.trackerApiUrl}/activity/from/${encodeURIComponent(params.fromAddress)}?${query}`;
     const { status, text } = await fetchRawText(url, this.fetchConfig);
@@ -797,7 +808,14 @@ export class AggkitBridgeClient {
     const raw = JSON.parse(quoteGlobalIndex(text)) as AggkitActivityResult & {
       from_address: string;
     };
-    return { bridges: raw.bridges, warnings: raw.warnings ?? [] };
+    // `count` is the total number of bridges matching `filterBridges` across
+    // every page. A tracker that predates pagination omits it and returns
+    // the whole history, so `bridges.length` is then the exact total.
+    return {
+      bridges: raw.bridges,
+      count: raw.count ?? raw.bridges.length,
+      warnings: raw.warnings ?? [],
+    };
   }
 
   private async requestRaw(

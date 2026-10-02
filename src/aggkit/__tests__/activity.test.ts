@@ -193,6 +193,32 @@ describe('AggkitBridgeClient.getActivity', () => {
       }
     );
 
+    it('sends page_number and page_size when given', async () => {
+      mockFetchOnce(activityBody([]), 200);
+      await client.getActivity({
+        fromAddress: ADDRESS,
+        filterBridges: 'claimed',
+        pageNumber: 3,
+        pageSize: 50,
+      });
+      expect(lastFetchUrl()).toBe(
+        `${BASE_URL}/tracker/v1/activity/from/${ADDRESS}?includeTracking=false&filterBridges=claimed&page_number=3&page_size=50`
+      );
+    });
+
+    it('does not send page_number / page_size when omitted', async () => {
+      mockFetchOnce(activityBody([]), 200);
+      await client.getActivity({ fromAddress: ADDRESS });
+      expect(lastFetchUrl()).not.toContain('page_');
+    });
+
+    it('rejects a pageSize above the tracker max of 200 without fetching', async () => {
+      await expect(
+        client.getActivity({ fromAddress: ADDRESS, pageSize: 201 })
+      ).rejects.toThrow(RangeError);
+      expect(global.fetch).not.toHaveBeenCalled();
+    });
+
     it('does not send filterBridges when omitted', async () => {
       mockFetchOnce(activityBody([]), 200);
       await client.getActivity({ fromAddress: ADDRESS });
@@ -255,6 +281,24 @@ describe('AggkitBridgeClient.getActivity', () => {
         { network_id: 2, message: 'bridge service unreachable' },
       ]);
       expect(result).not.toHaveProperty('from_address');
+    });
+
+    it('returns count (total across pages) distinct from bridges.length', async () => {
+      const item = makeActivityItem({ claim_status: 'claimed' });
+      mockFetchOnce(activityBody([item], { count: 41 }), 200);
+      const result = await client.getActivity({
+        fromAddress: ADDRESS,
+        pageSize: 1,
+      });
+      expect(result.bridges).toHaveLength(1);
+      expect(result.count).toBe(41);
+    });
+
+    it('falls back to bridges.length when a pre-pagination tracker omits count', async () => {
+      const item = makeActivityItem({ claim_status: 'claimed' });
+      mockFetchOnce(activityBody([item]), 200);
+      const result = await client.getActivity({ fromAddress: ADDRESS });
+      expect(result.count).toBe(1);
     });
 
     it('defaults warnings to [] when the response omits the key entirely', async () => {

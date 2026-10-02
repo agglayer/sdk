@@ -42,8 +42,9 @@
  * wrap aggkit's bridgetracker `GET /tracker/v1/activity/from/{from_address}`
  * — a single request that fans out server-side across every configured
  * bridge service and returns one unified, deduped, already-claim-checked
- * list for an address. There is no pagination (`bridges` is the address's
- * entire history) and no `getReadyToClaimCount` — derive a ready-to-claim
+ * list for an address, paginated server-side (`pageNumber`/`pageSize`, total
+ * in `count`) and filterable by status (`filterBridges`). There is no
+ * `getReadyToClaimCount` — derive a ready-to-claim
  * count client-side by filtering `claim_status === 'readyToClaim'`
  * (`AggkitActivityItem.claim_status`, agglayer/aggkit#1830, PR #1831). See
  * `AggkitActivityResult`'s module doc in `types.ts` for the full contract

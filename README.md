@@ -300,11 +300,15 @@ topology.
 
 ```typescript
 // One request: the tracker fans out server-side across every configured
-// bridge service and returns the address's ENTIRE bridge history (no
-// pagination) in one unified, deduped, already-claim-checked list.
-const { bridges, warnings } = await aggregator.getActivity({
+// bridge service and returns one page (newest first) of the address's bridge
+// history in a unified, deduped, already-claim-checked list. `count` is the
+// total across all pages.
+const { bridges, count, warnings } = await aggregator.getActivity({
   fromAddress: '0xFromAddress12345678901234567890123456789012345',
+  pageNumber: 1, // 1-based, default 1
+  pageSize: 20, // default 20, max 200
 });
+const totalPages = Math.ceil(count / 20);
 
 // Ready-to-claim bridges: filter on `claim_status`. This is resolved
 // server-side even without `includeTracking: true`.
@@ -314,12 +318,17 @@ const readyToClaim = bridges.filter(
 
 // Or let the tracker filter by bridge status
 // (`filterBridges=all|claimed|pending|readyToClaim|error`). Prefer this over
-// client-side filtering: it stays correct if the endpoint gets paginated.
+// client-side filtering: `count` and the pages are computed over the filtered
+// set.
 const { bridges: pending } = await aggregator.getActivity({
   fromAddress: '0xFromAddress12345678901234567890123456789012345',
   filterBridges: 'pending',
 });
 ```
+
+Pages are **not a consistent snapshot**: the tracker can add new bridges
+between two requests, shifting older ones down. When walking every page,
+deduplicate by `bridge.global_index` and, if `count` grew, refetch page 1.
 
 `includeTracking` defaults to **`false`**, matching the tracker's own
 server-side default. Passing `includeTracking: true` is not simply a richer
@@ -975,10 +984,12 @@ tracker component owns the cross-network view, not any single bridge service.
   `baseUrl`, which is correct only behind such a proxy.
 
 - **New signature and return shape.** `getActivity(params: { fromAddress:
-string; includeTracking?: boolean })` (no more `pageSize`/`cursor`/`order`)
-  returns `AggkitActivityResult = { bridges: AggkitActivityItem[]; warnings:
+string; includeTracking?: boolean; filterBridges?: AggkitActivityFilter;
+pageNumber?: number; pageSize?: number })` (page-number pagination, no more
+  `cursor`/`order`) returns `AggkitActivityResult = { bridges:
+AggkitActivityItem[]; count: number; warnings:
 AggkitActivityWarning[] }` — see its module doc in `types.ts` for the full
-  contract and trade-offs versus the old fan-out (no pagination;
+  contract and trade-offs versus the old fan-out (server-side pagination;
   `claim_status: AggkitClaimStatus` + optional `tracking` instead of the old
   BRIDGED/LEAF_INCLUDED/READY_TO_CLAIM/CLAIMED derivation; `warnings` instead
   of `failedNetworks`).

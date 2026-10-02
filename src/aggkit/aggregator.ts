@@ -204,7 +204,7 @@ export class AggkitBridgeAggregator {
    * `getClaims` x2 per configured network, plus per-row `/l1-info-tree-index`
    * / `/injected-l1-info-leaf` probes) this method used before — see
    * `AggkitActivityResult` in `types.ts` for the full rationale and the
-   * resulting contract differences (no pagination, `warnings` instead of
+   * resulting contract differences (server-side pagination with `count`, `warnings` instead of
    * `failedNetworks`, a `claim_status: AggkitClaimStatus` — `'pending'` /
    * `'readyToClaim'` / `'claimed'` / `'error'`, agglayer/aggkit#1830, PR #1831
    * — plus optional `tracking` instead of the old
@@ -218,6 +218,8 @@ export class AggkitBridgeAggregator {
     fromAddress: string;
     includeTracking?: boolean;
     filterBridges?: AggkitActivityFilter;
+    pageNumber?: number;
+    pageSize?: number;
   }): Promise<AggkitActivityResult> {
     // Precondition is a configured tracker, NOT a configured network: this
     // call does not touch `networks` at all (it was previously guarded on
