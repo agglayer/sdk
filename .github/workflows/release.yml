@@ -22,7 +22,7 @@ on:
         default: false
         type: boolean
       use_package_version:
-        description: 'Publish dev/alpha/beta with the exact version from package.json instead of a generated <channel>.<timestamp>.<sha> one'
+        description: 'Publish dev/alpha/beta with the exact version from package.json instead of a generated <channel>.<timestamp>.<sha> one (no effect on latest)'
         required: false
         default: false
         type: boolean
@@ -51,6 +51,7 @@ jobs:
           echo "📦 Channel: ${{ github.event.inputs.channel }}"
           echo "🌿 Ref: ${{ github.event.inputs.ref }}"
           echo "💪 Force: ${{ github.event.inputs.force }}"
+          echo "📌 Use package version: ${{ github.event.inputs.use_package_version }}"
 
       - uses: actions/checkout@v4
         with:
@@ -142,6 +143,23 @@ jobs:
           npm version "$NEW_VERSION" --no-git-tag-version --allow-same-version
           echo "✅ Computed version: $NEW_VERSION"
 
+      - name: Validate Package Version For Channel
+        if: ${{ github.event.inputs.channel != 'latest' && github.event.inputs.use_package_version == 'true' }}
+        run: |
+          CHANNEL="${{ github.event.inputs.channel }}"
+          CURRENT_VERSION=$(node -p "require('./package.json').version")
+
+          # Publishing package.json's version verbatim to a pre-release channel
+          # must not burn a stable version number (e.g. 1.0.0 under 'beta') or
+          # mislabel a build (e.g. a -beta.N version under 'dev').
+          if [[ "$CURRENT_VERSION" != *"-$CHANNEL."* ]]; then
+              echo "❌ Error: package.json version $CURRENT_VERSION does not match channel '$CHANNEL'"
+              echo "💡 Expected a version like <x.y.z>-$CHANNEL.<n>"
+              exit 1
+          fi
+
+          echo "✅ Version $CURRENT_VERSION matches channel '$CHANNEL'"
+
       - name: Check Existing Version
         if: ${{ (github.event.inputs.channel == 'latest' || github.event.inputs.use_package_version == 'true') && github.event.inputs.force != 'true' }}
         run: |
@@ -152,10 +170,19 @@ jobs:
           CURRENT_VERSION=$(node -p "require('./package.json').version")
           echo "📦 Current version: $CURRENT_VERSION"
 
-          # Check if version exists on the target channel
-          if npm view @agglayer/sdk@${{ github.event.inputs.channel }} version 2>/dev/null | grep -q "$CURRENT_VERSION"; then
-              echo "❌ Error: Version $CURRENT_VERSION already exists on ${{ github.event.inputs.channel }} channel"
+          # Look up the exact version, not whatever the dist-tag currently points
+          # at: a version is unique across all tags and can never be republished.
+          if [[ -n "$(npm view "@agglayer/sdk@$CURRENT_VERSION" version 2>/dev/null)" ]]; then
+              echo "❌ Error: Version $CURRENT_VERSION is already published on NPM"
               echo "💡 Use 'force: true' to override this check"
+              exit 1
+          fi
+
+          # The GitHub release is created after staging, so catch an existing
+          # tag now rather than after the package has already been staged.
+          if git ls-remote --exit-code --tags origin "refs/tags/v$CURRENT_VERSION" >/dev/null; then
+              echo "❌ Error: Git tag v$CURRENT_VERSION already exists"
+              echo "💡 Delete the tag/release or use 'force: true' to override this check"
               exit 1
           fi
 
