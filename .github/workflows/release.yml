@@ -21,6 +21,11 @@ on:
         required: false
         default: false
         type: boolean
+      use_package_version:
+        description: 'Publish dev/alpha/beta with the exact version from package.json instead of a generated <channel>.<timestamp>.<sha> one'
+        required: false
+        default: false
+        type: boolean
 
 jobs:
   release:
@@ -120,7 +125,7 @@ jobs:
           echo "✅ All tests passed"
 
       - name: Compute Pre-release Version
-        if: ${{ github.event.inputs.channel != 'latest' }}
+        if: ${{ github.event.inputs.channel != 'latest' && github.event.inputs.use_package_version != 'true' }}
         run: |
           echo "🏷️ Computing a unique version for this pre-release build..."
 
@@ -138,7 +143,7 @@ jobs:
           echo "✅ Computed version: $NEW_VERSION"
 
       - name: Check Existing Version
-        if: ${{ github.event.inputs.channel == 'latest' && github.event.inputs.force != 'true' }}
+        if: ${{ (github.event.inputs.channel == 'latest' || github.event.inputs.use_package_version == 'true') && github.event.inputs.force != 'true' }}
         run: |
           echo "🔍 Checking if version already exists on NPM..."
 
@@ -243,6 +248,7 @@ jobs:
           echo "Channel: ${{ github.event.inputs.channel }}"
           echo "Ref: ${{ github.event.inputs.ref }}"
           echo "Force: ${{ github.event.inputs.force }}"
+          echo "Use package version: ${{ github.event.inputs.use_package_version }}"
           echo "=================="
 
           if [[ "${{ job.status }}" == "success" ]]; then
