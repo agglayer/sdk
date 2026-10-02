@@ -212,6 +212,22 @@ describe('AggkitBridgeClient.getActivity', () => {
       expect(lastFetchUrl()).not.toContain('page_');
     });
 
+    it.each([
+      { pageNumber: 0 },
+      { pageNumber: -1 },
+      { pageNumber: 1.5 },
+      { pageNumber: NaN },
+      { pageSize: 0 },
+      { pageSize: -5 },
+      { pageSize: 2.5 },
+      { pageSize: NaN },
+    ])('rejects invalid pagination %j without fetching', async (page) => {
+      await expect(
+        client.getActivity({ fromAddress: ADDRESS, ...page })
+      ).rejects.toThrow(RangeError);
+      expect(global.fetch).not.toHaveBeenCalled();
+    });
+
     it('rejects a pageSize above the tracker max of 200 without fetching', async () => {
       await expect(
         client.getActivity({ fromAddress: ADDRESS, pageSize: 201 })

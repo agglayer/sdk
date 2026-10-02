@@ -769,7 +769,7 @@ export class AggkitBridgeClient {
     pageNumber?: number;
     pageSize?: number;
   }): Promise<AggkitActivityResult> {
-    this.assertPageSize(params.pageSize);
+    this.assertActivityPage(params.pageNumber, params.pageSize);
 
     const includeTracking = params.includeTracking ?? false;
     const query = this.buildQuery({
@@ -809,8 +809,10 @@ export class AggkitBridgeClient {
       from_address: string;
     };
     // `count` is the total number of bridges matching `filterBridges` across
-    // every page. A tracker that predates pagination omits it and returns
-    // the whole history, so `bridges.length` is then the exact total.
+    // every page. The fallback only holds for a tracker that predates
+    // pagination (e.g. rc9): it omits `count` AND ignores `page_*`, returning
+    // the whole history, so `bridges.length` is then the exact total. Current
+    // trackers always send `count` alongside a page.
     return {
       bridges: raw.bridges,
       count: raw.count ?? raw.bridges.length,
@@ -869,6 +871,23 @@ export class AggkitBridgeClient {
         `pageSize must be <= ${MAX_PAGE_SIZE} (received ${pageSize})`
       );
     }
+  }
+
+  private assertActivityPage(
+    pageNumber: number | undefined,
+    pageSize: number | undefined
+  ): void {
+    for (const [name, value] of [
+      ['pageNumber', pageNumber],
+      ['pageSize', pageSize],
+    ] as const) {
+      if (value !== undefined && (!Number.isInteger(value) || value < 1)) {
+        throw new RangeError(
+          `${name} must be an integer >= 1 (received ${value})`
+        );
+      }
+    }
+    this.assertPageSize(pageSize);
   }
 
   private assertNetworkIds(networkIds: number[] | undefined): void {

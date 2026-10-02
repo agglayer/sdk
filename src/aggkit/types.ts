@@ -618,6 +618,10 @@ export interface AggkitActivityResult {
    * the last one when `pageNumber * pageSize >= count`. A `pageNumber` past
    * the end yields an empty `bridges` and the real `count`.
    *
+   * If the tracker omits it (one that predates pagination, which also
+   * ignores the page parameters and returns the whole history), it is
+   * `bridges.length`, which is then the exact total.
+   *
    * Pages are not a consistent snapshot: the tracker's background refresh
    * can add bridges between two requests, shifting older ones down. A client
    * walking every page must deduplicate by `bridge.global_index` and, if
