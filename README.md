@@ -296,6 +296,29 @@ the same origin as every `networks` value — see the "Multi-Network Proxy
 Configuration" example in `src/aggkit/index.ts`'s module doc for that
 topology.
 
+#### Token origin and wrapped tokens
+
+Two on-chain helpers (no bridge-service involved, so they do not depend on
+any syncer being up to date). Both need the network registered with a
+`bridgeAddress` in the chain registry.
+
+```typescript
+// Is this token a wrapped token of another network's token?
+// `isWrapped: false` means it originates on the queried network. It does not
+// prove the address is a token: validate it first (e.g. getTokenMetadata).
+const origin = await aggregator.getTokenOrigin(tokenAddress, networkId);
+// { originNetwork: 0, originTokenAddress: '0x...', isWrapped: true }
+
+// Where does each origin token live on `networkId`?
+const results = await aggregator.getWrappedTokens({
+  networkId,
+  origins: [{ originNetwork: 0, originTokenAddress: '0x...' }],
+});
+// status 'found'  -> wrappedTokenAddress (the origin address on its own network)
+// status 'absent' -> not deployed yet (it appears after the first bridge); re-check later
+// status 'error'  -> lookup failed; do not treat it as 'absent'
+```
+
 #### Cross-Network Activity
 
 ```typescript

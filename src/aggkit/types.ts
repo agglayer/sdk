@@ -334,8 +334,7 @@ export interface AggkitClaimInputsNotReady {
 }
 
 export type AggkitClaimInputsResult =
-  | AggkitClaimInputsReady
-  | AggkitClaimInputsNotReady;
+  AggkitClaimInputsReady | AggkitClaimInputsNotReady;
 
 // ---- token mapping ----
 
@@ -651,6 +650,41 @@ export interface AggkitTokenMetadata {
 }
 
 /**
+ * Origin identity of a token as the bridge on its own network sees it.
+ * `isWrapped` is true when that network's bridge registered the token as a
+ * wrapped (or sovereign) token of another network's token; otherwise the
+ * token originates on that network and `originNetwork`/`originTokenAddress`
+ * are the queried network/address.
+ */
+export interface AggkitTokenOrigin {
+  originNetwork: number;
+  originTokenAddress: string;
+  isWrapped: boolean;
+}
+
+/** One token, identified by its origin network and address. */
+export interface AggkitTokenOriginRef {
+  originNetwork: number;
+  originTokenAddress: string;
+}
+
+/**
+ * Result of resolving one origin token on a target network.
+ * - `found`: `wrappedTokenAddress` is the token's address there (the origin
+ *   address itself when the target is the origin network).
+ * - `absent`: the bridge has not deployed a wrapped version yet (it appears
+ *   after the first bridge to that network) — not an error, and not final.
+ * - `error`: the lookup failed (RPC, misconfigured bridge address). Must not
+ *   be cached as `absent`.
+ */
+export type AggkitWrappedTokenResult = AggkitTokenOriginRef &
+  (
+    | { status: 'found'; wrappedTokenAddress: string }
+    | { status: 'absent'; wrappedTokenAddress: null }
+    | { status: 'error'; wrappedTokenAddress: null; error: string }
+  );
+
+/**
  * ---- Bridge Tracker (S4/S5): aggkit `tracker/v1` REST API ----
  *
  * Canonical TypeScript shapes for `GET /tracker/v1/network/{network_id}/tx/{tx_hash}`
@@ -709,10 +743,7 @@ export interface AggkitTokenMetadata {
  * `tracking_status_string` companion.
  */
 export type AggkitTrackingStatus =
-  | 'registered'
-  | 'running'
-  | 'error'
-  | 'finished';
+  'registered' | 'running' | 'error' | 'finished';
 
 /**
  * `BridgeStatus.bridge_type`: bare string on the wire (fixture-confirmed,
@@ -779,11 +810,7 @@ export type AggkitBridgeStep =
  * present just because `status` is `'skipped'`.
  */
 export type AggkitStepStatus =
-  | 'pending'
-  | 'inProgress'
-  | 'done'
-  | 'error'
-  | 'skipped';
+  'pending' | 'inProgress' | 'done' | 'error' | 'skipped';
 
 /**
  * `ErrorStep.error_type`: 0->transient, 1->permanent, 2->exhausted (retries
@@ -796,10 +823,7 @@ export type AggkitStepStatus =
 export type AggkitTrackerErrorType = 0 | 1 | 2 | 3;
 /** `ErrorStep.error_type_string`. */
 export type AggkitTrackerErrorTypeString =
-  | 'transient'
-  | 'permanent'
-  | 'exhausted'
-  | 'skipped';
+  'transient' | 'permanent' | 'exhausted' | 'skipped';
 
 /**
  * `TrackingData.claim_status` (agglayer/aggkit#1823, PR #1829): a derived
@@ -837,10 +861,7 @@ export type AggkitTrackerErrorTypeString =
  * doc).
  */
 export type AggkitClaimStatus =
-  | 'pending'
-  | 'readyToClaim'
-  | 'claimed'
-  | 'error';
+  'pending' | 'readyToClaim' | 'claimed' | 'error';
 
 /**
  * Server-side `filterBridges` values of the tracker's activity endpoint
@@ -860,11 +881,7 @@ export type AggkitActivityFilter = 'all' | AggkitClaimStatus;
 export type AggkitCertificateStatus = 0 | 1 | 2 | 3 | 4;
 /** `CertificateData.status_string`. */
 export type AggkitCertificateStatusString =
-  | 'Pending'
-  | 'Proven'
-  | 'Candidate'
-  | 'InError'
-  | 'Settled';
+  'Pending' | 'Proven' | 'Candidate' | 'InError' | 'Settled';
 
 // ---- shared structures ----
 

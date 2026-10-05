@@ -1392,4 +1392,149 @@ describe('AggkitBridgeAggregator', () => {
       expect(rpcUrlsRequested).not.toContain('https://eth.llamarpc.com');
     });
   });
+
+  describe('token origin and wrapped token resolution (on-chain)', () => {
+    const NET_A = 710;
+    const NET_B = 711;
+    const NET_NO_BRIDGE = 712;
+    const ZERO = '0x0000000000000000000000000000000000000000';
+    const ORIGIN_TOKEN = '0x1111111111111111111111111111111111111111';
+    const WRAPPED_TOKEN = '0x2222222222222222222222222222222222222222';
+
+    const newAggregator = () =>
+      new AggkitBridgeAggregator({
+        networks: { [NET_A]: BASE_1 },
+        aggkitProxyUrl: PROXY_URL,
+      });
+
+    beforeEach(() => {
+      for (const [chainId, networkId, bridgeAddress] of [
+        [710710, NET_A, '0x00000000000000000000000000000000000000a1'],
+        [711711, NET_B, '0x00000000000000000000000000000000000000b1'],
+        [712712, NET_NO_BRIDGE, undefined],
+      ] as const) {
+        chainRegistry.registerChain({
+          chainId,
+          networkId,
+          name: `Test chain ${networkId}`,
+          rpcUrl: 'http://unused-rpc.test',
+          nativeCurrency: { name: 'Test Ether', symbol: 'tETH', decimals: 18 },
+          ...(bridgeAddress ? { bridgeAddress } : {}),
+        });
+      }
+    });
+
+    describe('getTokenOrigin', () => {
+      it('returns the origin recorded by the bridge when the token is wrapped', async () => {
+        readContractImpl = (args) =>
+          args.functionName === 'wrappedTokenToTokenInfo'
+            ? Promise.resolve([0, ORIGIN_TOKEN])
+            : Promise.reject(new Error(`unexpected: ${args.functionName}`));
+
+        await expect(
+          newAggregator().getTokenOrigin(WRAPPED_TOKEN, NET_A)
+        ).resolves.toEqual({
+          originNetwork: 0,
+          originTokenAddress: ORIGIN_TOKEN,
+          isWrapped: true,
+        });
+      });
+
+      it('treats a zero origin address as originating on the queried network', async () => {
+        readContractImpl = () => Promise.resolve([0, ZERO]);
+
+        await expect(
+          newAggregator().getTokenOrigin(ORIGIN_TOKEN, NET_A)
+        ).resolves.toEqual({
+          originNetwork: NET_A,
+          originTokenAddress: ORIGIN_TOKEN,
+          isWrapped: false,
+        });
+      });
+
+      it('rejects when the network has no bridge address registered', async () => {
+        await expect(
+          newAggregator().getTokenOrigin(ORIGIN_TOKEN, NET_NO_BRIDGE)
+        ).rejects.toThrow(/No bridge address registered for network 712/);
+      });
+    });
+
+    describe('getWrappedTokens', () => {
+      it('returns found, absent and the origin address itself without a call for the origin network', async () => {
+        const calls: unknown[] = [];
+        readContractImpl = (args) => {
+          calls.push(args);
+          return Promise.resolve(
+            (args as { args: [number, string] }).args[1] === ORIGIN_TOKEN
+              ? WRAPPED_TOKEN
+              : ZERO
+          );
+        };
+        const other = '0x3333333333333333333333333333333333333333';
+
+        const results = await newAggregator().getWrappedTokens({
+          networkId: NET_A,
+          origins: [
+            { originNetwork: 0, originTokenAddress: ORIGIN_TOKEN },
+            { originNetwork: 0, originTokenAddress: other },
+            { originNetwork: NET_A, originTokenAddress: other },
+          ],
+        });
+
+        expect(results).toEqual([
+          {
+            originNetwork: 0,
+            originTokenAddress: ORIGIN_TOKEN,
+            status: 'found',
+            wrappedTokenAddress: WRAPPED_TOKEN,
+          },
+          {
+            originNetwork: 0,
+            originTokenAddress: other,
+            status: 'absent',
+            wrappedTokenAddress: null,
+          },
+          {
+            originNetwork: NET_A,
+            originTokenAddress: other,
+            status: 'found',
+            wrappedTokenAddress: other,
+          },
+        ]);
+        expect(calls).toHaveLength(2);
+      });
+
+      it('reports a failing lookup as error without rejecting the batch', async () => {
+        readContractImpl = (args) =>
+          (args as { args: [number, string] }).args[1] === ORIGIN_TOKEN
+            ? Promise.reject(new Error('rpc down'))
+            : Promise.resolve(WRAPPED_TOKEN);
+        const other = '0x3333333333333333333333333333333333333333';
+
+        const results = await newAggregator().getWrappedTokens({
+          networkId: NET_A,
+          origins: [
+            { originNetwork: 0, originTokenAddress: ORIGIN_TOKEN },
+            { originNetwork: 0, originTokenAddress: other },
+          ],
+        });
+
+        expect(results.map((r) => r.status)).toEqual(['error', 'found']);
+        expect(results.at(0)).toMatchObject({
+          wrappedTokenAddress: null,
+          error: 'rpc down',
+        });
+      });
+
+      it('reports every entry as error when the network has no bridge address', async () => {
+        const results = await newAggregator().getWrappedTokens({
+          networkId: NET_NO_BRIDGE,
+          origins: [{ originNetwork: 0, originTokenAddress: ORIGIN_TOKEN }],
+        });
+
+        expect(results).toHaveLength(1);
+        expect(results.at(0)).toMatchObject({ status: 'error' });
+      });
+    });
+  });
 });
