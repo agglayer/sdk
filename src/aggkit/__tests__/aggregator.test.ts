@@ -1452,6 +1452,19 @@ describe('AggkitBridgeAggregator', () => {
         });
       });
 
+      it('answers the native token without an on-chain read', async () => {
+        readContractImpl = () =>
+          Promise.reject(new Error('must not be called'));
+
+        await expect(
+          newAggregator().getTokenOrigin(ZERO, NET_A)
+        ).resolves.toEqual({
+          originNetwork: NET_A,
+          originTokenAddress: ZERO,
+          isWrapped: false,
+        });
+      });
+
       it('rejects when the network has no bridge address registered', async () => {
         await expect(
           newAggregator().getTokenOrigin(ORIGIN_TOKEN, NET_NO_BRIDGE)
@@ -1524,6 +1537,25 @@ describe('AggkitBridgeAggregator', () => {
           wrappedTokenAddress: null,
           error: 'rpc down',
         });
+      });
+
+      it('reports the native token as error on another network and drops extra input fields', async () => {
+        readContractImpl = () => Promise.resolve(WRAPPED_TOKEN);
+
+        const results = await newAggregator().getWrappedTokens({
+          networkId: NET_A,
+          origins: [
+            { originNetwork: 0, originTokenAddress: ZERO },
+            {
+              originNetwork: 0,
+              originTokenAddress: ORIGIN_TOKEN,
+              extra: 'x',
+            } as never,
+          ],
+        });
+
+        expect(results.map((r) => r.status)).toEqual(['error', 'found']);
+        expect(results.at(1)).not.toHaveProperty('extra');
       });
 
       it('reports every entry as error when the network has no bridge address', async () => {
