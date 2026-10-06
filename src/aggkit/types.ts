@@ -651,6 +651,41 @@ export interface AggkitTokenMetadata {
 }
 
 /**
+ * Origin identity of a token as the bridge on its own network sees it.
+ * `isWrapped` is true when that network's bridge registered the token as a
+ * wrapped (or sovereign) token of another network's token; otherwise the
+ * token originates on that network and `originNetwork`/`originTokenAddress`
+ * are the queried network/address.
+ */
+export interface AggkitTokenOrigin {
+  originNetwork: number;
+  originTokenAddress: string;
+  isWrapped: boolean;
+}
+
+/** One token, identified by its origin network and address. */
+export interface AggkitTokenOriginRef {
+  originNetwork: number;
+  originTokenAddress: string;
+}
+
+/**
+ * Result of resolving one origin token on a target network.
+ * - `found`: `wrappedTokenAddress` is the token's address there (the origin
+ *   address itself when the target is the origin network).
+ * - `absent`: the bridge has not deployed a wrapped version yet (it appears
+ *   after the first bridge to that network) — not an error, and not final.
+ * - `error`: the lookup failed (RPC, misconfigured bridge address). Must not
+ *   be cached as `absent`.
+ */
+export type AggkitWrappedTokenResult = AggkitTokenOriginRef &
+  (
+    | { status: 'found'; wrappedTokenAddress: string }
+    | { status: 'absent'; wrappedTokenAddress: null }
+    | { status: 'error'; wrappedTokenAddress: null; error: string }
+  );
+
+/**
  * ---- Bridge Tracker (S4/S5): aggkit `tracker/v1` REST API ----
  *
  * Canonical TypeScript shapes for `GET /tracker/v1/network/{network_id}/tx/{tx_hash}`

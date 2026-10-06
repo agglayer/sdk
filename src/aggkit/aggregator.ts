@@ -10,7 +10,7 @@
 
 import { AggkitBridgeClient } from './client';
 import { chainRegistry } from '../native/chains/registry';
-import { ERC20 } from '../native';
+import { Bridge, ERC20 } from '../native';
 import { ZERO_ADDRESS } from '../constants';
 import type {
   AggkitActivityFilter,
@@ -20,8 +20,18 @@ import type {
   AggkitClaimInputsResult,
   AggkitNotReadyReason,
   AggkitTokenMetadata,
+  AggkitTokenOrigin,
+  AggkitTokenOriginRef,
   AggkitTrackingData,
+  AggkitWrappedTokenResult,
 } from './types';
+
+function pickOriginRef(origin: AggkitTokenOriginRef): AggkitTokenOriginRef {
+  return {
+    originNetwork: origin.originNetwork,
+    originTokenAddress: origin.originTokenAddress,
+  };
+}
 
 function isNativeTokenAddress(address: string): boolean {
   return address.toLowerCase() === ZERO_ADDRESS.toLowerCase();
@@ -508,6 +518,120 @@ export class AggkitBridgeAggregator {
           }
         : {}),
     };
+  }
+
+  /**
+   * Resolves a token's origin on `networkId` with one on-chain read of that
+   * network's bridge (`wrappedTokenToTokenInfo`). Authoritative and
+   * independent of any bridge-service syncer.
+   *
+   * The native/gas token (zero address) is answered without a call: it is not
+   * a bridge-registered ERC20, so it originates on `networkId`.
+   *
+   * It does not prove `tokenAddress` is a token: an unknown address also reads
+   * as "not wrapped". Validate it first (e.g. `getTokenMetadata`). Compare the
+   * origin *address* to zero, not the origin network: network 0 (L1) is a
+   * valid origin.
+   */
+  async getTokenOrigin(
+    tokenAddress: string,
+    networkId: number
+  ): Promise<AggkitTokenOrigin> {
+    if (isNativeTokenAddress(tokenAddress)) {
+      return {
+        originNetwork: networkId,
+        originTokenAddress: ZERO_ADDRESS,
+        isWrapped: false,
+      };
+    }
+    const [originNetwork, originTokenAddress] = await this.bridgeForNetwork(
+      networkId
+    ).getOriginTokenInfo({ wrappedToken: tokenAddress });
+
+    if (isNativeTokenAddress(originTokenAddress)) {
+      return {
+        originNetwork: networkId,
+        originTokenAddress: tokenAddress,
+        isWrapped: false,
+      };
+    }
+    return {
+      originNetwork: Number(originNetwork),
+      originTokenAddress,
+      isWrapped: true,
+    };
+  }
+
+  /**
+   * Resolves each origin token on `networkId`, on-chain
+   * (`getTokenWrappedAddress`). One failing lookup yields an `error` entry
+   * instead of rejecting the batch. When `networkId` is the token's origin
+   * network, no call is made and the origin address is returned as `found`.
+   * Results keep the order of `origins` and carry only `originNetwork` /
+   * `originTokenAddress` from each input. The native/gas token (zero origin
+   * address) has no wrapped-token mapping on another network, so it is
+   * reported as `error` there rather than a misleading `absent`.
+   */
+  async getWrappedTokens(params: {
+    networkId: number;
+    origins: AggkitTokenOriginRef[];
+  }): Promise<AggkitWrappedTokenResult[]> {
+    const { networkId, origins } = params;
+    // One bridge reader (and viem client) per call, built on first use so a
+    // batch that never leaves the origin network needs no bridge address.
+    let bridge: Bridge | undefined;
+    const getBridge = (): Bridge =>
+      (bridge ??= this.bridgeForNetwork(networkId));
+    const settled = await Promise.allSettled(
+      origins.map(async (input): Promise<AggkitWrappedTokenResult> => {
+        const origin = pickOriginRef(input);
+        if (origin.originNetwork === networkId) {
+          return {
+            ...origin,
+            status: 'found',
+            wrappedTokenAddress: origin.originTokenAddress,
+          };
+        }
+        if (isNativeTokenAddress(origin.originTokenAddress)) {
+          throw new Error(
+            `Native/gas token of network ${origin.originNetwork} has no wrapped-token mapping on network ${networkId}`
+          );
+        }
+        const wrapped = await getBridge().getWrappedTokenAddress(origin);
+        return isNativeTokenAddress(wrapped)
+          ? { ...origin, status: 'absent', wrappedTokenAddress: null }
+          : { ...origin, status: 'found', wrappedTokenAddress: wrapped };
+      })
+    );
+
+    return settled.map((result, i): AggkitWrappedTokenResult => {
+      if (result.status === 'fulfilled') return result.value;
+      const origin = pickOriginRef(origins.at(i) as AggkitTokenOriginRef);
+      return {
+        ...origin,
+        status: 'error',
+        wrappedTokenAddress: null,
+        error:
+          result.reason instanceof Error
+            ? result.reason.message
+            : String(result.reason),
+      };
+    });
+  }
+
+  /** Bridge contract reader for a registered network (RPC + bridge address). */
+  private bridgeForNetwork(networkId: number): Bridge {
+    const chain = chainRegistry.getChainByNetworkId(networkId);
+    if (!chain.bridgeAddress) {
+      throw new Error(
+        `No bridge address registered for network ${networkId}; cannot read the bridge on-chain`
+      );
+    }
+    return new Bridge({
+      rpcUrl: chain.rpcUrl,
+      chainId: chain.chainId,
+      bridgeAddress: chain.bridgeAddress,
+    });
   }
 
   /**
