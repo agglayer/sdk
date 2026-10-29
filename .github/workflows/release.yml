@@ -58,16 +58,18 @@ jobs:
           fetch-depth: 0
           ref: ${{ github.event.inputs.ref || 'main' }}
 
-      # Bun runs install, quality checks, build and tests.
-      - uses: oven-sh/setup-bun@v1
+      # pnpm runs install, quality checks, build and tests; the npm CLI below
+      # does the OIDC trusted publish.
+      - uses: pnpm/action-setup@41ff72655975bd51cab0327fa583b6e92b6d3061 # v4
 
       # Node + the npm CLI are required for OIDC trusted publishing and staged
-      # releases — bun cannot perform npm's OIDC token exchange. registry-url is
-      # what wires npm up to the public registry; no auth token is configured.
-      - uses: actions/setup-node@v4
+      # releases. registry-url is what wires npm up to the public registry; no
+      # auth token is configured.
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '22'
           registry-url: 'https://registry.npmjs.org'
+          cache: pnpm
 
       - name: Upgrade npm CLI
         run: |
@@ -79,7 +81,7 @@ jobs:
       - name: Install Dependencies
         run: |
           echo "📦 Installing dependencies..."
-          bun install --frozen-lockfile
+          pnpm install --frozen-lockfile
           echo "✅ Dependencies installed"
 
       - name: Run Quality Checks
@@ -88,22 +90,22 @@ jobs:
 
           # Type checking
           echo "📝 Type checking..."
-          bun run typecheck
+          pnpm run typecheck
 
           # Linting
           echo "🧹 Linting..."
-          bun run lint
+          pnpm run lint
 
           # Format checking
           echo "💅 Format checking..."
-          bun run format:check
+          pnpm run format:check
 
           echo "✅ Quality checks passed"
 
       - name: Build Packages
         run: |
           echo "🏗️ Building packages..."
-          bun run build
+          pnpm run build
 
           # Verify build output
           if [[ ! -d "dist" ]]; then
@@ -116,10 +118,10 @@ jobs:
       - name: Run Tests
         run: |
           echo "🧪 Running tests..."
-          bun run test:run
+          pnpm run test:run
 
           # Run coverage if available
-          if bun run test:coverage 2>/dev/null; then
+          if pnpm run test:coverage 2>/dev/null; then
               echo "📊 Test coverage generated"
           fi
 

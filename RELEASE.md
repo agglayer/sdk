@@ -217,10 +217,10 @@ git push origin v1.0.0-beta.1
 **Solution**: Fix the issues locally first:
 
 ```bash
-bun run typecheck
-bun run lint
-bun run test:run
-bun run build
+pnpm run typecheck
+pnpm run lint
+pnpm run test:run
+pnpm run build
 ```
 
 #### 4. **Permission Denied**

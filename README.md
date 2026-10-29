@@ -840,7 +840,7 @@ const multiChainSdk = new AggLayerSDK({
 
 ### Prerequisites
 
-- **Node.js** 18+ or **Bun** 1.0+
+- **Node.js** 18+ and **pnpm**
 - **TypeScript** 4.9+
 - **Git** for version control
 
@@ -851,10 +851,8 @@ const multiChainSdk = new AggLayerSDK({
 git clone https://github.com/agglayer/sdk.git
 cd sdk
 
-# Install dependencies (npm, yarn, or bun)
-npm install
-# or
-bun install
+# Install dependencies
+pnpm install
 
 # Build the project
 npm run build

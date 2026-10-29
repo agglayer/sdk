@@ -1,0 +1,18 @@
+blockExoticSubdeps: true
+minimumReleaseAge: 1440
+minimumReleaseAgeExclude:
+  - '@polygonlabs/*'
+  - '@maticnetwork/*'
+  - '@agglayer/*'
+  - '@0xsequence/*'
+  - '@0xtrails/*'
+onlyBuiltDependencies:
+  - esbuild
+trustPolicy: no-downgrade
+# Transitive dep of @types/node@20 (dev-only). 6.21.0 was published without
+# provenance after earlier versions had it, which trips no-downgrade.
+trustPolicyExclude:
+  - 'undici-types@6.21.0'
+  # tsup requires chokidar ^4.0.3 and 4.0.3 is the only matching version; it was
+  # published without provenance. Dev-only file watcher.
+  - 'chokidar@4.0.3'
