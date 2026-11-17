@@ -27,6 +27,7 @@ export {
   AggkitBridgeClient,
   AggkitBridgeAggregator,
   AggkitApiError,
+  isAggkitClaimedStatus,
 } from './aggkit';
 export type {
   AggkitApiErrorArgs,

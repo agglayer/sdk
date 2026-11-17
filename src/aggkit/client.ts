@@ -670,8 +670,10 @@ export class AggkitBridgeClient {
    * instance's own `this.networkId` implicitly.
    *
    * **Terminal semantics** — stop polling once EITHER is true:
-   * - `tracking_status === 'finished'` (the bridge reached its last step,
-   *   `Claimed`).
+   * - `tracking_status === 'finished'`: the bridge reached its last step,
+   *   `Claimed`, and — since tracker `api_revision` 7 — the claim's block is
+   *   final (`claim_status === 'claimed_finalized'`). At `api_revision` 6
+   *   `'finished'` is reported as soon as the claim is seen.
    * - `tracking_status === 'error'` AND `bridge_status === null` — the
    *   tracker gave up ever resolving the bridge at all (tx not found, or not
    *   a bridge tx). This is distinct from a per-step error inside
@@ -681,6 +683,18 @@ export class AggkitBridgeClient {
    *   `step_index` — `bridgetracker/domain/tracking_data.go`), just with
    *   `bridge_status` populated — which is exactly why the terminal check
    *   must include `bridge_status === null`, not `tracking_status` alone.
+   *
+   * **Claimed is not terminal** (since tracker `api_revision` 7): with the
+   * claim done but its block not final yet, the response reads
+   * `tracking_status: 'running'` with `claim_status: 'claimed'` and
+   * `step_index` at `Claimed`. Keep polling: a reorg can remove the claim
+   * and move the tracking BACKWARDS, to `'readyToClaim'` or `'pending'` and
+   * an earlier step, so do not assume `step_index` or `claim_status` only
+   * move forward. A UI that just wants to show "claimed" can do so as soon
+   * as `isAggkitClaimedStatus(claim_status)` is true, and treat it as
+   * settled once `tracking_status === 'finished'`.
+   * `bridge_status.block_finalized` (also `api_revision` 7) says whether the
+   * origin bridge block itself is final.
    *
    * **Polling guidance**: the tracker has no push/subscription channel, only
    * this REST lookup, so callers must poll. ~5s between calls is a good
@@ -702,9 +716,10 @@ export class AggkitBridgeClient {
    * original registration, not as a regression to be surfaced to the user.
    *
    * **Claim readiness**: `claim_status` (agglayer/aggkit#1823, PR #1829)
-   * gives `'readyToClaim'`/`'claimed'`/`'error'`/`'pending'` directly —
-   * prefer it over inspecting `step_index`/`all_steps` by hand to decide
-   * whether to show a claim button. See `AggkitClaimStatus` in `types.ts`.
+   * gives `'readyToClaim'`/`'claimed'`/`'claimed_finalized'`/`'error'`/
+   * `'pending'` directly — prefer it over inspecting `step_index`/
+   * `all_steps` by hand to decide whether to show a claim button. See
+   * `AggkitClaimStatus` in `types.ts`.
    */
   async getBridgeTracking(
     txHash: string,
@@ -750,13 +765,32 @@ export class AggkitBridgeClient {
    * `filterBridges` (`'all'` | `'claimed'` | `'pending'` | `'readyToClaim'` |
    * `'error'`, i.e. `AggkitActivityFilter`) restricts `bridges` to that
    * `claim_status` server-side. When omitted the parameter is not sent and
-   * the tracker applies its own default.
+   * the tracker applies its own default. Since tracker `api_revision` 7,
+   * `'claimed'` returns both the `'claimed'` and the `'claimed_finalized'`
+   * rows; `'claimed_finalized'` itself is not a filter value.
    *
    * `pageNumber` (1-based, tracker default `1`) and `pageSize` (tracker
    * default `20`, max `200`) page the result, newest bridge first. `count`
    * in the result is the total matching `filterBridges` across every page,
-   * so there are `Math.ceil(count / pageSize)` pages. Pages are not a
-   * consistent snapshot: see `AggkitActivityResult.count`.
+   * so there are `Math.ceil(count / pageSize)` pages.
+   *
+   * Pages are not a consistent snapshot, and a loaded page can go stale: a
+   * new bridge shifts the older ones down, and since tracker `api_revision`
+   * 7 a reorg can remove a row, move it (its `creation_timestamp`, the sort
+   * key, can change) or take its `claim_status` back. Use `revision` in the
+   * result (tracker `api_revision` 7; see `AggkitActivityResult.revision`)
+   * to know when to reload, instead of watching `count` and page 1:
+   * 1. Load the pages you need and keep the `revision` of the first one.
+   * 2. Poll cheaply with `pageSize: 1` and compare its `revision` (equality
+   *    only — it is an opaque hash, not a counter).
+   * 3. If it differs, reload the pages you had loaded.
+   * 4. After the last page of a traversal, compare again and restart from
+   *    page 1 if it changed meanwhile. Always deduplicate by
+   *    `bridge.global_index`.
+   * `revision` does not change when a row only becomes final
+   * (`'claimed'` -> `'claimed_finalized'`, `finalized` -> `true`): reload a
+   * page to see that. Against a tracker at `api_revision` 6 `revision` is
+   * `undefined`; fall back to `count` (see `AggkitActivityResult.count`).
    *
    * See `AggkitActivityResult`'s module doc in `types.ts` for the full
    * contract and the trade-offs versus the older `/bridge/v1` client-side
@@ -813,9 +847,14 @@ export class AggkitBridgeClient {
     // pagination (e.g. rc9): it omits `count` AND ignores `page_*`, returning
     // the whole history, so `bridges.length` is then the exact total. Current
     // trackers always send `count` alongside a page.
+    //
+    // `revision` is sent since tracker api_revision 7. It is passed through
+    // untouched (it is opaque) and the key is left out, not set to
+    // `undefined`, when an older tracker does not send it.
     return {
       bridges: raw.bridges,
       count: raw.count ?? raw.bridges.length,
+      ...(typeof raw.revision === 'string' ? { revision: raw.revision } : {}),
       warnings: raw.warnings ?? [],
     };
   }

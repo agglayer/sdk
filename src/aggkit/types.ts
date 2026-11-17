@@ -459,8 +459,10 @@ export interface AggkitAggregatorConfig {
  *    upstream bridge-service call that failed the tracker's own fan-out),
  *    not `AggkitFailedNetwork[]`.
  *  - Status is `claim_status: AggkitClaimStatus` (`'pending'` /
- *    `'readyToClaim'` / `'claimed'` / `'error'`, agglayer/aggkit#1830, PR
- *    [#1831](https://github.com/agglayer/aggkit/pull/1831)) — the same
+ *    `'readyToClaim'` / `'claimed'` / `'claimed_finalized'` / `'error'`,
+ *    agglayer/aggkit#1830, PR
+ *    [#1831](https://github.com/agglayer/aggkit/pull/1831);
+ *    `'claimed_finalized'` since tracker `api_revision` 7) — the same
  *    vocabulary and field name as `AggkitTrackingData.claim_status` — plus,
  *    with `includeTracking: true`, the same step-based `AggkitTrackingData`
  *    `getBridgeTracking` returns for a single tx — NOT the 4-value
@@ -482,6 +484,13 @@ export interface AggkitAggregatorConfig {
  *    on `claimed !== 'true'` to find claimable bridges must switch to
  *    `claim_status === 'readyToClaim'` (an unclaimed bridge not yet ready to
  *    claim now reports `'pending'`, not `'false'`).
+ *
+ * Reorgs (since tracker `api_revision` 7, agglayer/aggkit#1980): rows are no
+ * longer write-once. Until a row is final it can be corrected, moved back to
+ * an earlier `claim_status`, or removed — see `AggkitClaimStatus`,
+ * `AggkitActivityItem.finalized` and `AggkitActivityResult.revision`. All the
+ * `api_revision` 7 additions are optional in these types, because a tracker
+ * at `api_revision` 6 does not send them.
  */
 
 /** One bridge event, as reported by the bridge service the tracker fanned out to. */
@@ -571,12 +580,52 @@ export interface AggkitActivityItem {
    * conservatively stays `'pending'`, with the failure reported under
    * `errors.readiness` instead.
    *
+   * Since tracker `api_revision` 7 a claimed bridge reads `'claimed'` while
+   * its claim can still be removed by a reorg (it can go back to
+   * `'readyToClaim'` or `'pending'`) and `'claimed_finalized'` once it
+   * cannot. Use `isAggkitClaimedStatus` for "is this bridge claimed?"
+   * instead of comparing with `'claimed'` — see `AggkitClaimStatus`.
+   *
    * BREAKING (PR #1831): this field was named `claimed` and was a plain
    * tri-state (`'true'` / `'false'` / `'error'`) mirroring only the
    * destination bridge contract's `isClaimed()` call.
    */
   claim_status: AggkitClaimStatus;
+  /**
+   * Since tracker `api_revision` 7 (always sent from then on; `undefined`
+   * from a tracker at `api_revision` 6, which must be read as "unknown", not
+   * as `false`). `true` when a reorg can no longer change this row: its
+   * bridge's block is final and, if it is claimed, its claim's block is
+   * final too — so `claim_status === 'claimed_finalized'` implies `true`.
+   *
+   * An unclaimed row whose bridge is final also reads `true`, and goes back
+   * to `false` when it is claimed, until the claim is final. So `true` is
+   * only permanent together with `claim_status === 'claimed_finalized'`.
+   *
+   * Going from `false` to `true` does not change
+   * `AggkitActivityResult.revision`: reload a page to see whether its rows
+   * became final.
+   */
+  finalized?: boolean;
+  /**
+   * Unix seconds; when the bridge was created: its origin deposit block's
+   * timestamp (or, only while the bridge service has not populated that yet,
+   * when the tracker first cached the row). It is the sort key of
+   * `AggkitActivityResult.bridges`.
+   *
+   * Not immutable since tracker `api_revision` 7: it changes if a reorg moves
+   * the bridge to another block or transaction, which can also move the row
+   * to another position or page. Do not use it as (part of) a row's identity
+   * — use `bridge.global_index`.
+   */
   creation_timestamp: number;
+  /**
+   * Unix seconds; when this row's claim state was last (re)checked, whether
+   * or not anything changed. It advances on every tracker refresh, so it
+   * does NOT signal a change — `AggkitActivityResult.revision` does. Since
+   * tracker `api_revision` 7 it stops advancing once the row reads
+   * `claim_status === 'claimed_finalized'`, which is never rechecked.
+   */
   last_updated_timestamp: number;
   /**
    * Present when the last refresh had something to report; keyed by which
@@ -610,7 +659,10 @@ export interface AggkitActivityWarning {
 
 /** Result of `AggkitBridgeAggregator.getActivity` / `AggkitBridgeClient.getActivity`. */
 export interface AggkitActivityResult {
-  /** This page of bridges, newest first (`creation_timestamp` descending). */
+  /**
+   * This page of bridges, newest first (`creation_timestamp` descending,
+   * ties broken by `bridge.global_index` descending).
+   */
   bridges: AggkitActivityItem[];
   /**
    * Total number of bridges matching `filterBridges` across EVERY page, not
@@ -623,11 +675,47 @@ export interface AggkitActivityResult {
    * `bridges.length`, which is then the exact total.
    *
    * Pages are not a consistent snapshot: the tracker's background refresh
-   * can add bridges between two requests, shifting older ones down. A client
-   * walking every page must deduplicate by `bridge.global_index` and, if
-   * `count` grew meanwhile, refetch page 1 to pick up the new ones.
+   * can add bridges between two requests, shifting older ones down (and,
+   * since tracker `api_revision` 7, a reorg can remove or move them). A
+   * client walking every page must deduplicate by `bridge.global_index` and
+   * compare `revision` across the responses: if it changed, start again from
+   * page 1. Against a tracker that does not send `revision` (`api_revision`
+   * 6), fall back to refetching page 1 when `count` grew — `count` only
+   * changes when a bridge is added or removed, so it cannot tell that a
+   * loaded row changed state.
    */
   count: number;
+  /**
+   * Since tracker `api_revision` 7 (always sent from then on; `undefined`
+   * from a tracker at `api_revision` 6). An opaque content hash of ALL of the
+   * address's activity (`v1:` + 64 hex characters): the same value whatever
+   * `filterBridges`, `pageNumber` and `pageSize` the request used.
+   *
+   * - It changes when any bridge of the address is added, removed, corrected
+   *   after a reorg (the bridge or its claim re-included in another block or
+   *   transaction) or changes `claim_status`.
+   * - It does NOT change when a row only becomes final (`finalized` `false`
+   *   to `true`, `'claimed'` to `'claimed_finalized'`), nor on a refresh that
+   *   changes nothing.
+   *
+   * Compare the whole string for equality only: it is not a counter and has
+   * no order, so never parse it or check whether it "grew". It can go back
+   * to an earlier value when the activity goes back to an earlier content,
+   * and two tracker instances behind a load balancer can briefly answer
+   * different values; reloading is always correct.
+   *
+   * Client flow:
+   * 1. Load the pages you need and keep the `revision` of the first
+   *    response.
+   * 2. To watch for changes, poll cheaply (`pageSize: 1`) and compare its
+   *    `revision` with the one you hold.
+   * 3. If it differs, reload the pages you had loaded and keep the new
+   *    value.
+   * 4. After the last page of a traversal, check `revision` again (the last
+   *    response carries it): if it changed during the traversal, restart
+   *    from page 1.
+   */
+  revision?: string;
   warnings: AggkitActivityWarning[];
 }
 
@@ -742,6 +830,14 @@ export type AggkitWrappedTokenResult = AggkitTokenOriginRef &
  * `TrackingData.tracking_status`: bare string on the wire (fixture-confirmed,
  * matches aggkit's rc5-corrected API.md) — no numeric value, no
  * `tracking_status_string` companion.
+ *
+ * `'finished'`: the bridge reached its last step, `Claimed`. Since tracker
+ * `api_revision` 7 it additionally requires the claim's block to be final
+ * (`claim_status === 'claimed_finalized'`): a bridge that is claimed with a
+ * claim that is not final yet still reads `'running'` (with `step_index` at
+ * `Claimed` and `claim_status === 'claimed'`), and a reorg can move it back
+ * to an earlier step. At `api_revision` 6 `'finished'` is reported as soon as
+ * the claim is seen.
  */
 export type AggkitTrackingStatus =
   | 'registered'
@@ -845,6 +941,15 @@ export type AggkitTrackerErrorTypeString =
  *   `tracking_status === 'error'` (whether that's a step-level error or the
  *   tracker giving up on the bridge entirely — see `AggkitTrackingData.error`).
  * - `'claimed'` — the current step (`all_steps[step_index]`) is `Claimed`.
+ *   Since tracker `api_revision` 7 this is NOT final: the claim's block can
+ *   still be removed by a reorg, and the status then goes back to
+ *   `'readyToClaim'` (the claim tx is gone) or `'pending'` (the GER or the L1
+ *   info tree leaf is gone as well).
+ * - `'claimed_finalized'` — since tracker `api_revision` 7: claimed, and the
+ *   claim's block is final. The only final state: it never changes again, so
+ *   a client can stop polling a bridge once it reads it. A tracker at
+ *   `api_revision` 6 never sends it (there `'claimed'` is as far as a bridge
+ *   goes).
  * - `'readyToClaim'` — the current step is `WaitingClaim`. This is the same
  *   condition the SDK's own docs previously told consumers to derive by hand
  *   (see the `AggkitActivityItem`/`getBridgeTracking` JSDoc above) — prefer
@@ -855,6 +960,16 @@ export type AggkitTrackerErrorTypeString =
  *   check.
  * - `'pending'` — every other case, including before the bridge resolves at
  *   all (`tracking_status: 'registered'`).
+ *
+ * The same vocabulary is used by `AggkitActivityItem.claim_status`. Every
+ * value but `'claimed_finalized'` is tentative (`'error'` clears as soon as
+ * the failing check works again).
+ *
+ * To ask "is this bridge claimed?" use `isAggkitClaimedStatus`, which is true
+ * for both `'claimed'` and `'claimed_finalized'`; comparing with `'claimed'`
+ * alone treats a claimed and final bridge as not claimed. Clients that
+ * `switch` over this union must handle `'claimed_finalized'` BEFORE they talk
+ * to a tracker at `api_revision` 7.
  *
  * No fixture yet captures this field (all `__fixtures__/tracker_*.json`
  * predate #1829).
@@ -875,16 +990,23 @@ export type AggkitClaimStatus =
   | 'pending'
   | 'readyToClaim'
   | 'claimed'
+  | 'claimed_finalized'
   | 'error';
 
 /**
  * Server-side `filterBridges` values of the tracker's activity endpoint
- * (`GET /tracker/v1/activity/from/{from_address}?filterBridges=...`): every
- * `AggkitClaimStatus`, plus `'all'` (no filtering). Filtering is done by the
- * tracker rather than by the consumer so it stays correct across pages
- * (`count` is the total matching the filter).
+ * (`GET /tracker/v1/activity/from/{from_address}?filterBridges=...`):
+ * `'all'` (no filtering), `'claimed'`, `'pending'`, `'readyToClaim'` and
+ * `'error'`. Filtering is done by the tracker rather than by the consumer so
+ * it stays correct across pages (`count` is the total matching the filter).
+ *
+ * `'claimed_finalized'` is a `claim_status` but NOT a filter (the tracker
+ * answers `400` to it): since tracker `api_revision` 7, `'claimed'` returns
+ * both the `'claimed'` and the `'claimed_finalized'` rows.
  */
-export type AggkitActivityFilter = 'all' | AggkitClaimStatus;
+export type AggkitActivityFilter =
+  | 'all'
+  | Exclude<AggkitClaimStatus, 'claimed_finalized'>;
 
 /**
  * `CertificateData.status`: mapped from the agglayer proto (aggkit
@@ -936,6 +1058,18 @@ export interface AggkitBridgeStatus {
   log_index: number;
   /** Unix seconds; the origin block's timestamp. */
   block_timestamp: number;
+  /**
+   * Since tracker `api_revision` 7 (always sent from then on; `undefined`
+   * from a tracker at `api_revision` 6, which must be read as "unknown", not
+   * as `false`). `true` once `block_number` is final on the origin network,
+   * i.e. a reorg can no longer remove the bridge; it never goes back to
+   * `false`. While it is `false` (not final yet, or not known) a reorg can
+   * still move the bridge to another block or drop it.
+   *
+   * This is the finality of the ORIGIN bridge block only. The claim's
+   * finality is `claim_status === 'claimed_finalized'`.
+   */
+  block_finalized?: boolean;
   event: AggkitBridgeStatusEvent;
 }
 
@@ -1122,7 +1256,8 @@ export interface AggkitTrackingData {
   /**
    * Index into `all_steps` of the step that explains `tracking_status`: the
    * step in progress when `running`, the step in error when `error`, or the
-   * last step (`Claimed`) when `finished`.
+   * last step (`Claimed`) once every step is done — `finished`, or, since
+   * tracker `api_revision` 7, `running` while the claim is not final yet.
    */
   step_index: number | null;
   /** All expected steps of the bridge's route; `null` until the tracker resolves it. */

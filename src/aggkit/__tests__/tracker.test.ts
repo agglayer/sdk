@@ -3,6 +3,7 @@ import { describe, it, expect, beforeEach, vi, type Mock } from 'vitest';
 import { AggkitBridgeClient } from '../client';
 import { AggkitBridgeAggregator } from '../aggregator';
 import { AggkitApiError } from '../errors';
+import { isAggkitClaimedStatus } from '../claimStatus';
 import type { AggkitTrackingData } from '../types';
 
 // ---------------------------------------------------------------------------
@@ -398,6 +399,73 @@ describe('AggkitBridgeClient.getBridgeTracking', () => {
       expect(claimedStep?.end_date).toBeUndefined();
       expect(claimedStep?.error?.error_type).toBe(0);
       expect(claimedStep?.error?.retry_count).toBe(21);
+    });
+  });
+
+  describe('tracker api_revision 7: finality (agglayer/sdk#46)', () => {
+    // No live capture of an api_revision 7 tracker exists yet, so these
+    // bodies are the rc4 `finished` capture with the api_revision 7 fields
+    // set on top, as agglayer/aggkit's docs/bridgetracker/API.md describes
+    // them.
+    function trackingBody(
+      overrides: Partial<AggkitTrackingData>,
+      blockFinalized: boolean
+    ): string {
+      const base = JSON.parse(
+        loadFixture('tracker_l1l2_finished.json')
+      ) as AggkitTrackingData;
+      return JSON.stringify({
+        ...base,
+        ...overrides,
+        bridge_status: base.bridge_status && {
+          ...base.bridge_status,
+          block_finalized: blockFinalized,
+        },
+      });
+    }
+
+    it('a claimed but not final bridge is still `running`, at the `Claimed` step', async () => {
+      mockFetchOnce(
+        trackingBody(
+          { tracking_status: 'running', claim_status: 'claimed' },
+          false
+        ),
+        200
+      );
+      const data = await client.getBridgeTracking('0xabc');
+
+      expect(data.tracking_status).toBe('running');
+      expect(data.claim_status).toBe('claimed');
+      expect(isAggkitClaimedStatus(data.claim_status)).toBe(true);
+      expect(data.bridge_status?.block_finalized).toBe(false);
+      expect(data.all_steps?.[data.step_index ?? -1]?.step_name).toBe(
+        'Claimed'
+      );
+    });
+
+    it('`finished` comes with claim_status "claimed_finalized" and block_finalized: true', async () => {
+      mockFetchOnce(
+        trackingBody(
+          { tracking_status: 'finished', claim_status: 'claimed_finalized' },
+          true
+        ),
+        200
+      );
+      const data = await client.getBridgeTracking('0xabc');
+
+      expect(data.tracking_status).toBe('finished');
+      expect(data.claim_status).toBe('claimed_finalized');
+      expect(isAggkitClaimedStatus(data.claim_status)).toBe(true);
+      expect(data.bridge_status?.block_finalized).toBe(true);
+    });
+
+    it('a tracker at api_revision 6 sends no `block_finalized` (undefined, not false)', async () => {
+      mockFetchOnce(loadFixture('tracker_l1l2_finished.json'), 200);
+      const data = await client.getBridgeTracking('0xabc');
+
+      expect(data.tracking_status).toBe('finished');
+      expect(data.bridge_status).not.toBeNull();
+      expect(data.bridge_status).not.toHaveProperty('block_finalized');
     });
   });
 
