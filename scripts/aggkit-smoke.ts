@@ -7,7 +7,9 @@
  * test. Exercises: per-network sync-status across {0,1,2}, a real address's
  * cross-network activity (via the aggregator's `getActivity`, a passthrough
  * to aggkit's bridgetracker `/tracker/v1/activity`), a known-ground-truth
- * claim_status=claimed check, an L2->L2 row's claim_status/tracking state, a LIVE
+ * claimed check (claim_status `claimed` or, on a tracker at api_revision 7,
+ * `claimed_finalized`), the api_revision 7 `revision`/`finalized` fields when
+ * the tracker sends them, an L2->L2 row's claim_status/tracking state, a LIVE
  * native-gas-token bridge proving the not-ready union (no throw) and
  * recording-network routing (comments 3847422009 / 3847523270 / 3847600104),
  * the destination-injected `getClaimInputs` roundtrip for both a sampled
@@ -111,6 +113,7 @@ import {
 import { privateKeyToAccount } from 'viem/accounts';
 import { AggkitBridgeClient } from '../src/aggkit/client';
 import { AggkitBridgeAggregator } from '../src/aggkit/aggregator';
+import { isAggkitClaimedStatus } from '../src/aggkit/claimStatus';
 import type { AggkitClaimInputsResult } from '../src/aggkit/types';
 import { bridgeAbi } from '../src/native/bridge/abi/bridge';
 
@@ -270,20 +273,88 @@ async function main(): Promise<void> {
     'getActivity returned at least one activity item for the real from_address'
   );
 
-  const knownClaimStatuses = ['pending', 'readyToClaim', 'claimed', 'error'];
+  // `claimed_finalized` is sent by a tracker at api_revision 7 only.
+  const knownClaimStatuses = [
+    'pending',
+    'readyToClaim',
+    'claimed',
+    'claimed_finalized',
+    'error',
+  ];
   const claimStatusCounts: Record<string, number> = {};
   for (const item of activity.bridges) {
     claimStatusCounts[item.claim_status] =
       (claimStatusCounts[item.claim_status] ?? 0) + 1;
     assert(
       knownClaimStatuses.includes(item.claim_status),
-      `bridge_hash=${item.bridge.bridge_hash} claim_status "${item.claim_status}" is one of the 4 known states`
+      `bridge_hash=${item.bridge.bridge_hash} claim_status "${item.claim_status}" is one of the 5 known states`
     );
   }
   console.log(
     'claim_status distribution across the full history:',
     claimStatusCounts
   );
+
+  console.log(
+    `\n=== 3a. Tracker api_revision 7 fields: revision / finalized (agglayer/sdk#46) ===`
+  );
+  if (activity.revision === undefined) {
+    // A tracker at api_revision 6 sends neither `revision` nor `finalized`,
+    // and never `claimed_finalized`. The SDK must work unchanged there.
+    console.log(
+      '(no `revision` in the response — tracker at api_revision <= 6; skipping the api_revision 7 checks)'
+    );
+    assert(
+      activity.bridges.every((item) => item.finalized === undefined),
+      'api_revision 6: no activity row carries `finalized`'
+    );
+    assert(
+      activity.bridges.every(
+        (item) => item.claim_status !== 'claimed_finalized'
+      ),
+      'api_revision 6: no activity row reads claim_status=claimed_finalized'
+    );
+  } else {
+    console.log(`revision=${activity.revision}`);
+    assert(
+      /^v1:[0-9a-f]{64}$/.test(activity.revision),
+      'revision is "v1:" followed by 64 lowercase hex characters'
+    );
+    assert(
+      activity.bridges.every((item) => typeof item.finalized === 'boolean'),
+      'api_revision 7: every activity row carries a boolean `finalized`'
+    );
+    assert(
+      activity.bridges.every(
+        (item) =>
+          item.claim_status !== 'claimed_finalized' || item.finalized === true
+      ),
+      'api_revision 7: claim_status=claimed_finalized implies finalized=true'
+    );
+    assert(
+      activity.bridges.every(
+        (item) => item.claim_status !== 'claimed' || item.finalized === false
+      ),
+      'api_revision 7: claim_status=claimed (claim not final yet) implies finalized=false'
+    );
+    // `revision` is one value per address, whatever page/filter was asked
+    // for — the cheap `pageSize: 1` poll a client uses to watch for changes.
+    // Not asserted equal: on a live chain a new bridge or a claim landing
+    // between the two requests legitimately changes it.
+    const cheapPoll = await aggregator.getActivity({
+      fromAddress: FROM_ADDRESS,
+      pageSize: 1,
+    });
+    assert(
+      typeof cheapPoll.revision === 'string',
+      'the cheap pageSize=1 poll carries `revision` too'
+    );
+    console.log(
+      `cheap poll revision ${
+        cheapPoll.revision === activity.revision ? 'unchanged' : 'CHANGED'
+      } (${cheapPoll.revision})`
+    );
+  }
 
   console.log(
     `\n=== 3b. L1-origin global_index precision (agglayer/aggkit#1835) + default includeTracking=false ===`
@@ -330,9 +401,11 @@ async function main(): Promise<void> {
       `L1-origin bridge.global_index is the exact expected string "18446744073709551618" ` +
         `(got "${l1OriginRow.bridge.global_index}")`
     );
+    // `claimed`, or `claimed_finalized` on a tracker at api_revision 7 once
+    // the claim's block is final — both mean "claimed".
     assert(
-      l1OriginRow.claim_status === 'claimed',
-      'the known L1-origin deposit (global_index=18446744073709551618) derives claim_status=claimed'
+      isAggkitClaimedStatus(l1OriginRow.claim_status),
+      'the known L1-origin deposit (global_index=18446744073709551618) derives a claimed claim_status (claimed or claimed_finalized)'
     );
     assert(
       l1OriginRow.claim !== undefined,
@@ -356,7 +429,7 @@ async function main(): Promise<void> {
   }
   // Same default-includeTracking check, generalized across the whole
   // history fetched above (not just the one L1-origin row): every row's
-  // claim_status must already be one of the 4 known, directly-usable
+  // claim_status must already be one of the 5 known, directly-usable
   // states with no `tracking` field required to interpret it.
   const rowsWithTracking = activity.bridges.filter(
     (item) => item.tracking !== undefined
@@ -398,12 +471,12 @@ async function main(): Promise<void> {
     );
     if (itemForBridge) {
       assert(
-        itemForBridge.claim_status === 'claimed',
-        `known-claimed bridge (deposit_count=${knownClaimedBridge.deposit_count}) derived claim_status=claimed via getActivity`
+        isAggkitClaimedStatus(itemForBridge.claim_status),
+        `known-claimed bridge (deposit_count=${knownClaimedBridge.deposit_count}) derived a claimed claim_status (claimed or claimed_finalized) via getActivity`
       );
       assert(
         itemForBridge.claim?.tx_hash !== undefined,
-        'a claim_status=claimed item carries a joined claim.tx_hash'
+        'a claimed item carries a joined claim.tx_hash'
       );
     } else {
       console.log(
@@ -441,15 +514,16 @@ async function main(): Promise<void> {
     // This round's known-autoclaimed L2-1->L2-2 deposit (also captured in the
     // unit-test lifecycle fixtures): tx 0xac862504..., deposit_count=2.
     // Autoclaim landed well before this smoke run, so the derived state
-    // should be the terminal claim_status=claimed, not still unclaimed.
+    // should be claimed (`claimed`, or the terminal `claimed_finalized` on a
+    // tracker at api_revision 7), not still unclaimed.
     if (l2l2Row.bridge.deposit_count === 2 && l2l2Row.bridge_network_id === 1) {
       assert(
-        l2l2Row.claim_status === 'claimed',
-        'the known-autoclaimed L2-1->L2-2 deposit (deposit_count=2) derives claim_status=claimed'
+        isAggkitClaimedStatus(l2l2Row.claim_status),
+        'the known-autoclaimed L2-1->L2-2 deposit (deposit_count=2) derives a claimed claim_status (claimed or claimed_finalized)'
       );
       assert(
         l2l2Row.claim?.tx_hash !== undefined,
-        'claim_status=claimed L2->L2 row carries a joined claim.tx_hash'
+        'claimed L2->L2 row carries a joined claim.tx_hash'
       );
     }
   }

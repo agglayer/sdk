@@ -4,6 +4,7 @@ import { AggkitBridgeClient } from '../client';
 import { AggkitBridgeAggregator } from '../aggregator';
 import { AggkitApiError } from '../errors';
 import { quoteGlobalIndex } from '../parsing';
+import { isAggkitClaimedStatus } from '../claimStatus';
 import type { AggkitActivityItem } from '../types';
 
 // ---------------------------------------------------------------------------
@@ -321,6 +322,105 @@ describe('AggkitBridgeClient.getActivity', () => {
       mockFetchOnce(activityBody([makeActivityItem()]), 200);
       const result = await client.getActivity({ fromAddress: ADDRESS });
       expect(result.warnings).toEqual([]);
+    });
+
+    describe('tracker api_revision 7 (agglayer/sdk#46)', () => {
+      const REVISION =
+        'v1:1ab162228afe25b74655b2bfb280cae4926372f5ac13646f341a30053c4a92f1';
+
+      it('passes `revision` through untouched', async () => {
+        mockFetchOnce(
+          activityBody([makeActivityItem()], { count: 1, revision: REVISION }),
+          200
+        );
+        const result = await client.getActivity({ fromAddress: ADDRESS });
+        expect(result.revision).toBe(REVISION);
+      });
+
+      it('returns the same `revision` whatever the page and filter requested', async () => {
+        mockFetchAlways(
+          activityBody([makeActivityItem()], { count: 7, revision: REVISION }),
+          200
+        );
+        const cheapPoll = await client.getActivity({
+          fromAddress: ADDRESS,
+          pageSize: 1,
+        });
+        const page2 = await client.getActivity({
+          fromAddress: ADDRESS,
+          filterBridges: 'claimed',
+          pageNumber: 2,
+          pageSize: 5,
+        });
+        expect(cheapPoll.revision).toBe(REVISION);
+        expect(page2.revision).toBe(REVISION);
+      });
+
+      it('leaves `revision` out (no key) for a tracker at api_revision 6', async () => {
+        mockFetchOnce(activityBody([makeActivityItem()], { count: 1 }), 200);
+        const result = await client.getActivity({ fromAddress: ADDRESS });
+        expect(result).not.toHaveProperty('revision');
+        expect(result.revision).toBeUndefined();
+        expect(result.count).toBe(1);
+      });
+
+      it('ignores a `revision` that is not a string', async () => {
+        mockFetchOnce(
+          activityBody([makeActivityItem()], { count: 1, revision: 7 }),
+          200
+        );
+        const result = await client.getActivity({ fromAddress: ADDRESS });
+        expect(result).not.toHaveProperty('revision');
+      });
+
+      it('surfaces claim_status "claimed_finalized" with finalized: true', async () => {
+        const item = makeActivityItem({
+          claim_status: 'claimed_finalized',
+          finalized: true,
+        });
+        mockFetchOnce(activityBody([item], { revision: REVISION }), 200);
+        const result = await client.getActivity({ fromAddress: ADDRESS });
+        expect(result.bridges[0]?.claim_status).toBe('claimed_finalized');
+        expect(result.bridges[0]?.finalized).toBe(true);
+      });
+
+      it('keeps a claimed-but-not-final row apart: "claimed" with finalized: false', async () => {
+        const notFinal = makeActivityItem({
+          claim_status: 'claimed',
+          finalized: false,
+        });
+        const final = makeActivityItem({
+          claim_status: 'claimed_finalized',
+          finalized: true,
+        });
+        mockFetchOnce(activityBody([notFinal, final]), 200);
+        const result = await client.getActivity({
+          fromAddress: ADDRESS,
+          filterBridges: 'claimed',
+        });
+        // `filterBridges=claimed` returns both states at api_revision 7, and
+        // the helper treats both as claimed.
+        expect(result.bridges.map((b) => b.claim_status)).toEqual([
+          'claimed',
+          'claimed_finalized',
+        ]);
+        expect(
+          result.bridges.every((b) => isAggkitClaimedStatus(b.claim_status))
+        ).toBe(true);
+        expect(result.bridges.map((b) => b.finalized)).toEqual([false, true]);
+      });
+
+      it('leaves `finalized` undefined (not false) on a row from a tracker at api_revision 6', async () => {
+        mockFetchOnce(
+          activityBody([makeActivityItem({ claim_status: 'claimed' })]),
+          200
+        );
+        const result = await client.getActivity({ fromAddress: ADDRESS });
+        expect(result.bridges[0]).not.toHaveProperty('finalized');
+        expect(isAggkitClaimedStatus(result.bridges[0]?.claim_status)).toBe(
+          true
+        );
+      });
     });
 
     it('preserves claim_status and an optional joined claim/tracking', async () => {

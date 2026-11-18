@@ -216,13 +216,19 @@ export class AggkitBridgeAggregator {
    * `AggkitActivityResult` in `types.ts` for the full rationale and the
    * resulting contract differences (server-side pagination with `count`, `warnings` instead of
    * `failedNetworks`, a `claim_status: AggkitClaimStatus` — `'pending'` /
-   * `'readyToClaim'` / `'claimed'` / `'error'`, agglayer/aggkit#1830, PR #1831
-   * — plus optional `tracking` instead of the old
+   * `'readyToClaim'` / `'claimed'` / `'claimed_finalized'` / `'error'`,
+   * agglayer/aggkit#1830, PR #1831; `'claimed_finalized'` since tracker
+   * `api_revision` 7 — plus optional `tracking` instead of the old
    * BRIDGED/LEAF_INCLUDED/READY_TO_CLAIM/CLAIMED derivation). The former
    * ready-to-claim badge (`getReadyToClaimCount`, REMOVED) is now a
    * consumer-side derivation over this same result — filter
    * `claim_status === 'readyToClaim'`, exactly as this result's `bridges`
    * already has to be interpreted for status display.
+   *
+   * Since tracker `api_revision` 7 the result also carries `revision` (when
+   * to reload the loaded pages) and each row `finalized`; a row is claimed
+   * when `isAggkitClaimedStatus(claim_status)`, not only when it reads
+   * `'claimed'`. See `AggkitBridgeClient.getActivity`.
    */
   async getActivity(params: {
     fromAddress: string;

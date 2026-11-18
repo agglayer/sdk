@@ -325,8 +325,9 @@ const results = await aggregator.getWrappedTokens({
 // One request: the tracker fans out server-side across every configured
 // bridge service and returns one page (newest first) of the address's bridge
 // history in a unified, deduped, already-claim-checked list. `count` is the
-// total across all pages.
-const { bridges, count, warnings } = await aggregator.getActivity({
+// total across all pages. `revision` is only sent by a tracker at
+// `api_revision` 7 (`undefined` otherwise): see "Reorgs and finality" below.
+const { bridges, count, revision, warnings } = await aggregator.getActivity({
   fromAddress: '0xFromAddress12345678901234567890123456789012345',
   pageNumber: 1, // 1-based, default 1
   pageSize: 20, // default 20, max 200
@@ -339,10 +340,19 @@ const readyToClaim = bridges.filter(
   (item) => item.claim_status === 'readyToClaim'
 );
 
+// Claimed bridges: use the helper (`import { isAggkitClaimedStatus } from
+// '@agglayer/sdk'`), not `claim_status === 'claimed'`. A
+// tracker at `api_revision` 7 reports `'claimed_finalized'` once the claim is
+// final, and the helper is true for both.
+const claimed = bridges.filter((item) =>
+  isAggkitClaimedStatus(item.claim_status)
+);
+
 // Or let the tracker filter by bridge status
 // (`filterBridges=all|claimed|pending|readyToClaim|error`). Prefer this over
 // client-side filtering: `count` and the pages are computed over the filtered
-// set.
+// set. `claimed` returns both `'claimed'` and `'claimed_finalized'` rows;
+// `claimed_finalized` itself is not a filter value.
 const { bridges: pending } = await aggregator.getActivity({
   fromAddress: '0xFromAddress12345678901234567890123456789012345',
   filterBridges: 'pending',
@@ -351,7 +361,52 @@ const { bridges: pending } = await aggregator.getActivity({
 
 Pages are **not a consistent snapshot**: the tracker can add new bridges
 between two requests, shifting older ones down. When walking every page,
-deduplicate by `bridge.global_index` and, if `count` grew, refetch page 1.
+deduplicate by `bridge.global_index` and, if `revision` changed (or, against
+a tracker that does not send it, if `count` grew), start again from page 1.
+
+##### Reorgs and finality (tracker `api_revision` 7)
+
+A tracker at `api_revision` 7 follows reorgs. Everything in this section is
+**optional in the types and only sent by `api_revision` 7**: against a
+tracker at `api_revision` 6 the fields are `undefined` (meaning "unknown",
+not `false`), `'claimed_finalized'` never appears, and the SDK works
+unchanged.
+
+- `claim_status` has a new value, `'claimed_finalized'`: the claim's block is
+  final and the status never changes again. It is the only final state.
+  `'claimed'` is **no longer final**: if a reorg removes the claim, the
+  bridge goes back to `'readyToClaim'` or `'pending'`. Use
+  `isAggkitClaimedStatus(status)` for "is it claimed?", and handle
+  `'claimed_finalized'` wherever you `switch` over `AggkitClaimStatus`.
+- `item.finalized` is `true` when a reorg can no longer change the row: its
+  bridge is final and, if it is claimed, its claim is final too. An unclaimed
+  row whose bridge is final also reads `true`, and goes back to `false` when
+  it is claimed, until the claim is final.
+- `item.creation_timestamp` (the sort key) can change if a reorg moves the
+  bridge to another block. Identify a row by `bridge.global_index`.
+- `revision` tells you when the pages you loaded went stale. It is an opaque
+  hash of all of the address's activity (`v1:` + 64 hex characters), the same
+  for every page and filter. It changes when a bridge is added, removed,
+  corrected after a reorg or changes `claim_status`; it does **not** change
+  when a row only becomes final. Compare it for equality only: it is not a
+  counter.
+
+```typescript
+// 1. Load the pages you need and keep the revision of the first response.
+let known = revision;
+
+// 2. Poll cheaply and compare.
+const poll = await aggregator.getActivity({
+  fromAddress: '0xFromAddress12345678901234567890123456789012345',
+  pageSize: 1,
+});
+if (poll.revision !== undefined && poll.revision !== known) {
+  // 3. Something changed somewhere: reload the pages you had loaded.
+  known = poll.revision;
+}
+// 4. After the last page of a full traversal, compare again and restart
+//    from page 1 if it changed meanwhile.
+```
 
 `includeTracking` defaults to **`false`**, matching the tracker's own
 server-side default. Passing `includeTracking: true` is not simply a richer
@@ -383,6 +438,17 @@ terminal condition is met:
   up resolving the bridge at all — distinct from a step-level error, which
   reports `tracking_status: 'error'` too but with `bridge_status` populated
   and is retried by the tracker on its own).
+
+Since tracker `api_revision` 7, `'finished'` means claimed **and final**
+(`claim_status === 'claimed_finalized'`). With the claim done but its block
+not final yet, the response stays `tracking_status: 'running'` with
+`claim_status: 'claimed'`, and a reorg can move the tracking **backwards**
+(to `'readyToClaim'` or `'pending'`, at an earlier step), so do not assume
+it only moves forward. To show "claimed" before finality, use
+`isAggkitClaimedStatus(trackingData.claim_status)`. The optional
+`bridge_status.block_finalized` (also `api_revision` 7 only) says whether
+the origin bridge block is final. A tracker at `api_revision` 6 reports
+`'finished'` as soon as it sees the claim.
 
 Keep polling through any other non-terminal state, including a regression
 back to `'registered'` with `all_steps: null` — the FIRST call for a given
@@ -416,9 +482,10 @@ short-circuited, but this is not guaranteed either. See `AggkitStepStatus`
 and `AggkitTrackerErrorType` in `src/aggkit/types.ts`.
 
 `TrackingData` also carries `claim_status`
-(`'pending' | 'readyToClaim' | 'claimed' | 'error'`,
+(`'pending' | 'readyToClaim' | 'claimed' | 'claimed_finalized' | 'error'`,
 [agglayer/aggkit#1823](https://github.com/agglayer/aggkit/issues/1823), PR
-[#1829](https://github.com/agglayer/aggkit/pull/1829)) — use it instead of
+[#1829](https://github.com/agglayer/aggkit/pull/1829);
+`'claimed_finalized'` only from a tracker at `api_revision` 7) — use it instead of
 inspecting `step_index`/`all_steps` by hand to decide whether to show a claim
 button. Same PR adds a `WaitingL1InfoLeafAvailable` step, inserted
 immediately before `WaitingClaim` on all three routes (L1->L2, L2->L1,
@@ -430,7 +497,8 @@ and `AggkitBridgeStep` in `src/aggkit/types.ts`.
 The activity endpoint's `AggkitActivityItem.claim_status`
 ([agglayer/aggkit#1830](https://github.com/agglayer/aggkit/issues/1830), PR
 [#1831](https://github.com/agglayer/aggkit/pull/1831)) now reports this same
-`'pending' | 'readyToClaim' | 'claimed' | 'error'` vocabulary, replacing the
+`'pending' | 'readyToClaim' | 'claimed' | 'claimed_finalized' | 'error'`
+vocabulary, replacing the
 old `claimed: 'true' | 'false' | 'error'` tri-state — **breaking**: a
 consumer filtering on `claimed !== 'true'` to find claimable bridges must
 switch to `claim_status === 'readyToClaim'`. `'readyToClaim'` vs `'pending'`

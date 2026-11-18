@@ -43,7 +43,9 @@
  * — a single request that fans out server-side across every configured
  * bridge service and returns one unified, deduped, already-claim-checked
  * list for an address, paginated server-side (`pageNumber`/`pageSize`, total
- * in `count`) and filterable by status (`filterBridges`). There is no
+ * in `count`) and filterable by status (`filterBridges`). Since tracker
+ * `api_revision` 7 the result carries `revision`, an opaque hash that tells
+ * a client when the pages it loaded went stale. There is no
  * `getReadyToClaimCount` — derive a ready-to-claim
  * count client-side by filtering `claim_status === 'readyToClaim'`
  * (`AggkitActivityItem.claim_status`, agglayer/aggkit#1830, PR #1831). See
@@ -64,6 +66,33 @@
  * `_string` pairs — only `error_type` and certificate `status` keep that
  * convention), and steps carry `step_name`, not `step`. rc4's API.md
  * described these differently; the wire format itself never changed.
+ *
+ * ## Reorgs and Finality (tracker `api_revision` 7)
+ *
+ * aggkit-proxy's tracker API `api_revision` 7 (agglayer/aggkit#1980) makes
+ * the tracker follow reorgs, which changes what a client may assume:
+ *
+ * - `claim_status` (`AggkitClaimStatus`) gains `'claimed_finalized'`: the
+ *   claim's block is final and the status never changes again. It is the
+ *   only final state. `'claimed'` is no longer terminal: a reorg that removes
+ *   the claim takes the bridge back to `'readyToClaim'` or `'pending'`. Use
+ *   `isAggkitClaimedStatus(status)` for "is it claimed?" — it is true for
+ *   both — instead of comparing with `'claimed'`.
+ * - `AggkitActivityItem.finalized`, `AggkitActivityResult.revision` and
+ *   `AggkitBridgeStatus.block_finalized` are new. They are OPTIONAL in the
+ *   types: a tracker at `api_revision` 7 always sends them, one at
+ *   `api_revision` 6 never does, and `undefined` then means "unknown".
+ * - `getBridgeTracking`: `tracking_status` reads `'finished'` only once the
+ *   claim is final; until then it stays `'running'` and can move backwards.
+ * - `getActivity`: `filterBridges: 'claimed'` returns both claimed states,
+ *   and an item's `creation_timestamp` can change if a reorg moves its
+ *   bridge to another block.
+ *
+ * Everything above is backwards compatible with a tracker at `api_revision`
+ * 6 (no new value or field is required), so a client can adopt this SDK
+ * version before the tracker is upgraded. The reverse is not true: a client
+ * that does not know `'claimed_finalized'` treats a claimed and final bridge
+ * as an unknown status, so update clients first.
  *
  * ## Claim Inputs & the Not-Ready Union
  *
@@ -142,6 +171,7 @@
 export { AggkitBridgeClient } from './client';
 export { AggkitBridgeAggregator } from './aggregator';
 export { AggkitApiError } from './errors';
+export { isAggkitClaimedStatus } from './claimStatus';
 export type { AggkitApiErrorArgs } from './errors';
 
 export type {
